@@ -1,0 +1,26 @@
+.DS_Store
+.idea/
+.qodo/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.venv/
+
+# local editable install artifacts
+pose-extraction-test/rowing_pose.egg-info/
+
+# large / generated artifacts
+pose-extraction-test/out*/
+pose-extraction-test/debug/
+pose-extraction-test/.venv/
+pose-extraction-test/source-videos/
+
+# videos / renders
+*.mp4
+*.mov
+*.MOV
+*.png

@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# outputs
+out*/
+debug/
+*.npz
+*.npy
+run.json
+angles.csv
+metrics.json
+
