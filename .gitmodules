@@ -1,0 +1,3 @@
+[submodule "pose-extraction-test/third_party/MotionBERT"]
+	path = pose-extraction-test/third_party/MotionBERT
+	url = https://github.com/Walter0807/MotionBERT.git
