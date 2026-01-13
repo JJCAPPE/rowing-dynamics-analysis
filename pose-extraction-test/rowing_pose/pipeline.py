@@ -224,6 +224,22 @@ def run_pipeline(
             json.dump(summary, f, indent=2, sort_keys=True)
             f.write("\n")
 
+        # Stage J (viz): overlay joints + angles onto the original video.
+        debug_dir = out_dir / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        angles_overlay_mp4 = debug_dir / "angles_overlay.mp4"
+        try:
+            render_angles_overlay_video(
+                video_path=video_path,
+                stabilization_npz=stab_npz,
+                pose2d_npz=pose2d_npz,
+                angles_csv=angles_csv,
+                out_video_path=angles_overlay_mp4,
+            )
+        except Exception:
+            # Keep pipeline robust; overlays are best-effort.
+            pass
+
 
 def debug_pipeline(run_json_path: Path, out_dir: Optional[Path] = None) -> None:
     """Regenerate debug overlays/videos from saved npz/npy artifacts."""
@@ -286,4 +302,125 @@ def debug_pipeline(run_json_path: Path, out_dir: Optional[Path] = None) -> None:
                 for idx, frame in iter_frames(video_path):
                     stab_bgr = warp_frame(frame, A[idx], (width, height))
                     vw.write(draw_keypoints(stab_bgr, J2d_px[idx], edges=edges))
+
+            # Original-frame overlay with joint locations + angle values (if available).
+            angles_csv = out_dir / "angles.csv"
+            angles_overlay_mp4 = debug_dir / "angles_overlay.mp4"
+            if angles_csv.exists():
+                try:
+                    render_angles_overlay_video(
+                        video_path=video_path,
+                        stabilization_npz=stab_npz,
+                        pose2d_npz=pose2d_npz,
+                        angles_csv=angles_csv,
+                        out_video_path=angles_overlay_mp4,
+                    )
+                except Exception:
+                    pass
+
+
+def render_angles_overlay_video(
+    video_path: Path,
+    stabilization_npz: Path,
+    pose2d_npz: Path,
+    angles_csv: Path,
+    out_video_path: Path,
+) -> None:
+    """Render an overlay video on *original* frames showing joints and computed angles."""
+
+    import cv2
+    import numpy as np
+    import pandas as pd
+
+    from .io_video import VideoWriter, get_video_metadata, iter_frames
+    from .pose2d_mmpose import COCO17_EDGES
+    from .skeletons import H36M17_JOINT_NAMES, coco17_to_h36m17
+    from .viz import (
+        apply_affine_to_keypoints_xyc,
+        draw_keypoints,
+        draw_text_panel,
+        draw_values_at_named_joints,
+    )
+
+    meta = get_video_metadata(video_path)
+    stab = np.load(stabilization_npz)
+    A = stab["A"].astype(np.float32)  # (T,2,3)
+
+    d2 = dict(np.load(pose2d_npz, allow_pickle=False))
+    J2d_stab = d2["J2d_px"].astype(np.float32)  # stabilized full-frame px
+    joint_names_2d = tuple(str(x) for x in d2["joint_names"].tolist())
+
+    # Angles per-frame (degrees).
+    df = pd.read_csv(angles_csv)
+    if "frame_idx" in df.columns:
+        # Ensure direct positional indexing by frame index.
+        try:
+            df = df.set_index("frame_idx", drop=False)
+        except Exception:
+            pass
+
+    # Map COCO → H36M (still in stabilized coords), for placing labels at the relevant joints.
+    X_h36m_stab = coco17_to_h36m17(J2d_stab)
+
+    # Define which angles to draw and where to place them (at joint B).
+    angle_name_to_joint = {
+        "left_knee": "left_knee",
+        "right_knee": "right_knee",
+        "left_hip": "left_hip",
+        "right_hip": "right_hip",
+        "left_elbow": "left_elbow",
+        "right_elbow": "right_elbow",
+        "trunk_vs_horizontal": "thorax",
+    }
+    angle_cols = [f"{k}_deg" for k in angle_name_to_joint.keys()]
+    angle_cols = [c for c in angle_cols if c in df.columns]
+
+    fps = float(meta.fps) if meta.fps > 0 else float(stab["fps"]) if "fps" in stab.files else 30.0
+    with VideoWriter(out_video_path, fps=fps, frame_size=(meta.width, meta.height)) as vw:
+        for idx, frame_bgr in iter_frames(video_path):
+            if idx >= J2d_stab.shape[0]:
+                break
+
+            invA = cv2.invertAffineTransform(A[idx])
+            J2d_orig = apply_affine_to_keypoints_xyc(J2d_stab[idx], invA)
+            X_h36m_orig = apply_affine_to_keypoints_xyc(X_h36m_stab[idx], invA)
+
+            # Draw joints/skeleton.
+            edges = COCO17_EDGES if len(joint_names_2d) == 17 else None
+            out = draw_keypoints(frame_bgr, J2d_orig, edges=edges)
+
+            # Extract angle values for this frame.
+            vals_deg: dict[str, float] = {}
+            for col in angle_cols:
+                try:
+                    v = float(df.loc[idx, col])  # type: ignore[index]
+                except Exception:
+                    continue
+                if np.isfinite(v):
+                    vals_deg[col.replace("_deg", "")] = v
+
+            # Label angles near the joints they’re measured at (using H36M joints).
+            label_values = {
+                angle_name_to_joint[k]: v for k, v in vals_deg.items() if k in angle_name_to_joint
+            }
+            out = draw_values_at_named_joints(
+                out,
+                X_h36m_orig,
+                joint_names=H36M17_JOINT_NAMES,
+                values=label_values,
+                fmt="{name}: {value:.1f}°",
+                min_conf=0.2,
+                color=(0, 255, 0),
+                font_scale=0.5,
+                thickness=1,
+            )
+
+            # HUD panel with all angles.
+            hud_lines = []
+            for k in angle_name_to_joint.keys():
+                if k in vals_deg:
+                    hud_lines.append(f"{k}: {vals_deg[k]:.1f}°")
+            out = draw_text_panel(out, hud_lines, origin_xy=(10, 20))
+
+            vw.write(out)
 

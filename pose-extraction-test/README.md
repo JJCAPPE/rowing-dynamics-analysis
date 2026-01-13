@@ -55,4 +55,8 @@ python -m rowing_pose.cli debug --run out/run.json
 - `pose3d.npz` (optional)
 - `angles.csv`
 - `metrics.json`
-- `debug/` videos
+- `debug/` videos:
+  - `stabilized.mp4`
+  - `crop_boxes.mp4`
+  - `pose2d_overlay.mp4`
+  - `angles_overlay.mp4` (keypoints + computed angles overlaid on the original frames)
