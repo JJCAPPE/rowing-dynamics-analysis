@@ -454,30 +454,28 @@ def main() -> None:
         st.stop()
 
     with st.sidebar:
-        st.header("Inputs")
-        mode = st.radio("Video source", options=["Upload", "Path"], key="video_mode")
+        st.header("Video")
+        mode = st.radio("Source", options=["Upload", "Path"], key="video_mode")
 
         uploaded = None
         src_path: Optional[Path] = None
         if mode == "Upload":
-            uploaded = st.file_uploader("Upload video", type=None)
+            uploaded = st.file_uploader("Upload file", type=None)
             if uploaded is not None:
                 src_path = Path(uploaded.name)
         else:
-            p = st.text_input(
-                "Video path", key="video_path_input", placeholder="/path/to/video.mp4"
-            )
+            p = st.text_input("File path", key="video_path_input", placeholder="/path/to/video.mp4")
             if p:
                 src_path = Path(p).expanduser()
 
         use_timestamp = st.checkbox("Use timestamped output folder", value=False)
 
         st.divider()
-        st.header("Pipeline options")
+        st.header("Pipeline")
         device = st.selectbox("Device", options=["cpu", "cuda"], index=0)
-        mmpose_model = st.text_input("MMPose model alias", value="human")
+        mmpose_model = st.text_input("MMPose model", value="human")
 
-        st.subheader("MotionBERT (required for 3D overlay)")
+        st.subheader("MotionBERT")
         motionbert_repo_root = repo_root / "third_party" / "MotionBERT"
         default_ckpt = (
             motionbert_repo_root
@@ -494,12 +492,12 @@ def main() -> None:
         st.write(f"Repo: `{motionbert_repo_root}`")
 
         # Advanced: custom checkpoint/root (rarely needed)
-        with st.expander("Advanced MotionBERT settings"):
-            use_custom_ckpt = st.checkbox("Use custom checkpoint path", value=False)
+        with st.expander("Advanced MotionBERT"):
+            use_custom_ckpt = st.checkbox("Custom checkpoint", value=False)
             custom_ckpt_path = st.text_input(
-                "Checkpoint path (.bin/.pth)", value="", placeholder="/path/to/best_epoch.bin"
+                "Checkpoint path", value="", placeholder="/path/to/best_epoch.bin"
             )
-            use_custom_root = st.checkbox("Use custom MotionBERT repo root", value=False)
+            use_custom_root = st.checkbox("Custom repo root", value=False)
             custom_root_path = st.text_input(
                 "Repo root", value="", placeholder="/path/to/MotionBERT"
             )
@@ -516,17 +514,12 @@ def main() -> None:
             motionbert_ckpt = default_ckpt
 
         if motionbert_ckpt is not None and motionbert_ckpt.exists():
-            st.success(f"Checkpoint found: `{motionbert_ckpt}`")
+            st.success("Checkpoint ready")
         else:
-            st.warning(
-                "MotionBERT checkpoint not found. Download once and it will be reused locally.\n\n"
-                f"Expected: `{default_ckpt}`"
-            )
+            st.warning("Checkpoint missing (download once)")
 
             confirm = st.checkbox(
-                "I want to download MotionBERT 3D pose checkpoint (~162MB) from HuggingFace",
-                value=False,
-                key="mb_download_confirm",
+                "Download MotionBERT 3D weights (~162MB)", value=False, key="mb_download_confirm"
             )
             download_btn = st.button("Download checkpoint", disabled=not confirm)
 
@@ -540,9 +533,7 @@ def main() -> None:
                     if tmp.exists():
                         tmp.unlink()
 
-                    st.info(
-                        "Downloading... (saved locally under third_party/MotionBERT/checkpoint/)"
-                    )
+                    st.info("Downloading... (saved under third_party/MotionBERT/checkpoint/)")
                     progress = st.progress(0)
                     status = st.empty()
 
@@ -585,10 +576,10 @@ def main() -> None:
         flip = st.checkbox("flip augmentation", value=False)
         rootrel = st.checkbox("root-relative output", value=False)
 
-        st.subheader("3D inset orientation")
-        mirror_3d = st.checkbox("Mirror 3D left/right", value=True)
-        flip_3d = st.checkbox("Flip 3D upside-down", value=False)
-        flip_3d_depth = st.checkbox("Flip 3D depth (towards/away)", value=False)
+        st.subheader("3D inset")
+        mirror_3d = st.checkbox("Mirror left/right", value=True)
+        flip_3d = st.checkbox("Flip upside-down", value=False)
+        flip_3d_depth = st.checkbox("Flip depth (towards/away)", value=False)
 
     if src_path is None:
         st.info("Select a video in the sidebar to start.")
