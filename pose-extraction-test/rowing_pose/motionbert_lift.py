@@ -86,7 +86,13 @@ def lift_pose3d_motionbert(
     ckpt = torch.load(str(checkpoint_path), map_location="cpu")
     if "model_pos" not in ckpt:
         raise KeyError("Checkpoint does not contain key 'model_pos' (unexpected format).")
-    model_pos.load_state_dict(ckpt["model_pos"], strict=True)
+
+    state = ckpt["model_pos"]
+    # Some checkpoints are saved under DataParallel/DistributedDataParallel ("module." prefix).
+    if isinstance(state, dict) and any(k.startswith("module.") for k in state.keys()):
+        state = {k.replace("module.", "", 1): v for k, v in state.items()}
+
+    model_pos.load_state_dict(state, strict=True)
     model_pos.eval()
 
     # Prepare clip start indices with overlap; ensure last clip covers the end.
