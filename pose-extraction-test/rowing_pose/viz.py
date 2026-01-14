@@ -126,7 +126,7 @@ def draw_values_at_named_joints(
     values: dict[str, float],
     *,
     min_conf: float = 0.2,
-    fmt: str = "{name}: {value:.1f}°",
+    fmt: str = "{name}: {value:.1f} deg",
     color=(0, 255, 255),
     font_scale: float = 0.5,
     thickness: int = 1,

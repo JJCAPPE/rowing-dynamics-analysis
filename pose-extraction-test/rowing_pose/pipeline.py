@@ -408,7 +408,7 @@ def render_angles_overlay_video(
                 X_h36m_orig,
                 joint_names=H36M17_JOINT_NAMES,
                 values=label_values,
-                fmt="{name}: {value:.1f}°",
+                fmt="{name}: {value:.1f} deg",
                 min_conf=0.2,
                 color=(0, 255, 0),
                 font_scale=0.5,
@@ -419,7 +419,7 @@ def render_angles_overlay_video(
             hud_lines = []
             for k in angle_name_to_joint.keys():
                 if k in vals_deg:
-                    hud_lines.append(f"{k}: {vals_deg[k]:.1f}°")
+                    hud_lines.append(f"{k}: {vals_deg[k]:.1f} deg")
             out = draw_text_panel(out, hud_lines, origin_xy=(10, 20))
 
             vw.write(out)

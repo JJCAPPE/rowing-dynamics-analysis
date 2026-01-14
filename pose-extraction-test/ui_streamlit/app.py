@@ -168,7 +168,13 @@ def _parse_first_rect(json_data: Dict[str, Any]) -> Optional[Tuple[float, float,
 
 
 def _render_3d_inset(
-    J3d: np.ndarray, size: Tuple[int, int] = (260, 260), pad: int = 18
+    J3d: np.ndarray,
+    size: Tuple[int, int] = (520, 520),
+    pad: int = 18,
+    *,
+    mirror_x: bool = True,
+    flip_y: bool = False,
+    flip_z: bool = False,
 ) -> np.ndarray:
     """Render a simple 3D stick figure inset (BGR uint8)."""
     import cv2
@@ -208,10 +214,10 @@ def _render_3d_inset(
     R = (Rx @ Ry).astype(np.float32)
     Jr = (J @ R.T).astype(np.float32)
 
-    x2 = Jr[:, 0]
-    y2 = -Jr[:, 1]  # image y down
-    z = Jr[:, 2]
-
+    x2 = -Jr[:, 0] if mirror_x else Jr[:, 0]
+    # MotionBERT Y axis is typically up; map to image down.
+    y2 = -Jr[:, 1] if flip_y else Jr[:, 1]
+    z = -Jr[:, 2] if flip_z else Jr[:, 2]
     m = np.isfinite(x2) & np.isfinite(y2)
     if not m.any():
         cv2.putText(canvas, "no 3D", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
@@ -233,8 +239,10 @@ def _render_3d_inset(
     y0 = float((y_min + y_max) / 2.0)
 
     # Full set again (including NaNs) for drawing edges.
-    x_img = (Jr[:, 0] - x0) * s + float(W) / 2.0
-    y_img = (-Jr[:, 1] - y0) * s + float(H) / 2.0
+    x_src = -Jr[:, 0] if mirror_x else Jr[:, 0]
+    y_src = -Jr[:, 1] if flip_y else Jr[:, 1]
+    x_img = (x_src - x0) * s + float(W) / 2.0
+    y_img = (y_src - y0) * s + float(H) / 2.0
 
     def depth_color(zv: float) -> Tuple[int, int, int]:
         # Map depth to a color (near=green, far=blue) for some 3D cue.
@@ -273,7 +281,10 @@ def generate_pose3d_overlay_video(
     pose3d_npz: Path,
     angles_csv: Optional[Path],
     out_video_path: Path,
-    inset_size: Tuple[int, int] = (260, 260),
+    inset_size: Tuple[int, int] = (520, 520),
+    mirror_3d: bool = True,
+    flip_3d: bool = False,
+    flip_3d_depth: bool = False,
 ) -> None:
     """Create debug/pose3d_overlay.mp4 from existing pipeline artifacts."""
     import cv2
@@ -333,7 +344,13 @@ def generate_pose3d_overlay_video(
 
             out = draw_keypoints(frame_bgr, J2d_orig, edges=COCO17_EDGES, min_conf=0.2)
 
-            inset = _render_3d_inset(J3d[idx], size=(inset_w, inset_h))
+            inset = _render_3d_inset(
+                J3d[idx],
+                size=(inset_w, inset_h),
+                mirror_x=mirror_3d,
+                flip_y=flip_3d,
+                flip_z=flip_3d_depth,
+            )
 
             # Composite inset (opaque) with a small border.
             cv2.rectangle(
@@ -352,7 +369,7 @@ def generate_pose3d_overlay_video(
                     except Exception:
                         continue
                     if np.isfinite(v):
-                        hud.append(f"{col.replace('_deg','')}: {v:.1f}°")
+                        hud.append(f"{col.replace('_deg','')}: {v:.1f} deg")
                 hud = hud[:10]
                 out = draw_text_panel(out, hud, origin_xy=(10, 20))
 
@@ -567,6 +584,11 @@ def main() -> None:
         clip_len = st.number_input("clip_len", min_value=1, max_value=2000, value=243, step=1)
         flip = st.checkbox("flip augmentation", value=False)
         rootrel = st.checkbox("root-relative output", value=False)
+
+        st.subheader("3D inset orientation")
+        mirror_3d = st.checkbox("Mirror 3D left/right", value=True)
+        flip_3d = st.checkbox("Flip 3D upside-down", value=False)
+        flip_3d_depth = st.checkbox("Flip 3D depth (towards/away)", value=False)
 
     if src_path is None:
         st.info("Select a video in the sidebar to start.")
@@ -885,6 +907,9 @@ def main() -> None:
                     pose3d_npz=pose3d_npz,
                     angles_csv=angles_csv if angles_csv.exists() else None,
                     out_video_path=out_pose3d_mp4,
+                    mirror_3d=bool(mirror_3d),
+                    flip_3d=bool(flip_3d),
+                    flip_3d_depth=bool(flip_3d_depth),
                 )
 
         except Exception as e:
@@ -902,9 +927,6 @@ def main() -> None:
 
         # Also show existing pipeline output if present.
         angles_overlay = out_dir / "debug" / "angles_overlay.mp4"
-        if angles_overlay.exists():
-            with st.expander("Show 2D+angles overlay (pipeline output)"):
-                st.video(str(angles_overlay))
 
         st.markdown("**Downloads**")
 
