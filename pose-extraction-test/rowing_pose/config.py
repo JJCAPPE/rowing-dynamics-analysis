@@ -114,6 +114,24 @@ class RunConfig:
         return p if p.is_absolute() else (run_json_path.parent / p)
 
 
+POSE_SMOOTHING_DEFAULTS: Dict[str, Any] = {
+    "enabled": True,
+    "conf_threshold": 0.3,
+    "max_gap": 5,
+    "median_window": 5,
+}
+
+
+def apply_pose_smoothing_defaults(params: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(params) if params is not None else {}
+    merged = dict(POSE_SMOOTHING_DEFAULTS)
+    existing = out.get("pose_smoothing")
+    if isinstance(existing, dict):
+        merged.update(existing)
+    out["pose_smoothing"] = merged
+    return out
+
+
 def compute_m_per_px(scale_points_px: Tuple[Point2D, Point2D], distance_m: float) -> float:
     (x0, y0), (x1, y1) = scale_points_px
     d_px = float(np.hypot(x1 - x0, y1 - y0))
@@ -136,5 +154,7 @@ def load_run_config(path: str | Path) -> RunConfig:
     path = Path(path)
     with path.open("r", encoding="utf-8") as f:
         d = json.load(f)
-    return RunConfig.from_dict(d)
+    cfg = RunConfig.from_dict(d)
+    cfg.params = apply_pose_smoothing_defaults(cfg.params)
+    return cfg
 

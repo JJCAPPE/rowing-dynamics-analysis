@@ -10,8 +10,10 @@ def run_pipeline(
     out_dir: Path,
     device: str = "cpu",
     mmpose_model: str = "human",
+    mmpose_weights: Optional[Path] = None,
     motionbert_root: Optional[Path] = None,
     motionbert_ckpt: Optional[Path] = None,
+    motionbert_config: Optional[Path] = None,
     clip_len: int = 243,
     flip: bool = False,
     rootrel: bool = False,
@@ -30,12 +32,18 @@ def run_pipeline(
     import numpy as np
 
     from .config import load_run_config
+    from .pose_smoothing import (
+        pose_smoothing_params_from_dict,
+        smooth_joints_3d,
+        smooth_keypoints_2d,
+    )
     from .ui_annotate import annotate_video
 
     run_json = out_dir / "run.json"
     if not run_json.exists():
         annotate_video(video_path=video_path, out_dir=out_dir, reference_frame_idx=0)
     cfg = load_run_config(run_json)
+    pose_smoothing = pose_smoothing_params_from_dict(cfg.params.get("pose_smoothing"))
 
     # Stage B: stabilization
     from .stabilize import compute_stabilization
@@ -83,16 +91,37 @@ def run_pipeline(
             out_npz=pose2d_npz,
             model=mmpose_model,
             device=device,
+            pose2d_weights=mmpose_weights,
             debug_video_path=pose2d_mp4,
         )
 
     # Load 2D (for 3D + metrics).
     J2d_px = None
     joint_names_2d = None
+    pose2d_conf = None
+    pose2d_fps = None
     if pose2d_npz.exists():
         d = dict(np.load(pose2d_npz, allow_pickle=False))
         J2d_px = d["J2d_px"].astype(np.float32)
         joint_names_2d = tuple(str(x) for x in d["joint_names"].tolist())
+        pose2d_fps = float(d.get("fps", 0.0))
+        if "conf" in d:
+            pose2d_conf = np.asarray(d["conf"], dtype=np.float32)
+
+    if pose_smoothing.enabled and J2d_px is not None:
+        J2d_px = smooth_keypoints_2d(J2d_px, pose_smoothing)
+        if pose2d_conf is None:
+            pose2d_conf = J2d_px[:, :, 2]
+        if pose2d_npz.exists():
+            np.savez_compressed(
+                pose2d_npz,
+                J2d_px=J2d_px,
+                conf=pose2d_conf,
+                joint_names=np.array(joint_names_2d, dtype=str)
+                if joint_names_2d is not None
+                else np.array([], dtype=str),
+                fps=float(pose2d_fps) if pose2d_fps is not None else 0.0,
+            )
 
     # Stage F/G/H: MotionBERT lift + metric-ish scaling.
     pose3d_npz = out_dir / "pose3d.npz"
@@ -136,6 +165,7 @@ def run_pipeline(
             motionbert_root=motionbert_root,
             checkpoint_path=motionbert_ckpt,
             device=device,
+            config_path=motionbert_config,
             clip_len=clip_len,
             flip=flip,
             rootrel=rootrel,
@@ -155,6 +185,11 @@ def run_pipeline(
             alpha_scale = compute_alpha_scale_xy(J3d_raw, J2d_m_xy, conf=conf, root_idx=0)
             if alpha_scale is not None:
                 J3d_m = (float(alpha_scale) * J3d_raw).astype(np.float32)
+
+        if pose_smoothing.enabled and J3d_raw is not None:
+            J3d_raw = smooth_joints_3d(J3d_raw, pose_smoothing)
+            if J3d_m is not None:
+                J3d_m = smooth_joints_3d(J3d_m, pose_smoothing)
 
         np.savez_compressed(
             pose3d_npz,

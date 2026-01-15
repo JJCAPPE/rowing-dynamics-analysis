@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import shutil
 import sys
@@ -14,6 +15,8 @@ import streamlit as st
 from PIL import Image, ImageDraw
 
 REPO_ROOT = Path(__file__).resolve().parents[1]  # pose-extraction-test/
+MODELS_DIR = REPO_ROOT / "models"
+os.environ.setdefault("MMENGINE_CACHE_DIR", str(MODELS_DIR / "mmengine"))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -22,7 +25,14 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     streamlit_image_coordinates = None  # type: ignore[assignment]
 
-from rowing_pose.config import Annotations, RunConfig, VideoInfo, compute_m_per_px, save_run_config
+from rowing_pose.config import (
+    POSE_SMOOTHING_DEFAULTS,
+    Annotations,
+    RunConfig,
+    VideoInfo,
+    compute_m_per_px,
+    save_run_config,
+)
 from rowing_pose.io_video import VideoWriter, get_video_metadata, iter_frames, read_frame
 from rowing_pose.pipeline import run_pipeline
 from rowing_pose.pose2d_mmpose import COCO17_EDGES
@@ -101,6 +111,75 @@ def _make_display_frame(frame_bgr: np.ndarray, max_w: int = 900) -> DisplayFrame
     )
 
 
+@dataclass(frozen=True)
+class Pose2DModelSpec:
+    key: str
+    label: str
+    model_id: str
+    weights_url: Optional[str]
+    weights_path: Optional[Path]
+
+
+@dataclass(frozen=True)
+class MotionBertModelSpec:
+    key: str
+    label: str
+    config_path: Path
+    ckpt_url: str
+    ckpt_path: Path
+
+
+@dataclass(frozen=True)
+class ModelPreset:
+    key: str
+    label: str
+    pose2d: Pose2DModelSpec
+    motionbert: MotionBertModelSpec
+
+
+@dataclass(frozen=True)
+class DownloadSpec:
+    key: str
+    label: str
+    url: str
+    path: Path
+
+
+def _download_with_progress(spec: DownloadSpec) -> None:
+    import urllib.request
+
+    spec.path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = spec.path.with_suffix(spec.path.suffix + ".part")
+    if tmp.exists():
+        tmp.unlink()
+
+    st.info(f"Downloading {spec.label}...")
+    progress = st.progress(0)
+    status = st.empty()
+
+    with urllib.request.urlopen(spec.url) as resp:
+        total = resp.headers.get("Content-Length")
+        total_bytes = int(total) if total is not None else None
+        done = 0
+        with tmp.open("wb") as f:
+            while True:
+                chunk = resp.read(1024 * 1024)  # 1MB
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if total_bytes and total_bytes > 0:
+                    pct = int(min(100, (done * 100) // total_bytes))
+                    progress.progress(pct)
+                    status.write(f"{done/1024/1024:.1f} / {total_bytes/1024/1024:.1f} MB")
+                else:
+                    status.write(f"{done/1024/1024:.1f} MB")
+
+    tmp.replace(spec.path)
+    progress.progress(100)
+    status.write("Download complete.")
+
+
 def _draw_overlay(
     disp: DisplayFrame,
     *,
@@ -171,6 +250,71 @@ def _parse_first_rect(json_data: Dict[str, Any]) -> Optional[Tuple[float, float,
         return left, top, w, h
     return None
 
+
+# ---------------------------
+# Model presets / downloads
+# ---------------------------
+
+MOTIONBERT_REPO = REPO_ROOT / "third_party" / "MotionBERT"
+
+POSE2D_VITPOSE_H = Pose2DModelSpec(
+    key="vitpose_h",
+    label="ViTPose-H (COCO 256x192)",
+    model_id="td-hm_ViTPose-huge_8xb64-210e_coco-256x192",
+    weights_url=(
+        "https://download.openmmlab.com/mmpose/v1/body_2d_keypoint/topdown_heatmap/coco/"
+        "td-hm_ViTPose-huge_8xb64-210e_coco-256x192-e32adcd4_20230314.pth"
+    ),
+    weights_path=MODELS_DIR / "mmpose" / "vitpose_huge_coco_256x192.pth",
+)
+
+POSE2D_DEFAULT = Pose2DModelSpec(
+    key="mmpose_default",
+    label="MMPose default (auto weights)",
+    model_id="human",
+    weights_url=None,
+    weights_path=None,
+)
+
+MOTIONBERT_FULL = MotionBertModelSpec(
+    key="mb_full",
+    label="MotionBERT full",
+    config_path=MOTIONBERT_REPO / "configs" / "pose3d" / "MB_ft_h36m_global.yaml",
+    ckpt_url=(
+        "https://huggingface.co/walterzhu/MotionBERT/resolve/main/"
+        "checkpoint/pose3d/FT_MB_release_MB_ft_h36m/best_epoch.bin"
+    ),
+    ckpt_path=MODELS_DIR / "motionbert" / "FT_MB_release_MB_ft_h36m" / "best_epoch.bin",
+)
+
+MOTIONBERT_LITE = MotionBertModelSpec(
+    key="mb_lite",
+    label="MotionBERT lite",
+    config_path=MOTIONBERT_REPO / "configs" / "pose3d" / "MB_ft_h36m_global_lite.yaml",
+    ckpt_url=(
+        "https://huggingface.co/walterzhu/MotionBERT/resolve/main/"
+        "checkpoint/pose3d/FT_MB_lite_MB_ft_h36m_global_lite/best_epoch.bin"
+    ),
+    ckpt_path=MODELS_DIR
+    / "motionbert"
+    / "FT_MB_lite_MB_ft_h36m_global_lite"
+    / "best_epoch.bin",
+)
+
+MODEL_PRESETS: Dict[str, ModelPreset] = {
+    "high": ModelPreset(
+        key="high",
+        label="High accuracy (ViTPose-H + MotionBERT full)",
+        pose2d=POSE2D_VITPOSE_H,
+        motionbert=MOTIONBERT_FULL,
+    ),
+    "balanced": ModelPreset(
+        key="balanced",
+        label="Balanced (MMPose default + MotionBERT lite)",
+        pose2d=POSE2D_DEFAULT,
+        motionbert=MOTIONBERT_LITE,
+    ),
+}
 
 # ---------------------------
 # 3D overlay video generation
@@ -437,7 +581,7 @@ def _init_state() -> None:
     ss.setdefault("video_dest_path", None)
 
     ss.setdefault("last_run_error", None)
-    ss.setdefault("mb_download_error", None)
+    ss.setdefault("download_errors", {})
 
 
 def main() -> None:
@@ -506,108 +650,130 @@ def main() -> None:
             enable_3d = False
 
         device = st.selectbox("Device", options=["cpu", "cuda"], index=0)
-        mmpose_model = st.text_input("MMPose model", value="human", disabled=not enable_2d)
+        preset_keys = list(MODEL_PRESETS.keys())
+        preset_key = st.selectbox(
+            "Model preset",
+            options=preset_keys,
+            index=0,
+            format_func=lambda k: MODEL_PRESETS[k].label,
+        )
+        preset = MODEL_PRESETS[preset_key]
 
-        motionbert_root = None
-        motionbert_ckpt = None
-        if enable_3d:
-            st.subheader("MotionBERT")
-            motionbert_repo_root = repo_root / "third_party" / "MotionBERT"
-            default_ckpt = (
-                motionbert_repo_root
-                / "checkpoint"
-                / "pose3d"
-                / "FT_MB_lite_MB_ft_h36m_global_lite"
-                / "best_epoch.bin"
-            )
-            default_ckpt_url = (
-                "https://huggingface.co/walterzhu/MotionBERT/resolve/main/"
-                "checkpoint/pose3d/FT_MB_lite_MB_ft_h36m_global_lite/best_epoch.bin"
-            )
+        st.caption(f"2D: {preset.pose2d.label}")
+        st.caption(f"3D: {preset.motionbert.label}")
 
-            st.write(f"Repo: `{motionbert_repo_root}`")
+        mmpose_model = preset.pose2d.model_id
+        mmpose_weights = preset.pose2d.weights_path
+        motionbert_root = MOTIONBERT_REPO if MOTIONBERT_REPO.exists() else None
+        motionbert_ckpt = preset.motionbert.ckpt_path
+        motionbert_config = preset.motionbert.config_path
 
-            # Advanced: custom checkpoint/root (rarely needed)
-            with st.expander("Advanced MotionBERT"):
-                use_custom_ckpt = st.checkbox("Custom checkpoint", value=False)
-                custom_ckpt_path = st.text_input(
-                    "Checkpoint path", value="", placeholder="/path/to/best_epoch.bin"
+        use_custom_pose2d = False
+        use_custom_motionbert = False
+        with st.expander("Advanced models"):
+            use_custom_pose2d = st.checkbox("Custom 2D model/weights", value=False)
+            if use_custom_pose2d:
+                mmpose_model = st.text_input("MMPose model id/config", value=mmpose_model)
+                custom_weights_path = st.text_input(
+                    "MMPose weights path (optional)",
+                    value=str(mmpose_weights) if mmpose_weights else "",
                 )
-                use_custom_root = st.checkbox("Custom repo root", value=False)
+                if custom_weights_path.strip():
+                    mmpose_weights = Path(custom_weights_path).expanduser()
+                else:
+                    mmpose_weights = None
+
+            use_custom_motionbert = st.checkbox("Custom MotionBERT paths", value=False)
+            if use_custom_motionbert:
                 custom_root_path = st.text_input(
-                    "Repo root", value="", placeholder="/path/to/MotionBERT"
+                    "MotionBERT repo root",
+                    value=str(motionbert_root) if motionbert_root else "",
                 )
+                if custom_root_path.strip():
+                    motionbert_root = Path(custom_root_path).expanduser()
+                else:
+                    motionbert_root = None
 
-            # Resolve which checkpoint/root to use.
-            if use_custom_root and custom_root_path.strip():
-                motionbert_root = Path(custom_root_path).expanduser()
-
-            if use_custom_ckpt and custom_ckpt_path.strip():
-                motionbert_ckpt = Path(custom_ckpt_path).expanduser()
-            elif default_ckpt.exists():
-                motionbert_ckpt = default_ckpt
-
-            if motionbert_ckpt is not None and motionbert_ckpt.exists():
-                st.success("Checkpoint ready")
-            else:
-                st.warning("Checkpoint missing (download once)")
-
-                confirm = st.checkbox(
-                    "Download MotionBERT 3D weights (~162MB)",
-                    value=False,
-                    key="mb_download_confirm",
+                custom_ckpt_path = st.text_input(
+                    "MotionBERT checkpoint path",
+                    value=str(motionbert_ckpt) if motionbert_ckpt else "",
                 )
-                download_btn = st.button("Download checkpoint", disabled=not confirm)
+                if custom_ckpt_path.strip():
+                    motionbert_ckpt = Path(custom_ckpt_path).expanduser()
+                else:
+                    motionbert_ckpt = None
 
-                if download_btn:
-                    st.session_state["mb_download_error"] = None
-                    try:
-                        import urllib.request
+                custom_cfg_path = st.text_input(
+                    "MotionBERT config path",
+                    value=str(motionbert_config) if motionbert_config else "",
+                )
+                if custom_cfg_path.strip():
+                    motionbert_config = Path(custom_cfg_path).expanduser()
+                else:
+                    motionbert_config = None
 
-                        default_ckpt.parent.mkdir(parents=True, exist_ok=True)
-                        tmp = default_ckpt.with_suffix(default_ckpt.suffix + ".part")
-                        if tmp.exists():
-                            tmp.unlink()
+        download_errors: Dict[str, str] = st.session_state["download_errors"]
 
-                        st.info("Downloading... (saved under third_party/MotionBERT/checkpoint/)")
-                        progress = st.progress(0)
-                        status = st.empty()
+        def ensure_download(spec: DownloadSpec, enabled: bool) -> bool:
+            if not enabled:
+                return True
+            if spec.path.exists():
+                st.success(f"{spec.label}: ready")
+                return True
+            if download_errors.get(spec.key):
+                st.error(f"{spec.label}: {download_errors[spec.key]}")
+                if st.button(f"Retry {spec.label}", key=f"retry_{spec.key}"):
+                    download_errors.pop(spec.key, None)
+                    st.rerun()
+                return False
+            try:
+                _download_with_progress(spec)
+            except Exception as e:
+                download_errors[spec.key] = f"{type(e).__name__}: {e}"
+                st.error(f"{spec.label}: {download_errors[spec.key]}")
+                return False
+            st.rerun()
+            return False
 
-                        with urllib.request.urlopen(default_ckpt_url) as resp:
-                            total = resp.headers.get("Content-Length")
-                            total_bytes = int(total) if total is not None else None
-                            done = 0
-                            with tmp.open("wb") as f:
-                                while True:
-                                    chunk = resp.read(1024 * 1024)  # 1MB
-                                    if not chunk:
-                                        break
-                                    f.write(chunk)
-                                    done += len(chunk)
-                                    if total_bytes and total_bytes > 0:
-                                        pct = int(min(100, (done * 100) // total_bytes))
-                                        progress.progress(pct)
-                                        status.write(
-                                            f"{done/1024/1024:.1f} / {total_bytes/1024/1024:.1f} MB"
-                                        )
-                                    else:
-                                        status.write(f"{done/1024/1024:.1f} MB")
+        pose2d_ready = True
+        if enable_2d:
+            if not use_custom_pose2d and preset.pose2d.weights_url:
+                pose2d_spec = DownloadSpec(
+                    key=f"pose2d_{preset.pose2d.key}",
+                    label=f"{preset.pose2d.label} weights",
+                    url=preset.pose2d.weights_url,
+                    path=preset.pose2d.weights_path or MODELS_DIR / "mmpose" / "weights.pth",
+                )
+                pose2d_ready = ensure_download(pose2d_spec, enabled=True)
+            elif mmpose_weights is not None and not mmpose_weights.exists():
+                st.warning("Custom 2D weights path not found.")
+                pose2d_ready = False
 
-                        tmp.replace(default_ckpt)
-                        progress.progress(100)
-                        status.write("Download complete.")
-                        st.rerun()
-                    except Exception as e:
-                        st.session_state["mb_download_error"] = f"{type(e).__name__}: {e}"
-                        try:
-                            if "tmp" in locals() and tmp.exists():
-                                tmp.unlink()
-                        except Exception:
-                            pass
+        pose3d_ready = True
+        if enable_3d:
+            if motionbert_root is None or not motionbert_root.exists():
+                st.error("MotionBERT repo not found. Ensure the submodule is available.")
+                pose3d_ready = False
+            if motionbert_config is None or not motionbert_config.exists():
+                st.error("MotionBERT config not found.")
+                pose3d_ready = False
+            if motionbert_ckpt is None:
+                st.error("MotionBERT checkpoint not set.")
+                pose3d_ready = False
 
-            if st.session_state.get("mb_download_error"):
-                st.error(st.session_state["mb_download_error"])
-        else:
+            if not use_custom_motionbert:
+                mb_spec = DownloadSpec(
+                    key=f"motionbert_{preset.motionbert.key}",
+                    label=f"{preset.motionbert.label} weights",
+                    url=preset.motionbert.ckpt_url,
+                    path=preset.motionbert.ckpt_path,
+                )
+                pose3d_ready = pose3d_ready and ensure_download(mb_spec, enabled=True)
+            elif motionbert_ckpt is not None and not motionbert_ckpt.exists():
+                st.warning("Custom MotionBERT checkpoint path not found.")
+                pose3d_ready = False
+
+        if not enable_3d:
             st.caption("3D stage disabled; MotionBERT settings hidden.")
 
         clip_len = st.number_input(
@@ -618,8 +784,38 @@ def main() -> None:
             step=1,
             disabled=not enable_3d,
         )
-        flip = st.checkbox("flip augmentation", value=False, disabled=not enable_3d)
+        flip = st.checkbox("flip augmentation", value=True, disabled=not enable_3d)
         rootrel = st.checkbox("root-relative output", value=False, disabled=not enable_3d)
+
+        st.subheader("Pose smoothing")
+        smooth_pose = st.checkbox(
+            "Smooth pose (recommended)",
+            value=bool(POSE_SMOOTHING_DEFAULTS.get("enabled", True)),
+        )
+        conf_threshold = st.slider(
+            "Confidence threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(POSE_SMOOTHING_DEFAULTS.get("conf_threshold", 0.3)),
+            step=0.05,
+            disabled=not smooth_pose,
+        )
+        max_gap = st.number_input(
+            "Max gap (frames)",
+            min_value=0,
+            max_value=60,
+            value=int(POSE_SMOOTHING_DEFAULTS.get("max_gap", 5)),
+            step=1,
+            disabled=not smooth_pose,
+        )
+        median_window = st.number_input(
+            "Median window (odd)",
+            min_value=1,
+            max_value=61,
+            value=int(POSE_SMOOTHING_DEFAULTS.get("median_window", 5)),
+            step=2,
+            disabled=not smooth_pose,
+        )
 
         st.subheader("3D inset")
         mirror_3d = st.checkbox("Mirror left/right", value=True, disabled=not enable_3d)
@@ -846,8 +1042,17 @@ def main() -> None:
         and st.session_state["scale0_px"] is not None
         and st.session_state["scale1_px"] is not None
         and float(st.session_state["scale_dist_m"]) > 0
-        and motionbert_ckpt is not None
-        and motionbert_ckpt.exists()
+        and (not enable_2d or pose2d_ready)
+        and (
+            not enable_3d
+            or (
+                pose3d_ready
+                and motionbert_ckpt is not None
+                and motionbert_ckpt.exists()
+                and motionbert_config is not None
+                and motionbert_config.exists()
+            )
+        )
         and (
             st.session_state.get("annotations_ref_idx") is None
             or int(st.session_state.get("annotations_ref_idx")) == int(ref_idx)
@@ -856,8 +1061,7 @@ def main() -> None:
 
     if not ready:
         st.warning(
-            "Complete annotation and ensure the MotionBERT checkpoint is available "
-            "(use the sidebar download button once)."
+            "Complete annotation and ensure required model files are ready (see sidebar)."
         )
         return
 
@@ -903,6 +1107,12 @@ def main() -> None:
                         "ema_alpha": 0.9,
                         "min_points": 10,
                     },
+                    "pose_smoothing": {
+                        "enabled": bool(smooth_pose),
+                        "conf_threshold": float(conf_threshold),
+                        "max_gap": int(max_gap),
+                        "median_window": int(median_window),
+                    },
                 },
             )
 
@@ -923,8 +1133,10 @@ def main() -> None:
                     out_dir=out_dir,
                     device=device,
                     mmpose_model=mmpose_model,
+                    mmpose_weights=mmpose_weights,
                     motionbert_root=motionbert_root,
                     motionbert_ckpt=ckpt,
+                    motionbert_config=motionbert_config,
                     clip_len=int(clip_len),
                     flip=bool(flip),
                     rootrel=bool(rootrel),
