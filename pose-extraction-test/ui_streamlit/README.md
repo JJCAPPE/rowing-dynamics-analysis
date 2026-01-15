@@ -19,6 +19,13 @@ From `pose-extraction-test/`:
 .venv/bin/python -m streamlit run ui_streamlit/app.py
 ```
 
+## Streamlit Cloud
+
+- App file: `pose-extraction-test/ui_streamlit/app.py`
+- Dependencies: root `requirements.txt` installs the UI stack for deployment.
+- Full pipeline (2D/3D) requires extra ML deps (torch, mmpose, mmcv, mmdet, pyyaml, easydict).
+  The UI will disable those stages if missing.
+
 ## MotionBERT checkpoint (one-time)
 
 The 3D overlay requires MotionBERT weights. The app will look for (and reuse):

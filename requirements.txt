@@ -1,0 +1,1 @@
+-r pose-extraction-test/ui_streamlit/requirements-ui.txt

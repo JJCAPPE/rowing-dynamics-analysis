@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 import re
 import shutil
+import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +12,10 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw
+
+REPO_ROOT = Path(__file__).resolve().parents[1]  # pose-extraction-test/
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 try:
     from streamlit_image_coordinates import streamlit_image_coordinates  # type: ignore
@@ -57,6 +63,10 @@ def _sanitize_stem(name: str) -> str:
 def _bgr_to_pil_rgb(frame_bgr: np.ndarray) -> Image.Image:
     rgb = frame_bgr[:, :, ::-1]
     return Image.fromarray(rgb)
+
+
+def _module_available(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
 
 
 @dataclass(frozen=True)
@@ -434,7 +444,13 @@ def main() -> None:
     st.set_page_config(page_title="Rowing Pose UI", layout="wide")
     _init_state()
 
-    repo_root = Path(__file__).resolve().parents[1]  # pose-extraction-test/
+    repo_root = REPO_ROOT
+    mmpose_available = (
+        _module_available("mmpose") and _module_available("mmcv") and _module_available("mmdet")
+    )
+    motionbert_deps_available = (
+        _module_available("torch") and _module_available("yaml") and _module_available("easydict")
+    )
 
     st.title("Rowing Pose — Streamlit UI")
     st.caption("Browser-based annotation → run pipeline → 3D overlay video")
@@ -472,114 +488,145 @@ def main() -> None:
 
         st.divider()
         st.header("Pipeline")
+        enable_2d = st.checkbox(
+            "Run 2D pose (MMPose)", value=mmpose_available, disabled=not mmpose_available
+        )
+        if not mmpose_available:
+            st.info("MMPose not installed. Install mmpose + mmcv + mmdet to enable 2D.")
+
+        enable_3d = st.checkbox(
+            "Run 3D lift (MotionBERT)",
+            value=motionbert_deps_available,
+            disabled=not motionbert_deps_available,
+        )
+        if not motionbert_deps_available:
+            st.info("MotionBERT deps missing. Install torch, pyyaml, easydict to enable 3D.")
+        if enable_3d and not enable_2d:
+            st.warning("3D depends on 2D; disabling 3D.")
+            enable_3d = False
+
         device = st.selectbox("Device", options=["cpu", "cuda"], index=0)
-        mmpose_model = st.text_input("MMPose model", value="human")
+        mmpose_model = st.text_input("MMPose model", value="human", disabled=not enable_2d)
 
-        st.subheader("MotionBERT")
-        motionbert_repo_root = repo_root / "third_party" / "MotionBERT"
-        default_ckpt = (
-            motionbert_repo_root
-            / "checkpoint"
-            / "pose3d"
-            / "FT_MB_lite_MB_ft_h36m_global_lite"
-            / "best_epoch.bin"
-        )
-        default_ckpt_url = (
-            "https://huggingface.co/walterzhu/MotionBERT/resolve/main/"
-            "checkpoint/pose3d/FT_MB_lite_MB_ft_h36m_global_lite/best_epoch.bin"
-        )
-
-        st.write(f"Repo: `{motionbert_repo_root}`")
-
-        # Advanced: custom checkpoint/root (rarely needed)
-        with st.expander("Advanced MotionBERT"):
-            use_custom_ckpt = st.checkbox("Custom checkpoint", value=False)
-            custom_ckpt_path = st.text_input(
-                "Checkpoint path", value="", placeholder="/path/to/best_epoch.bin"
+        motionbert_root = None
+        motionbert_ckpt = None
+        if enable_3d:
+            st.subheader("MotionBERT")
+            motionbert_repo_root = repo_root / "third_party" / "MotionBERT"
+            default_ckpt = (
+                motionbert_repo_root
+                / "checkpoint"
+                / "pose3d"
+                / "FT_MB_lite_MB_ft_h36m_global_lite"
+                / "best_epoch.bin"
             )
-            use_custom_root = st.checkbox("Custom repo root", value=False)
-            custom_root_path = st.text_input(
-                "Repo root", value="", placeholder="/path/to/MotionBERT"
+            default_ckpt_url = (
+                "https://huggingface.co/walterzhu/MotionBERT/resolve/main/"
+                "checkpoint/pose3d/FT_MB_lite_MB_ft_h36m_global_lite/best_epoch.bin"
             )
 
-        # Resolve which checkpoint/root to use.
-        motionbert_root: Optional[Path] = None
-        if use_custom_root and custom_root_path.strip():
-            motionbert_root = Path(custom_root_path).expanduser()
+            st.write(f"Repo: `{motionbert_repo_root}`")
 
-        motionbert_ckpt: Optional[Path] = None
-        if use_custom_ckpt and custom_ckpt_path.strip():
-            motionbert_ckpt = Path(custom_ckpt_path).expanduser()
-        elif default_ckpt.exists():
-            motionbert_ckpt = default_ckpt
+            # Advanced: custom checkpoint/root (rarely needed)
+            with st.expander("Advanced MotionBERT"):
+                use_custom_ckpt = st.checkbox("Custom checkpoint", value=False)
+                custom_ckpt_path = st.text_input(
+                    "Checkpoint path", value="", placeholder="/path/to/best_epoch.bin"
+                )
+                use_custom_root = st.checkbox("Custom repo root", value=False)
+                custom_root_path = st.text_input(
+                    "Repo root", value="", placeholder="/path/to/MotionBERT"
+                )
 
-        if motionbert_ckpt is not None and motionbert_ckpt.exists():
-            st.success("Checkpoint ready")
-        else:
-            st.warning("Checkpoint missing (download once)")
+            # Resolve which checkpoint/root to use.
+            if use_custom_root and custom_root_path.strip():
+                motionbert_root = Path(custom_root_path).expanduser()
 
-            confirm = st.checkbox(
-                "Download MotionBERT 3D weights (~162MB)", value=False, key="mb_download_confirm"
-            )
-            download_btn = st.button("Download checkpoint", disabled=not confirm)
+            if use_custom_ckpt and custom_ckpt_path.strip():
+                motionbert_ckpt = Path(custom_ckpt_path).expanduser()
+            elif default_ckpt.exists():
+                motionbert_ckpt = default_ckpt
 
-            if download_btn:
-                st.session_state["mb_download_error"] = None
-                try:
-                    import urllib.request
+            if motionbert_ckpt is not None and motionbert_ckpt.exists():
+                st.success("Checkpoint ready")
+            else:
+                st.warning("Checkpoint missing (download once)")
 
-                    default_ckpt.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = default_ckpt.with_suffix(default_ckpt.suffix + ".part")
-                    if tmp.exists():
-                        tmp.unlink()
+                confirm = st.checkbox(
+                    "Download MotionBERT 3D weights (~162MB)",
+                    value=False,
+                    key="mb_download_confirm",
+                )
+                download_btn = st.button("Download checkpoint", disabled=not confirm)
 
-                    st.info("Downloading... (saved under third_party/MotionBERT/checkpoint/)")
-                    progress = st.progress(0)
-                    status = st.empty()
-
-                    with urllib.request.urlopen(default_ckpt_url) as resp:
-                        total = resp.headers.get("Content-Length")
-                        total_bytes = int(total) if total is not None else None
-                        done = 0
-                        with tmp.open("wb") as f:
-                            while True:
-                                chunk = resp.read(1024 * 1024)  # 1MB
-                                if not chunk:
-                                    break
-                                f.write(chunk)
-                                done += len(chunk)
-                                if total_bytes and total_bytes > 0:
-                                    pct = int(min(100, (done * 100) // total_bytes))
-                                    progress.progress(pct)
-                                    status.write(
-                                        f"{done/1024/1024:.1f} / {total_bytes/1024/1024:.1f} MB"
-                                    )
-                                else:
-                                    status.write(f"{done/1024/1024:.1f} MB")
-
-                    tmp.replace(default_ckpt)
-                    progress.progress(100)
-                    status.write("Download complete.")
-                    st.rerun()
-                except Exception as e:
-                    st.session_state["mb_download_error"] = f"{type(e).__name__}: {e}"
+                if download_btn:
+                    st.session_state["mb_download_error"] = None
                     try:
-                        if "tmp" in locals() and tmp.exists():
+                        import urllib.request
+
+                        default_ckpt.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = default_ckpt.with_suffix(default_ckpt.suffix + ".part")
+                        if tmp.exists():
                             tmp.unlink()
-                    except Exception:
-                        pass
 
-        if st.session_state.get("mb_download_error"):
-            st.error(st.session_state["mb_download_error"])
+                        st.info("Downloading... (saved under third_party/MotionBERT/checkpoint/)")
+                        progress = st.progress(0)
+                        status = st.empty()
 
-        clip_len = st.number_input("clip_len", min_value=1, max_value=2000, value=243, step=1)
-        flip = st.checkbox("flip augmentation", value=False)
-        rootrel = st.checkbox("root-relative output", value=False)
+                        with urllib.request.urlopen(default_ckpt_url) as resp:
+                            total = resp.headers.get("Content-Length")
+                            total_bytes = int(total) if total is not None else None
+                            done = 0
+                            with tmp.open("wb") as f:
+                                while True:
+                                    chunk = resp.read(1024 * 1024)  # 1MB
+                                    if not chunk:
+                                        break
+                                    f.write(chunk)
+                                    done += len(chunk)
+                                    if total_bytes and total_bytes > 0:
+                                        pct = int(min(100, (done * 100) // total_bytes))
+                                        progress.progress(pct)
+                                        status.write(
+                                            f"{done/1024/1024:.1f} / {total_bytes/1024/1024:.1f} MB"
+                                        )
+                                    else:
+                                        status.write(f"{done/1024/1024:.1f} MB")
+
+                        tmp.replace(default_ckpt)
+                        progress.progress(100)
+                        status.write("Download complete.")
+                        st.rerun()
+                    except Exception as e:
+                        st.session_state["mb_download_error"] = f"{type(e).__name__}: {e}"
+                        try:
+                            if "tmp" in locals() and tmp.exists():
+                                tmp.unlink()
+                        except Exception:
+                            pass
+
+            if st.session_state.get("mb_download_error"):
+                st.error(st.session_state["mb_download_error"])
+        else:
+            st.caption("3D stage disabled; MotionBERT settings hidden.")
+
+        clip_len = st.number_input(
+            "clip_len",
+            min_value=1,
+            max_value=2000,
+            value=243,
+            step=1,
+            disabled=not enable_3d,
+        )
+        flip = st.checkbox("flip augmentation", value=False, disabled=not enable_3d)
+        rootrel = st.checkbox("root-relative output", value=False, disabled=not enable_3d)
 
         st.subheader("3D inset")
-        mirror_3d = st.checkbox("Mirror left/right", value=True)
-        flip_3d = st.checkbox("Flip upside-down", value=False)
-        flip_3d_depth = st.checkbox("Flip depth (towards/away)", value=False)
+        mirror_3d = st.checkbox("Mirror left/right", value=True, disabled=not enable_3d)
+        flip_3d = st.checkbox("Flip upside-down", value=False, disabled=not enable_3d)
+        flip_3d_depth = st.checkbox(
+            "Flip depth (towards/away)", value=False, disabled=not enable_3d
+        )
 
     if src_path is None:
         st.info("Select a video in the sidebar to start.")
@@ -862,11 +909,13 @@ def main() -> None:
             save_run_config(out_dir / "run.json", cfg)
 
             # Pipeline run.
-            if motionbert_ckpt is None or not motionbert_ckpt.exists():
-                raise FileNotFoundError(
-                    "MotionBERT checkpoint not found. Download it in the sidebar."
-                )
-            ckpt = motionbert_ckpt
+            ckpt = None
+            if enable_3d:
+                if motionbert_ckpt is None or not motionbert_ckpt.exists():
+                    raise FileNotFoundError(
+                        "MotionBERT checkpoint not found. Download it in the sidebar."
+                    )
+                ckpt = motionbert_ckpt
 
             with st.spinner("Running pipeline (this can take a while)..."):
                 run_pipeline(
@@ -879,8 +928,8 @@ def main() -> None:
                     clip_len=int(clip_len),
                     flip=bool(flip),
                     rootrel=bool(rootrel),
-                    skip_2d=False,
-                    skip_3d=False,
+                    skip_2d=not enable_2d,
+                    skip_3d=not enable_3d,
                 )
 
             # Generate 3D overlay video.
@@ -890,18 +939,19 @@ def main() -> None:
             angles_csv = out_dir / "angles.csv"
             out_pose3d_mp4 = out_dir / "debug" / "pose3d_overlay.mp4"
 
-            with st.spinner("Rendering 3D overlay video..."):
-                generate_pose3d_overlay_video(
-                    video_path=video_dest_path,
-                    stabilization_npz=stab_npz,
-                    pose2d_npz=pose2d_npz,
-                    pose3d_npz=pose3d_npz,
-                    angles_csv=angles_csv if angles_csv.exists() else None,
-                    out_video_path=out_pose3d_mp4,
-                    mirror_3d=bool(mirror_3d),
-                    flip_3d=bool(flip_3d),
-                    flip_3d_depth=bool(flip_3d_depth),
-                )
+            if enable_3d and pose3d_npz.exists() and pose2d_npz.exists():
+                with st.spinner("Rendering 3D overlay video..."):
+                    generate_pose3d_overlay_video(
+                        video_path=video_dest_path,
+                        stabilization_npz=stab_npz,
+                        pose2d_npz=pose2d_npz,
+                        pose3d_npz=pose3d_npz,
+                        angles_csv=angles_csv if angles_csv.exists() else None,
+                        out_video_path=out_pose3d_mp4,
+                        mirror_3d=bool(mirror_3d),
+                        flip_3d=bool(flip_3d),
+                        flip_3d_depth=bool(flip_3d_depth),
+                    )
 
         except Exception as e:
             st.session_state["last_run_error"] = f"{type(e).__name__}: {e}"
