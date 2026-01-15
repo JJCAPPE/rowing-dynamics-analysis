@@ -24,5 +24,4 @@ pose-extraction-test/source-videos/
 *.mov
 *.MOV
 *.png
-pose-extraction-test/models/mmpose/vitpose_huge_coco_256x192.pth.part
-pose-extraction-test/models/motionbert/FT_MB_lite_MB_ft_h36m_global_lite/best_epoch.bin
+pose-extraction-test/models/*

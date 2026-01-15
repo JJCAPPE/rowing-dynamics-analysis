@@ -165,5 +165,9 @@ def _median_filter_1d(v: np.ndarray, *, window: int) -> np.ndarray:
     for i in range(n):
         lo = max(0, i - half)
         hi = min(n, i + half + 1)
-        out[i] = np.nanmedian(v[lo:hi])
+        window_vals = v[lo:hi]
+        if np.isfinite(window_vals).any():
+            out[i] = np.nanmedian(window_vals)
+        else:
+            out[i] = np.nan
     return out

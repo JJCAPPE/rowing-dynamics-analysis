@@ -124,6 +124,9 @@ def infer_pose2d_mmpose(
     out_npz: Path,
     model: str = "human",
     device: str = "cpu",
+    pose2d_weights: Optional[Path] = None,
+    config_path: Optional[Path] = None,
+    checkpoint_path: Optional[Path] = None,
     debug_video_path: Optional[Path] = None,
 ) -> Pose2DResult:
     """Run MMPose on per-frame crops and emit stabilized full-frame keypoints.
@@ -150,11 +153,31 @@ def infer_pose2d_mmpose(
     if boxes.shape[0] != T:
         raise ValueError(f"crop_boxes.npy length {boxes.shape[0]} does not match T={T}")
 
-    # Init inferencer (device support varies slightly by version).
+    if config_path is not None:
+        config_path = Path(config_path)
+        if not config_path.exists():
+            raise FileNotFoundError(str(config_path))
+    if checkpoint_path is not None:
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(str(checkpoint_path))
+
+    weights_path = checkpoint_path or pose2d_weights
+    weights_str = str(weights_path) if weights_path is not None else None
+    model_id = str(config_path) if config_path is not None else model
+
+    # Init inferencer (device/weights support varies slightly by version).
     try:
-        inferencer = MMPoseInferencer(model, device=device)
+        inferencer = MMPoseInferencer(
+            pose2d=model_id,
+            pose2d_weights=weights_str,
+            device=device,
+        )
     except TypeError:
-        inferencer = MMPoseInferencer(model)
+        try:
+            inferencer = MMPoseInferencer(model_id, device=device)
+        except TypeError:
+            inferencer = MMPoseInferencer(model_id)
 
     joint_names = _inferencer_joint_names(inferencer)
     J = len(joint_names)
@@ -175,12 +198,23 @@ def infer_pose2d_mmpose(
     def infer_one(img_bgr: np.ndarray) -> Dict[str, Any]:
         # Try to avoid visualization unless explicitly requested.
         try:
-            gen = inferencer(img_bgr, show=False, return_vis=False)
+            if weights_str is not None:
+                gen = inferencer(
+                    img_bgr, model=model_id, weights=weights_str, show=False, return_vis=False
+                )
+            else:
+                gen = inferencer(img_bgr, show=False, return_vis=False)
         except TypeError:
             try:
-                gen = inferencer(img_bgr, show=False)
+                if weights_str is not None:
+                    gen = inferencer(img_bgr, model=model_id, weights=weights_str, show=False)
+                else:
+                    gen = inferencer(img_bgr, show=False)
             except TypeError:
-                gen = inferencer(img_bgr)
+                if weights_str is not None:
+                    gen = inferencer(img_bgr, model=model_id, weights=weights_str)
+                else:
+                    gen = inferencer(img_bgr)
         return next(gen)
 
     try:

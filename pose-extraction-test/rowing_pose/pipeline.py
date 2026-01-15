@@ -4,12 +4,20 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from .model_assets import (
+    DEFAULT_MOTIONBERT_MODEL,
+    DEFAULT_POSE2D_MODEL,
+    ensure_asset,
+    get_motionbert_model,
+    get_pose2d_model,
+)
+
 
 def run_pipeline(
     video_path: Path,
     out_dir: Path,
     device: str = "cpu",
-    mmpose_model: str = "human",
+    mmpose_model: str = DEFAULT_POSE2D_MODEL,
     mmpose_weights: Optional[Path] = None,
     motionbert_root: Optional[Path] = None,
     motionbert_ckpt: Optional[Path] = None,
@@ -19,6 +27,9 @@ def run_pipeline(
     rootrel: bool = False,
     skip_2d: bool = False,
     skip_3d: bool = False,
+    mmpose_config: Optional[Path] = None,
+    mmpose_checkpoint: Optional[Path] = None,
+    motionbert_model: str = DEFAULT_MOTIONBERT_MODEL,
 ) -> None:
     """End-to-end pipeline orchestrator.
 
@@ -84,6 +95,24 @@ def run_pipeline(
     if not skip_2d and not pose2d_npz.exists():
         from .pose2d_mmpose import infer_pose2d_mmpose
 
+        pose2d_config = mmpose_config
+        pose2d_checkpoint = mmpose_checkpoint or mmpose_weights
+        if pose2d_config is None and pose2d_checkpoint is None:
+            spec = get_pose2d_model(mmpose_model)
+            if spec is not None and spec.config is not None and spec.checkpoint is not None:
+                pose2d_config = ensure_asset(
+                    spec.config.path,
+                    spec.config.url,
+                    expected_size=spec.config.size_bytes,
+                    sha256=spec.config.sha256,
+                )
+                pose2d_checkpoint = ensure_asset(
+                    spec.checkpoint.path,
+                    spec.checkpoint.url,
+                    expected_size=spec.checkpoint.size_bytes,
+                    sha256=spec.checkpoint.sha256,
+                )
+
         infer_pose2d_mmpose(
             video_path=video_path,
             stabilization_npz=stab_npz,
@@ -92,6 +121,8 @@ def run_pipeline(
             model=mmpose_model,
             device=device,
             pose2d_weights=mmpose_weights,
+            config_path=pose2d_config,
+            checkpoint_path=pose2d_checkpoint,
             debug_video_path=pose2d_mp4,
         )
 
@@ -117,9 +148,11 @@ def run_pipeline(
                 pose2d_npz,
                 J2d_px=J2d_px,
                 conf=pose2d_conf,
-                joint_names=np.array(joint_names_2d, dtype=str)
-                if joint_names_2d is not None
-                else np.array([], dtype=str),
+                joint_names=(
+                    np.array(joint_names_2d, dtype=str)
+                    if joint_names_2d is not None
+                    else np.array([], dtype=str)
+                ),
                 fps=float(pose2d_fps) if pose2d_fps is not None else 0.0,
             )
 
@@ -130,9 +163,29 @@ def run_pipeline(
     alpha_scale = None
     joint_names_3d = None
 
+    resolved_motionbert_ckpt = motionbert_ckpt
+    resolved_motionbert_config = motionbert_config
+    if not skip_3d and (resolved_motionbert_ckpt is None or resolved_motionbert_config is None):
+        spec = get_motionbert_model(motionbert_model)
+        if spec is not None:
+            if resolved_motionbert_config is None:
+                resolved_motionbert_config = spec.config_path
+            if resolved_motionbert_config is not None and not resolved_motionbert_config.exists():
+                raise FileNotFoundError(
+                    f"MotionBERT config not found at {resolved_motionbert_config}. "
+                    "Ensure the MotionBERT submodule is available."
+                )
+            if resolved_motionbert_ckpt is None:
+                resolved_motionbert_ckpt = ensure_asset(
+                    spec.checkpoint.path,
+                    spec.checkpoint.url,
+                    expected_size=spec.checkpoint.size_bytes,
+                    sha256=spec.checkpoint.sha256,
+                )
+
     if (
         not skip_3d
-        and motionbert_ckpt is not None
+        and resolved_motionbert_ckpt is not None
         and J2d_px is not None
         and joint_names_2d is not None
         and not pose3d_npz.exists()
@@ -163,9 +216,9 @@ def run_pipeline(
         J3d_raw = lift_pose3d_motionbert(
             mb_in.X_h36m17,
             motionbert_root=motionbert_root,
-            checkpoint_path=motionbert_ckpt,
+            checkpoint_path=resolved_motionbert_ckpt,
             device=device,
-            config_path=motionbert_config,
+            config_path=resolved_motionbert_config,
             clip_len=clip_len,
             flip=flip,
             rootrel=rootrel,
@@ -195,7 +248,9 @@ def run_pipeline(
             pose3d_npz,
             J3d_raw=J3d_raw,
             J3d_m=J3d_m if J3d_m is not None else np.array([], dtype=np.float32),
-            alpha_scale=np.array(alpha_scale if alpha_scale is not None else np.nan, dtype=np.float32),
+            alpha_scale=np.array(
+                alpha_scale if alpha_scale is not None else np.nan, dtype=np.float32
+            ),
             joint_names=np.array(joint_names_3d, dtype=str),
         )
 
@@ -458,4 +513,3 @@ def render_angles_overlay_video(
             out = draw_text_panel(out, hud_lines, origin_xy=(10, 20))
 
             vw.write(out)
-

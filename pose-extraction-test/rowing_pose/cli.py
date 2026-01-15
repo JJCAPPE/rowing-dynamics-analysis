@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+from .model_assets import DEFAULT_MOTIONBERT_MODEL, DEFAULT_POSE2D_MODEL
 
 def _path(p: str) -> Path:
     return Path(p).expanduser()
@@ -27,9 +28,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--video", required=True, type=_path, help="Path to input video")
     p_run.add_argument("--out", required=True, type=_path, help="Output directory for artifacts")
     p_run.add_argument("--device", default="cpu", help="Torch device for inference (cpu/cuda)")
-    p_run.add_argument("--mmpose-model", default="human", help="MMPose inferencer alias/config")
+    p_run.add_argument(
+        "--mmpose-model",
+        default=DEFAULT_POSE2D_MODEL,
+        help="MMPose inferencer alias or preset id (default: vitpose_high)",
+    )
+    p_run.add_argument(
+        "--mmpose-config",
+        type=_path,
+        default=None,
+        help="Path to MMPose config (overrides preset/alias)",
+    )
+    p_run.add_argument(
+        "--mmpose-ckpt",
+        type=_path,
+        default=None,
+        help="Path to MMPose checkpoint (overrides preset/alias)",
+    )
+    p_run.add_argument(
+        "--motionbert-model",
+        default=DEFAULT_MOTIONBERT_MODEL,
+        help="MotionBERT preset id (default: motionbert_high)",
+    )
     p_run.add_argument("--motionbert-root", type=_path, default=None, help="Path to MotionBERT repo")
     p_run.add_argument("--motionbert-ckpt", type=_path, default=None, help="Path to MotionBERT checkpoint")
+    p_run.add_argument(
+        "--motionbert-config", type=_path, default=None, help="Path to MotionBERT config YAML"
+    )
     p_run.add_argument("--clip-len", type=int, default=243, help="MotionBERT clip length (default: 243)")
     p_run.add_argument("--flip", action="store_true", help="Enable MotionBERT flip augmentation")
     p_run.add_argument("--rootrel", action="store_true", help="Enable MotionBERT root-relative output")
@@ -60,8 +85,12 @@ def cmd_run(
     out_dir: Path,
     device: str,
     mmpose_model: str,
+    mmpose_config: Optional[Path],
+    mmpose_ckpt: Optional[Path],
+    motionbert_model: str,
     motionbert_root: Optional[Path],
     motionbert_ckpt: Optional[Path],
+    motionbert_config: Optional[Path],
     clip_len: int,
     flip: bool,
     rootrel: bool,
@@ -75,8 +104,12 @@ def cmd_run(
         out_dir=out_dir,
         device=device,
         mmpose_model=mmpose_model,
+        mmpose_config=mmpose_config,
+        mmpose_checkpoint=mmpose_ckpt,
+        motionbert_model=motionbert_model,
         motionbert_root=motionbert_root,
         motionbert_ckpt=motionbert_ckpt,
+        motionbert_config=motionbert_config,
         clip_len=clip_len,
         flip=flip,
         rootrel=rootrel,
@@ -110,8 +143,12 @@ def main(argv: Optional[list[str]] = None) -> None:
             out_dir=args.out,
             device=args.device,
             mmpose_model=args.mmpose_model,
+            mmpose_config=args.mmpose_config,
+            mmpose_ckpt=args.mmpose_ckpt,
+            motionbert_model=args.motionbert_model,
             motionbert_root=args.motionbert_root,
             motionbert_ckpt=args.motionbert_ckpt,
+            motionbert_config=args.motionbert_config,
             clip_len=args.clip_len,
             flip=args.flip,
             rootrel=args.rootrel,
