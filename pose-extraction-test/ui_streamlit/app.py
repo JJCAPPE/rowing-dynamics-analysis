@@ -663,7 +663,7 @@ def main() -> None:
             if not enabled:
                 return True
             if spec.asset.path.exists():
-                st.success(f"{spec.label}: ready")
+                st.caption(f"{spec.label}: ready")
                 return True
             if download_errors.get(spec.key):
                 st.error(f"{spec.label}: {download_errors[spec.key]}")

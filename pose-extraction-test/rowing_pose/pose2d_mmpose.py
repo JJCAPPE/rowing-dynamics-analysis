@@ -117,6 +117,31 @@ def _inferencer_joint_names(inferencer: Any) -> Tuple[str, ...]:
     return COCO17_JOINT_NAMES
 
 
+def _allow_torch_numpy_globals() -> None:
+    """Allow numpy globals for PyTorch weights-only loading (trusted checkpoints)."""
+    try:
+        import os
+        os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+        import torch
+    except Exception:
+        return
+    add_safe_globals = getattr(torch.serialization, "add_safe_globals", None)
+    if add_safe_globals is None:
+        return
+    try:
+        allow = [
+            (np.core.multiarray._reconstruct, "numpy.core.multiarray._reconstruct"),
+            np.ndarray,
+            np.dtype,
+        ]
+        scalar = getattr(np.core.multiarray, "scalar", None)
+        if scalar is not None:
+            allow.append((scalar, "numpy.core.multiarray.scalar"))
+        add_safe_globals(allow)
+    except Exception:
+        return
+
+
 def infer_pose2d_mmpose(
     video_path: Path,
     stabilization_npz: Path,
@@ -134,6 +159,7 @@ def infer_pose2d_mmpose(
     Implements Stage E in `planning.MD`.
     """
 
+    _allow_torch_numpy_globals()
     try:
         from mmpose.apis import MMPoseInferencer  # type: ignore
     except Exception as e:  # pragma: no cover
@@ -270,4 +296,3 @@ def infer_pose2d_mmpose(
         fps=float(fps),
     )
     return Pose2DResult(J2d_px=J2d_px, joint_names=joint_names, fps=float(fps))
-

@@ -83,7 +83,13 @@ def lift_pose3d_motionbert(
     model_pos: nn.Module = model_backbone
     model_pos.to(device)
 
-    ckpt = torch.load(str(checkpoint_path), map_location="cpu")
+    # MotionBERT checkpoints may require full unpickling (PyTorch 2.6 defaults
+    # weights_only=True). These are trusted local assets in this pipeline.
+    try:
+        ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
+    except TypeError:
+        # Older PyTorch versions do not support weights_only.
+        ckpt = torch.load(str(checkpoint_path), map_location="cpu")
     if "model_pos" not in ckpt:
         raise KeyError("Checkpoint does not contain key 'model_pos' (unexpected format).")
 
@@ -143,4 +149,3 @@ def lift_pose3d_motionbert(
     out[mask] /= wsum[mask, None, None]
     out[~mask] = np.nan
     return out
-

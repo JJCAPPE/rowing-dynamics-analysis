@@ -95,17 +95,13 @@ def run_pipeline(
     if not skip_2d and not pose2d_npz.exists():
         from .pose2d_mmpose import infer_pose2d_mmpose
 
+        pose2d_model_id = mmpose_model
         pose2d_config = mmpose_config
         pose2d_checkpoint = mmpose_checkpoint or mmpose_weights
-        if pose2d_config is None and pose2d_checkpoint is None:
-            spec = get_pose2d_model(mmpose_model)
-            if spec is not None and spec.config is not None and spec.checkpoint is not None:
-                pose2d_config = ensure_asset(
-                    spec.config.path,
-                    spec.config.url,
-                    expected_size=spec.config.size_bytes,
-                    sha256=spec.config.sha256,
-                )
+        spec = get_pose2d_model(mmpose_model)
+        if spec is not None:
+            pose2d_model_id = spec.model_id
+            if pose2d_checkpoint is None and spec.checkpoint is not None:
                 pose2d_checkpoint = ensure_asset(
                     spec.checkpoint.path,
                     spec.checkpoint.url,
@@ -118,7 +114,7 @@ def run_pipeline(
             stabilization_npz=stab_npz,
             crop_boxes_npy=crop_npy,
             out_npz=pose2d_npz,
-            model=mmpose_model,
+            model=pose2d_model_id,
             device=device,
             pose2d_weights=mmpose_weights,
             config_path=pose2d_config,
