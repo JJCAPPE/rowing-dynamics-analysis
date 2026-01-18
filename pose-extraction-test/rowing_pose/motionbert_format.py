@@ -10,6 +10,19 @@ from .skeletons import H36M17_JOINT_NAMES, coco17_to_h36m17
 
 MotionBERTNormMode = Literal["pixel", "bbox"]
 
+def _sanitize_keypoints_xyc(keypoints_xyc: np.ndarray) -> np.ndarray:
+    """Replace non-finite xy/conf with zeros and set conf=0 for those joints."""
+    k = np.asarray(keypoints_xyc, dtype=np.float32).copy()
+    if k.ndim != 3 or k.shape[2] < 3:
+        raise ValueError(f"Expected keypoints shape (T,J,3+). Got {k.shape}")
+    invalid_xy = ~np.isfinite(k[:, :, 0:2]).all(axis=2)
+    invalid_conf = ~np.isfinite(k[:, :, 2])
+    invalid = invalid_xy | invalid_conf
+    if np.any(invalid):
+        k[invalid, 0:2] = 0.0
+        k[invalid, 2] = 0.0
+    return k
+
 
 def normalize_by_image_size(X_px: np.ndarray, width: int, height: int) -> np.ndarray:
     """Normalize (x,y) pixel coordinates by image center and min(w,h)/2.
@@ -65,7 +78,7 @@ def prepare_motionbert_input_from_coco(
 ) -> MotionBERTInput:
     """Stage F: COCO-17 (px) → H36M-17 → MotionBERT input coords."""
 
-    J2d_coco_px = np.asarray(J2d_coco_px, dtype=np.float32)
+    J2d_coco_px = _sanitize_keypoints_xyc(J2d_coco_px)
     if J2d_coco_px.ndim != 3 or J2d_coco_px.shape[1:] != (17, 3):
         raise ValueError(f"Expected COCO input shape (T,17,3). Got {J2d_coco_px.shape}")
 
