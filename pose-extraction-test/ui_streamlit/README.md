@@ -25,6 +25,16 @@ From `pose-extraction-test/`:
 - Dependencies: root `requirements.txt` installs the UI stack for deployment.
 - Full pipeline (2D/3D) requires extra ML deps (torch, mmpose, mmcv, mmdet, pyyaml, easydict).
   The UI will disable those stages if missing.
+- Optional strict ID tracking uses extra deps: `pip install -e ".[tracking]"`.
+
+## Annotation notes
+
+The UI now collects:
+
+- **Anchor point** (reference)
+- **Rigger bbox** (tight box around oarlock hardware, used for stabilization)
+- **Athlete bbox** (initial crop)
+- **Scale points** + known distance
 
 ## MotionBERT checkpoint (one-time)
 
@@ -45,4 +55,6 @@ Including:
 - the same artifacts the CLI produces (`run.json`, `pose2d.npz`, `pose3d.npz`, `angles.csv`, etc.)
 - plus `debug/source_video.<ext>`
 - plus `debug/pose3d_overlay.mp4` (final UI-rendered 3D overlay)
+- plus `debug/rigger_track.mp4` (if rigger bbox provided)
+- plus `debug/person_track.mp4` (if strict ID tracking enabled)
 

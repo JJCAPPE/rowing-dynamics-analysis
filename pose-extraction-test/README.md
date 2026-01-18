@@ -25,6 +25,7 @@ pip install -e ".[dev]"
 >
 > - `mmpose/mmcv/mmdet` can be heavy and may require platform-specific wheels.
 > - MotionBERT is not on PyPI; the pipeline supports using a local MotionBERT checkout (see CLI flags).
+> - Optional strict ID tracking uses extra deps: `pip install -e ".[tracking]"`.
 
 ## CLI
 
@@ -33,6 +34,9 @@ pip install -e ".[dev]"
 ```bash
 python -m rowing_pose.cli annotate --video trimmed.mov --out out/
 ```
+
+The annotator asks for a **rigger bbox** (tight box around oarlock hardware) and an
+**athlete bbox**. The rigger box is used for stabilization and unambiguous tracking.
 
 ### Run pipeline
 
@@ -49,14 +53,18 @@ python -m rowing_pose.cli debug --run out/run.json
 ## Outputs (in `--out`)
 
 - `run.json`
+- `rigger_track.npz` (if rigger bbox provided)
 - `stabilization.npz`
 - `crop_boxes.npy`
+- `person_track.npz` (optional, if strict ID tracking enabled)
 - `pose2d.npz`
 - `pose3d.npz` (optional)
 - `angles.csv`
 - `metrics.json`
 - `debug/` videos:
+  - `rigger_track.mp4` (if rigger bbox provided)
   - `stabilized.mp4`
   - `crop_boxes.mp4`
+  - `person_track.mp4` (optional, if strict ID tracking enabled)
   - `pose2d_overlay.mp4`
   - `angles_overlay.mp4` (keypoints + computed angles overlaid on the original frames)

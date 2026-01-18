@@ -46,6 +46,10 @@ dev = [
     "black>=22.0.0",
     "ruff>=0.0.260",
 ]
+tracking = [
+    "ultralytics>=8.0.0",
+    "deep_sort_realtime>=1.3.2",
+]
 
 [project.scripts]
 rowing-pose = "rowing_pose.cli:main"

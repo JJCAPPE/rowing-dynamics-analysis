@@ -11,6 +11,7 @@ from .model_assets import (
     get_motionbert_model,
     get_pose2d_model,
 )
+from .progress import ProgressReporter, get_progress
 
 
 def run_pipeline(
@@ -30,6 +31,8 @@ def run_pipeline(
     mmpose_config: Optional[Path] = None,
     mmpose_checkpoint: Optional[Path] = None,
     motionbert_model: str = DEFAULT_MOTIONBERT_MODEL,
+    pose_tracking_smooth_alpha: Optional[float] = None,
+    progress: Optional[ProgressReporter] = None,
 ) -> None:
     """End-to-end pipeline orchestrator.
 
@@ -39,6 +42,7 @@ def run_pipeline(
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    prog = get_progress(progress)
 
     import numpy as np
 
@@ -55,38 +59,113 @@ def run_pipeline(
         annotate_video(video_path=video_path, out_dir=out_dir, reference_frame_idx=0)
     cfg = load_run_config(run_json)
     pose_smoothing = pose_smoothing_params_from_dict(cfg.params.get("pose_smoothing"))
+    pose_tracking = cfg.params.get("pose_tracking", {})
+    if pose_tracking_smooth_alpha is not None:
+        smooth_alpha = float(pose_tracking_smooth_alpha)
+        smooth_alpha = float(max(0.0, min(0.999, smooth_alpha)))
+        pose_tracking = dict(pose_tracking) if isinstance(pose_tracking, dict) else {}
+        pose_tracking["smooth_alpha"] = smooth_alpha
 
-    # Stage B: stabilization
-    from .stabilize import compute_stabilization
+    rigger_bbox = getattr(cfg.annotations, "rigger_bbox_px", None)
+
+    # Stage B: rigger tracking (optional) + stabilization
+    from .stabilize import compute_stabilization, compute_stabilization_from_rigger_track
 
     stab_npz = out_dir / "stabilization.npz"
     debug_dir = out_dir / "debug"
     debug_dir.mkdir(parents=True, exist_ok=True)
     stabilized_mp4 = debug_dir / "stabilized.mp4"
-    if not stab_npz.exists():
-        compute_stabilization(
-            video_path=video_path,
-            anchor0_px=cfg.annotations.anchor_px,
-            reference_frame_idx=cfg.reference_frame_idx,
-            out_npz=stab_npz,
-            debug_video_path=stabilized_mp4,
-        )
+    rigger_npz = out_dir / "rigger_track.npz"
+    rigger_debug_mp4 = debug_dir / "rigger_track.mp4"
+    use_rigger_track = False
+    if rigger_bbox is not None:
+        if not rigger_npz.exists():
+            from .rig_tracker import track_rigger_bbox
 
-    # Stage D: crop tracking
+            track_rigger_bbox(
+                video_path=video_path,
+                bbox0_px=rigger_bbox,
+                reference_frame_idx=cfg.reference_frame_idx,
+                out_npz=rigger_npz,
+                debug_video_path=rigger_debug_mp4,
+                ema_alpha=float(cfg.params.get("stabilization", {}).get("ema_alpha", 0.8)),
+                min_points=int(cfg.params.get("stabilization", {}).get("min_points", 10)),
+                progress=prog,
+            )
+        try:
+            rigger_status = np.load(rigger_npz)["status"].astype(np.float32)
+            use_rigger_track = float(np.nanmean(rigger_status)) >= 0.5
+        except Exception:
+            use_rigger_track = False
+    if not stab_npz.exists():
+        if use_rigger_track and rigger_bbox is not None:
+            rx, ry, rw, rh = [float(v) for v in rigger_bbox]
+            rigger_center = (rx + rw / 2.0, ry + rh / 2.0)
+            compute_stabilization_from_rigger_track(
+                video_path=video_path,
+                rigger_track_npz=rigger_npz,
+                anchor0_px=rigger_center,
+                reference_frame_idx=cfg.reference_frame_idx,
+                out_npz=stab_npz,
+                debug_video_path=stabilized_mp4,
+                progress=prog,
+            )
+        else:
+            compute_stabilization(
+                video_path=video_path,
+                anchor0_px=cfg.annotations.anchor_px,
+                reference_frame_idx=cfg.reference_frame_idx,
+                out_npz=stab_npz,
+                debug_video_path=stabilized_mp4,
+                progress=prog,
+            )
+
+    # Stage D: crop tracking (optionally overridden by strict ID tracking)
     from .crop_track import track_crop_boxes
 
     crop_npy = out_dir / "crop_boxes.npy"
     crop_mp4 = debug_dir / "crop_boxes.mp4"
-    if not crop_npy.exists():
+    strict_id = bool(pose_tracking.get("strict_id", False))
+    if strict_id:
+        person_track_npz = out_dir / "person_track.npz"
+        if not person_track_npz.exists():
+            from .person_tracking import track_person_deepsort
+
+            track_person_deepsort(
+                video_path=video_path,
+                stabilization_npz=stab_npz,
+                bbox0_px=cfg.annotations.bbox_px,
+                out_npz=person_track_npz,
+                reference_frame_idx=cfg.reference_frame_idx,
+                device=device,
+                model_name=str(pose_tracking.get("deepsort_model", "yolov8n.pt")),
+                min_conf=float(pose_tracking.get("deepsort_min_conf", 0.25)),
+                debug_video_path=debug_dir / "person_track.mp4",
+                progress=prog,
+            )
+        if not crop_npy.exists():
+            dtrack = np.load(person_track_npz)
+            boxes = dtrack["boxes_xywh"].astype(np.float32)
+            pad = float(pose_tracking.get("deepsort_padding", 0.2))
+            if pad > 0:
+                boxes[:, 0] -= boxes[:, 2] * pad / 2.0
+                boxes[:, 1] -= boxes[:, 3] * pad / 2.0
+                boxes[:, 2] *= 1.0 + pad
+                boxes[:, 3] *= 1.0 + pad
+            np.save(crop_npy, boxes)
+    elif not crop_npy.exists():
         track_crop_boxes(
             video_path=video_path,
             stabilization_npz=stab_npz,
             bbox0_px=cfg.annotations.bbox_px,
             out_npy=crop_npy,
+            rigger_track_npz=rigger_npz if use_rigger_track else None,
+            rigger_bbox0_px=rigger_bbox if use_rigger_track else None,
             debug_video_path=crop_mp4,
             padding=float(cfg.params.get("crop", {}).get("padding", 0.2)),
             ema_alpha=float(cfg.params.get("crop", {}).get("ema_alpha", 0.9)),
             min_points=int(cfg.params.get("crop", {}).get("min_points", 10)),
+            progress=prog,
         )
 
     # Stage E: 2D pose
@@ -120,6 +199,8 @@ def run_pipeline(
             config_path=pose2d_config,
             checkpoint_path=pose2d_checkpoint,
             debug_video_path=pose2d_mp4,
+            pose_tracking=pose_tracking,
+            progress=prog,
         )
 
     # Load 2D (for 3D + metrics).
@@ -218,6 +299,7 @@ def run_pipeline(
             clip_len=clip_len,
             flip=flip,
             rootrel=rootrel,
+            progress=prog,
         )
         joint_names_3d = H36M17_JOINT_NAMES
 
@@ -275,6 +357,7 @@ def run_pipeline(
 
         from .kinematics import compute_basic_angles_h36m17
 
+        angles_stage = prog.start("Stage I: angles + metrics", total=1, unit="step")
         ang = compute_basic_angles_h36m17(J_use, joint_names_use)
         deg = np.degrees(ang.values_rad)
         df = pd.DataFrame(deg, columns=[f"{n}_deg" for n in ang.names])
@@ -309,6 +392,8 @@ def run_pipeline(
         with metrics_json.open("w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2, sort_keys=True)
             f.write("\n")
+        angles_stage.update(1)
+        angles_stage.close()
 
         # Stage J (viz): overlay joints + angles onto the original video.
         debug_dir = out_dir / "debug"
@@ -321,6 +406,7 @@ def run_pipeline(
                 pose2d_npz=pose2d_npz,
                 angles_csv=angles_csv,
                 out_video_path=angles_overlay_mp4,
+                progress=prog,
             )
         except Exception:
             # Keep pipeline robust; overlays are best-effort.
@@ -411,6 +497,7 @@ def render_angles_overlay_video(
     pose2d_npz: Path,
     angles_csv: Path,
     out_video_path: Path,
+    progress: Optional[ProgressReporter] = None,
 ) -> None:
     """Render an overlay video on *original* frames showing joints and computed angles."""
 
@@ -462,9 +549,14 @@ def render_angles_overlay_video(
     angle_cols = [c for c in angle_cols if c in df.columns]
 
     fps = float(meta.fps) if meta.fps > 0 else float(stab["fps"]) if "fps" in stab.files else 30.0
+    prog = get_progress(progress)
+    total = int(min(meta.frame_count, J2d_stab.shape[0], A.shape[0]))
+    stage = prog.start("Stage J: angles overlay", total=total, unit="frame")
     with VideoWriter(out_video_path, fps=fps, frame_size=(meta.width, meta.height)) as vw:
         for idx, frame_bgr in iter_frames(video_path):
             if idx >= J2d_stab.shape[0]:
+                break
+            if idx >= A.shape[0]:
                 break
 
             invA = cv2.invertAffineTransform(A[idx])
@@ -509,3 +601,5 @@ def render_angles_overlay_video(
             out = draw_text_panel(out, hud_lines, origin_xy=(10, 20))
 
             vw.write(out)
+            stage.update(1)
+    stage.close()

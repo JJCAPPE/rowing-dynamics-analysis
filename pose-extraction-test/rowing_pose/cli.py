@@ -60,6 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--rootrel", action="store_true", help="Enable MotionBERT root-relative output")
     p_run.add_argument("--skip-2d", action="store_true", help="Skip 2D pose stage (use existing pose2d.npz)")
     p_run.add_argument("--skip-3d", action="store_true", help="Skip 3D lift stage")
+    p_run.add_argument(
+        "--pose-tracking-smooth-alpha",
+        type=float,
+        default=None,
+        help="EMA smoothing alpha for 2D keypoints (0-0.1 recommended)",
+    )
 
     p_dbg = sub.add_parser("debug", help="Regenerate debug overlays from saved artifacts")
     p_dbg.add_argument("--run", required=True, type=_path, help="Path to run.json")
@@ -96,8 +102,10 @@ def cmd_run(
     rootrel: bool,
     skip_2d: bool,
     skip_3d: bool,
+    pose_tracking_smooth_alpha: Optional[float],
 ) -> None:
     from .pipeline import run_pipeline
+    from .progress import TqdmProgress
 
     run_pipeline(
         video_path=video,
@@ -115,6 +123,8 @@ def cmd_run(
         rootrel=rootrel,
         skip_2d=skip_2d,
         skip_3d=skip_3d,
+        pose_tracking_smooth_alpha=pose_tracking_smooth_alpha,
+        progress=TqdmProgress(),
     )
 
 
@@ -154,6 +164,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             rootrel=args.rootrel,
             skip_2d=args.skip_2d,
             skip_3d=args.skip_3d,
+            pose_tracking_smooth_alpha=args.pose_tracking_smooth_alpha,
         )
         return
 

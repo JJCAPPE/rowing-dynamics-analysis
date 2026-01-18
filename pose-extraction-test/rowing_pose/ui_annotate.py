@@ -55,15 +55,16 @@ def _pick_point(frame_bgr: np.ndarray, window: str, prompt: str) -> Tuple[float,
             raise KeyboardInterrupt("Annotation cancelled.")
 
 
-def _select_bbox(frame_bgr: np.ndarray, window: str) -> Tuple[float, float, float, float]:
+def _select_bbox(
+    frame_bgr: np.ndarray, window: str, prompt_lines: Optional[list[str]] = None
+) -> Tuple[float, float, float, float]:
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
-    disp = _draw_help(
-        frame_bgr,
-        [
+    if prompt_lines is None:
+        prompt_lines = [
             "Draw a loose athlete bbox, then press ENTER/SPACE to confirm.",
             "Press C to cancel selection.",
-        ],
-    )
+        ]
+    disp = _draw_help(frame_bgr, prompt_lines)
     x, y, w, h = cv2.selectROI(window, disp, fromCenter=False, showCrosshair=True)
     cv2.destroyWindow(window)
     if w <= 1 or h <= 1:
@@ -94,6 +95,7 @@ def annotate_video(video_path: Path, out_dir: Path, reference_frame_idx: int = 0
 
     Creates/overwrites `out_dir/run.json` containing:
     - boat anchor point
+    - rigger bbox (for stabilization)
     - initial athlete crop bbox
     - 2-point boat scale + known distance
 
@@ -106,7 +108,15 @@ def annotate_video(video_path: Path, out_dir: Path, reference_frame_idx: int = 0
 
     try:
         anchor = _pick_point(frame0, "Annotate: anchor", "Click boat anchor point (e.g., oarlock).")
-        bbox = _select_bbox(frame0, "Annotate: bbox")
+        rigger_bbox = _select_bbox(
+            frame0,
+            "Annotate: rigger bbox",
+            [
+                "Draw a tight bbox around the rigger/oarlock hardware.",
+                "Press ENTER/SPACE to confirm. Press C to cancel.",
+            ],
+        )
+        bbox = _select_bbox(frame0, "Annotate: athlete bbox")
         s0 = _pick_point(frame0, "Annotate: scale #1", "Click boat scale point #1.")
         s1 = _pick_point(frame0, "Annotate: scale #2", "Click boat scale point #2.")
     finally:
@@ -128,6 +138,7 @@ def annotate_video(video_path: Path, out_dir: Path, reference_frame_idx: int = 0
         annotations=Annotations(
             anchor_px=anchor,
             bbox_px=bbox,
+            rigger_bbox_px=rigger_bbox,
             scale_points_px=(s0, s1),
             scale_distance_m=float(dist_m),
         ),
@@ -139,6 +150,8 @@ def annotate_video(video_path: Path, out_dir: Path, reference_frame_idx: int = 0
                 "lk_max_corners": 1,
                 "template_half_size": 16,
                 "template_search_radius": 50,
+                "ema_alpha": 0.8,
+                "min_points": 10,
             },
             "crop": {
                 "padding": 0.2,

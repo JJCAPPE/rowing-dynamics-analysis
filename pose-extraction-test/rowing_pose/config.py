@@ -47,24 +47,33 @@ class Annotations:
     bbox_px: BBoxXYWH  # (x, y, w, h) in reference frame
     scale_points_px: Tuple[Point2D, Point2D]
     scale_distance_m: float
+    rigger_bbox_px: Optional[BBoxXYWH] = None
 
     def to_dict(self) -> Dict[str, Any]:
         (sx0, sy0), (sx1, sy1) = self.scale_points_px
-        return {
+        out: Dict[str, Any] = {
             "anchor_px": [float(self.anchor_px[0]), float(self.anchor_px[1])],
             "bbox_px": [float(v) for v in self.bbox_px],
             "scale_points_px": [[float(sx0), float(sy0)], [float(sx1), float(sy1)]],
             "scale_distance_m": float(self.scale_distance_m),
         }
+        if self.rigger_bbox_px is not None:
+            out["rigger_bbox_px"] = [float(v) for v in self.rigger_bbox_px]
+        return out
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Annotations":
         a = d["anchor_px"]
         b = d["bbox_px"]
+        r = d.get("rigger_bbox_px")
         s0, s1 = d["scale_points_px"]
+        rigger_bbox = None
+        if r is not None:
+            rigger_bbox = (float(r[0]), float(r[1]), float(r[2]), float(r[3]))
         return Annotations(
             anchor_px=(float(a[0]), float(a[1])),
             bbox_px=(float(b[0]), float(b[1]), float(b[2]), float(b[3])),
+            rigger_bbox_px=rigger_bbox,
             scale_points_px=((float(s0[0]), float(s0[1])), (float(s1[0]), float(s1[1]))),
             scale_distance_m=float(d["scale_distance_m"]),
         )
@@ -121,6 +130,25 @@ POSE_SMOOTHING_DEFAULTS: Dict[str, Any] = {
     "median_window": 5,
 }
 
+POSE_TRACKING_DEFAULTS: Dict[str, Any] = {
+    "enabled": True,
+    "continuity_weight": 4.0,
+    "appearance_weight": 2.0,
+    "iou_weight": 0.5,
+    "conf_weight": 0.3,
+    "max_jump_factor": 0.4,
+    "motion_sigma_factor": 0.2,
+    "smooth_alpha": 0.05,
+    "appearance_bins": 16,
+    "appearance_update_alpha": 0.1,
+    "min_conf": 0.2,
+    "strict_id": False,
+    "deepsort_model": "yolov8n.pt",
+    "deepsort_min_conf": 0.25,
+    "deepsort_iou_threshold": 0.3,
+    "deepsort_padding": 0.2,
+}
+
 
 def apply_pose_smoothing_defaults(params: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(params) if params is not None else {}
@@ -129,6 +157,16 @@ def apply_pose_smoothing_defaults(params: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(existing, dict):
         merged.update(existing)
     out["pose_smoothing"] = merged
+    return out
+
+
+def apply_pose_tracking_defaults(params: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(params) if params is not None else {}
+    merged = dict(POSE_TRACKING_DEFAULTS)
+    existing = out.get("pose_tracking")
+    if isinstance(existing, dict):
+        merged.update(existing)
+    out["pose_tracking"] = merged
     return out
 
 
@@ -156,5 +194,5 @@ def load_run_config(path: str | Path) -> RunConfig:
         d = json.load(f)
     cfg = RunConfig.from_dict(d)
     cfg.params = apply_pose_smoothing_defaults(cfg.params)
+    cfg.params = apply_pose_tracking_defaults(cfg.params)
     return cfg
-

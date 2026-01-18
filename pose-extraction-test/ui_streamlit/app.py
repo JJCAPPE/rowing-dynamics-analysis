@@ -37,6 +37,7 @@ from rowing_pose.config import (
 from rowing_pose.io_video import VideoWriter, get_video_metadata, iter_frames, read_frame
 from rowing_pose.model_assets import MODEL_PRESETS, MOTIONBERT_REPO, AssetSpec, ensure_asset
 from rowing_pose.pipeline import run_pipeline
+from rowing_pose.progress import ProgressReporter, get_progress
 from rowing_pose.pose2d_mmpose import COCO17_EDGES
 from rowing_pose.viz import apply_affine_to_keypoints_xyc, draw_keypoints, draw_text_panel
 
@@ -83,6 +84,9 @@ def _module_available(name: str) -> bool:
 
 def _clear_annotations_state(ss: st.session_state.__class__) -> None:
     ss["anchor_px"] = None
+    ss["rigger_bbox_px"] = None
+    ss["rigger_bbox_tl_px"] = None
+    ss["rigger_bbox_br_px"] = None
     ss["bbox_px"] = None
     ss["bbox_tl_px"] = None
     ss["bbox_br_px"] = None
@@ -90,12 +94,74 @@ def _clear_annotations_state(ss: st.session_state.__class__) -> None:
     ss["scale1_px"] = None
     ss["annotations_ref_idx"] = None
     ss["bbox_click_ver"] += 1
+    ss["rigger_bbox_click_ver"] += 1
     ss["last_click_ts"] = {}
+
+
+class StreamlitProgressHandle:
+    def __init__(
+        self, container: st.delta_generator.DeltaGenerator, label: str, total: Optional[int]
+    ) -> None:
+        self._total = int(total) if total is not None else None
+        self._current = 0
+        self._label = label
+        self._container = container
+        self._status = None
+        self._status_text = None
+
+        if hasattr(container, "status"):
+            self._status = container.status(label, expanded=False)
+        else:
+            self._status_text = container.empty()
+            self._status_text.markdown(label)
+
+        self._bar = container.progress(0.0)
+
+    def update(
+        self, n: int = 1, *, desc: Optional[str] = None, total: Optional[int] = None
+    ) -> None:
+        if total is not None:
+            self._total = int(total)
+        if desc:
+            self._label = desc
+            if self._status is not None:
+                self._status.update(label=desc, state="running")
+            elif self._status_text is not None:
+                self._status_text.markdown(desc)
+
+        self._current += int(n)
+        if self._total is not None and self._total > 0:
+            self._bar.progress(min(self._current / float(self._total), 1.0))
+
+    def close(self, *, status: Optional[str] = None) -> None:
+        if status:
+            self._label = status
+        if self._total is not None and self._total > 0:
+            self._bar.progress(1.0)
+        if self._status is not None:
+            self._status.update(label=self._label, state="complete")
+        elif self._status_text is not None:
+            self._status_text.markdown(self._label)
+
+
+class StreamlitProgress(ProgressReporter):
+    def __init__(self, parent: st.delta_generator.DeltaGenerator) -> None:
+        self._parent = parent
+
+    def start(
+        self, label: str, total: Optional[int] = None, unit: str = "it"
+    ) -> StreamlitProgressHandle:
+        _ = unit
+        block = self._parent.container()
+        return StreamlitProgressHandle(block, label, total)
 
 
 def _apply_annotations_from_run(ss: st.session_state.__class__, cfg: RunConfig) -> None:
     ann = cfg.annotations
     ss["anchor_px"] = ann.anchor_px
+    ss["rigger_bbox_px"] = ann.rigger_bbox_px
+    ss["rigger_bbox_tl_px"] = None
+    ss["rigger_bbox_br_px"] = None
     ss["bbox_px"] = ann.bbox_px
     ss["bbox_tl_px"] = None
     ss["bbox_br_px"] = None
@@ -105,6 +171,7 @@ def _apply_annotations_from_run(ss: st.session_state.__class__, cfg: RunConfig) 
     ss["annotations_ref_idx"] = int(cfg.reference_frame_idx)
     ss["reference_frame_idx"] = int(cfg.reference_frame_idx)
     ss["bbox_click_ver"] += 1
+    ss["rigger_bbox_click_ver"] += 1
     ss["last_click_ts"] = {}
 
 
@@ -175,6 +242,7 @@ def _draw_overlay(
     disp: DisplayFrame,
     *,
     anchor: Optional[Tuple[float, float]] = None,
+    rigger_bbox: Optional[Tuple[float, float, float, float]] = None,
     bbox: Optional[Tuple[float, float, float, float]] = None,
     scale0: Optional[Tuple[float, float]] = None,
     scale1: Optional[Tuple[float, float]] = None,
@@ -189,13 +257,21 @@ def _draw_overlay(
         y_d = int(round(y * disp.disp_h / disp.orig_h))
         return x_d, y_d
 
-    # BBox
+    # Rigger bbox
+    if rigger_bbox is not None:
+        x, y, w, h = rigger_bbox
+        x0, y0 = to_disp((x, y))
+        x1, y1 = to_disp((x + w, y + h))
+        d.rectangle([x0, y0, x1, y1], outline=(0, 128, 255), width=3)
+        d.text((x0 + 6, y0 + 6), "rigger", fill=(0, 128, 255))
+
+    # Athlete bbox
     if bbox is not None:
         x, y, w, h = bbox
         x0, y0 = to_disp((x, y))
         x1, y1 = to_disp((x + w, y + h))
         d.rectangle([x0, y0, x1, y1], outline=(0, 255, 0), width=3)
-        d.text((x0 + 6, y0 + 6), "bbox", fill=(0, 255, 0))
+        d.text((x0 + 6, y0 + 6), "athlete", fill=(0, 255, 0))
 
     # Anchor
     if anchor is not None:
@@ -369,6 +445,7 @@ def generate_pose3d_overlay_video(
     mirror_3d: bool = True,
     flip_3d: bool = False,
     flip_3d_depth: bool = False,
+    progress: Optional[ProgressReporter] = None,
 ) -> None:
     """Create debug/pose3d_overlay.mp4 from existing pipeline artifacts."""
     import cv2
@@ -400,6 +477,9 @@ def generate_pose3d_overlay_video(
 
     fps = float(meta.fps) if meta.fps > 0 else 30.0
     out_video_path.parent.mkdir(parents=True, exist_ok=True)
+    prog = get_progress(progress)
+    total = int(min(meta.frame_count, J2d_stab.shape[0], J3d.shape[0], A.shape[0]))
+    stage = prog.start("Stage J: 3D overlay", total=total, unit="frame")
 
     inset_w, inset_h = int(inset_size[0]), int(inset_size[1])
     margin = 12
@@ -458,6 +538,8 @@ def generate_pose3d_overlay_video(
                 out = draw_text_panel(out, hud, origin_xy=(10, 20))
 
             vw.write(out)
+            stage.update(1)
+    stage.close()
 
     # If mp4v was used, try to transcode to H.264 for browser playback.
     if writer_fourcc == "mp4v" and tmp_path != out_video_path:
@@ -500,6 +582,9 @@ def _init_state() -> None:
     ss.setdefault("preloaded_run_json", None)
 
     ss.setdefault("anchor_px", None)
+    ss.setdefault("rigger_bbox_px", None)
+    ss.setdefault("rigger_bbox_tl_px", None)
+    ss.setdefault("rigger_bbox_br_px", None)
     ss.setdefault("bbox_px", None)
     ss.setdefault("bbox_tl_px", None)
     ss.setdefault("bbox_br_px", None)
@@ -508,6 +593,7 @@ def _init_state() -> None:
     ss.setdefault("scale_dist_m", 2.0)
 
     ss.setdefault("bbox_click_ver", 0)
+    ss.setdefault("rigger_bbox_click_ver", 0)
     ss.setdefault("last_click_ts", {})
     ss.setdefault("out_dir", None)
     ss.setdefault("video_dest_path", None)
@@ -526,6 +612,9 @@ def main() -> None:
     )
     motionbert_deps_available = (
         _module_available("torch") and _module_available("yaml") and _module_available("easydict")
+    )
+    deepsort_available = _module_available("ultralytics") and _module_available(
+        "deep_sort_realtime"
     )
 
     st.title("Rowing Pose — Streamlit UI")
@@ -546,7 +635,8 @@ def main() -> None:
         st.stop()
 
     with st.sidebar:
-        st.header("Video")
+        st.header("Setup")
+        st.subheader("1) Video source")
         mode = st.radio("Source", options=["Upload", "Path"], key="video_mode")
 
         uploaded = None
@@ -563,15 +653,16 @@ def main() -> None:
         use_timestamp = st.checkbox("Use timestamped output folder", value=False)
 
         st.divider()
-        st.header("Pipeline")
+        st.subheader("2) Pipeline stages")
+        st.caption("Always on: stabilization + crop.")
         enable_2d = st.checkbox(
-            "Run 2D pose (MMPose)", value=mmpose_available, disabled=not mmpose_available
+            "Include 2D pose (MMPose)", value=mmpose_available, disabled=not mmpose_available
         )
         if not mmpose_available:
             st.info("MMPose not installed. Install mmpose + mmcv + mmdet to enable 2D.")
 
         enable_3d = st.checkbox(
-            "Run 3D lift (MotionBERT)",
+            "Include 3D lift (MotionBERT)",
             value=motionbert_deps_available,
             disabled=not motionbert_deps_available,
         )
@@ -581,18 +672,19 @@ def main() -> None:
             st.warning("3D depends on 2D; disabling 3D.")
             enable_3d = False
 
-        device = st.selectbox("Device", options=["cpu", "cuda"], index=0)
+        st.divider()
+        st.subheader("3) Model level")
         preset_keys = list(MODEL_PRESETS.keys())
         preset_key = st.selectbox(
-            "Model preset",
+            "Model level (accuracy vs. speed)",
             options=preset_keys,
             index=0,
             format_func=lambda k: MODEL_PRESETS[k].label,
         )
         preset = MODEL_PRESETS[preset_key]
 
-        st.caption(f"2D: {preset.pose2d.label}")
-        st.caption(f"3D: {preset.motionbert.label}")
+        st.caption(f"2D model: {preset.pose2d.label}")
+        st.caption(f"3D model: {preset.motionbert.label}")
 
         mmpose_model = preset.pose2d.model_id
         pose2d_config_asset = preset.pose2d.config
@@ -606,7 +698,7 @@ def main() -> None:
 
         use_custom_pose2d = False
         use_custom_motionbert = False
-        with st.expander("Advanced models"):
+        with st.expander("Advanced model paths"):
             use_custom_pose2d = st.checkbox("Custom 2D model/config/weights", value=False)
             if use_custom_pose2d:
                 mmpose_model = st.text_input("MMPose model id/alias", value=mmpose_model)
@@ -657,6 +749,7 @@ def main() -> None:
                 else:
                     motionbert_config = None
 
+        st.markdown("**Model assets**")
         download_errors: Dict[str, str] = st.session_state["download_errors"]
 
         def ensure_download(spec: DownloadSpec, enabled: bool) -> bool:
@@ -735,22 +828,66 @@ def main() -> None:
                 pose3d_ready = False
 
         if not enable_3d:
-            st.caption("3D stage disabled; MotionBERT settings hidden.")
+            st.caption("3D stage disabled; MotionBERT settings are inactive.")
 
-        clip_len = st.number_input(
-            "clip_len",
-            min_value=1,
-            max_value=2000,
-            value=243,
-            step=1,
-            disabled=not enable_3d,
+        st.divider()
+        st.subheader("4) Runtime")
+        device = st.selectbox("Device", options=["cpu", "cuda"], index=0)
+
+        st.divider()
+        st.subheader("5) Tracking & smoothing")
+        st.markdown("**Tracking**")
+        pose_tracking_enabled = st.checkbox(
+            "Enable pose tracking (2D keypoints)",
+            value=True,
+            disabled=not enable_2d,
         )
-        flip = st.checkbox("flip augmentation", value=True, disabled=not enable_3d)
-        rootrel = st.checkbox("root-relative output", value=False, disabled=not enable_3d)
+        st.caption("Stabilizes keypoint identity across frames during 2D inference.")
 
-        st.subheader("Pose smoothing")
+        pose_track_smooth_alpha = st.slider(
+            "Tracking smoothing alpha (EMA)",
+            min_value=0.0,
+            max_value=0.1,
+            value=0.05,
+            step=0.01,
+            disabled=not enable_2d or not pose_tracking_enabled,
+        )
+        st.caption("Lower values reduce lag; higher values stabilize.")
+
+        strict_id = st.checkbox(
+            "Advanced tracking: strict ID (DeepSORT)",
+            value=False,
+            disabled=not deepsort_available,
+        )
+        st.caption("Uses full-frame detection + tracking. Slower but most stable.")
+        if not deepsort_available:
+            st.info("Install `ultralytics` and `deep_sort_realtime` to enable strict ID tracking.")
+
+        deepsort_model = st.text_input(
+            "Detector model (YOLO)",
+            value="yolov8n.pt",
+            disabled=not strict_id,
+        )
+        deepsort_min_conf = st.slider(
+            "Detector min confidence",
+            min_value=0.05,
+            max_value=0.9,
+            value=0.25,
+            step=0.05,
+            disabled=not strict_id,
+        )
+        deepsort_padding = st.slider(
+            "Tracking bbox padding",
+            min_value=0.0,
+            max_value=0.6,
+            value=0.2,
+            step=0.05,
+            disabled=not strict_id,
+        )
+
+        st.markdown("**Pose smoothing**")
         smooth_pose = st.checkbox(
-            "Smooth pose (recommended)",
+            "Enable pose smoothing (recommended)",
             value=bool(POSE_SMOOTHING_DEFAULTS.get("enabled", True)),
         )
         conf_threshold = st.slider(
@@ -778,12 +915,45 @@ def main() -> None:
             disabled=not smooth_pose,
         )
 
-        st.subheader("3D inset")
+        st.divider()
+        st.subheader("6) 3D settings")
+        clip_len = st.number_input(
+            "MotionBERT clip length (frames)",
+            min_value=1,
+            max_value=2000,
+            value=243,
+            step=1,
+            disabled=not enable_3d,
+        )
+        flip = st.checkbox("Enable flip augmentation", value=True, disabled=not enable_3d)
+        rootrel = st.checkbox("Root-relative 3D output", value=False, disabled=not enable_3d)
+
+        st.subheader("7) 3D overlay")
         mirror_3d = st.checkbox("Mirror left/right", value=True, disabled=not enable_3d)
         flip_3d = st.checkbox("Flip upside-down", value=False, disabled=not enable_3d)
         flip_3d_depth = st.checkbox(
             "Flip depth (towards/away)", value=False, disabled=not enable_3d
         )
+
+        st.divider()
+        st.markdown("**Pipeline summary**")
+        st.caption(
+            "Stages: stabilization (on), crop (on), "
+            f"2D pose ({'on' if enable_2d else 'off'}), "
+            f"tracking ({'on' if enable_2d and pose_tracking_enabled else 'off'}), "
+            f"smoothing ({'on' if enable_2d and smooth_pose else 'off'}), "
+            f"3D lift ({'on' if enable_3d else 'off'})."
+        )
+        extras = []
+        if strict_id:
+            extras.append("DeepSORT strict ID")
+        if enable_3d:
+            if flip:
+                extras.append("flip augmentation")
+            if rootrel:
+                extras.append("root-relative 3D")
+        if extras:
+            st.caption("Extras: " + ", ".join(extras))
 
     if src_path is None:
         st.info("Select a video in the sidebar to start.")
@@ -862,7 +1032,8 @@ def main() -> None:
 
     st.subheader("2) Annotation")
     st.caption(
-        "Pick: anchor point → bbox → scale point #1 → scale point #2 → enter known distance (m)."
+        "Pick: anchor point → rigger bbox → athlete bbox → scale point #1 → scale point #2 → "
+        "enter known distance (m)."
     )
     if st.session_state.get("preloaded_run_json"):
         rel = Path(st.session_state["preloaded_run_json"])
@@ -873,6 +1044,9 @@ def main() -> None:
         st.info(f"Loaded previous annotations from `{rel}`.")
 
     a_px = st.session_state["anchor_px"]
+    rigger_px = st.session_state["rigger_bbox_px"]
+    rigger_tl_px = st.session_state["rigger_bbox_tl_px"]
+    rigger_br_px = st.session_state["rigger_bbox_br_px"]
     b_px = st.session_state["bbox_px"]
     bbox_tl_px = st.session_state["bbox_tl_px"]
     bbox_br_px = st.session_state["bbox_br_px"]
@@ -892,8 +1066,10 @@ def main() -> None:
     missing_steps = []
     if a_px is None:
         missing_steps.append("Anchor")
+    if rigger_px is None:
+        missing_steps.append("Rigger BBox")
     if b_px is None:
-        missing_steps.append("BBox")
+        missing_steps.append("Athlete BBox")
     if s0_px is None:
         missing_steps.append("Scale #1")
     if s1_px is None:
@@ -903,8 +1079,15 @@ def main() -> None:
 
     step = st.radio(
         "Annotation step",
-        options=["Anchor", "BBox", "Scale #1", "Scale #2", "Review"],
-        index=["Anchor", "BBox", "Scale #1", "Scale #2", "Review"].index(missing_steps[0]),
+        options=["Anchor", "Rigger BBox", "Athlete BBox", "Scale #1", "Scale #2", "Review"],
+        index=[
+            "Anchor",
+            "Rigger BBox",
+            "Athlete BBox",
+            "Scale #1",
+            "Scale #2",
+            "Review",
+        ].index(missing_steps[0]),
         horizontal=True,
     )
 
@@ -914,13 +1097,17 @@ def main() -> None:
         st.write(
             {
                 "anchor_px": a_px,
-                "bbox_px": b_px,
+                "rigger_bbox_px": rigger_px,
+                "athlete_bbox_px": b_px,
                 "scale_points_px": (s0_px, s1_px),
                 "scale_distance_m": float(st.session_state["scale_dist_m"]),
             }
         )
         if st.button("Reset all annotations"):
             st.session_state["anchor_px"] = None
+            st.session_state["rigger_bbox_px"] = None
+            st.session_state["rigger_bbox_tl_px"] = None
+            st.session_state["rigger_bbox_br_px"] = None
             st.session_state["bbox_px"] = None
             st.session_state["bbox_tl_px"] = None
             st.session_state["bbox_br_px"] = None
@@ -928,6 +1115,7 @@ def main() -> None:
             st.session_state["scale1_px"] = None
             st.session_state["annotations_ref_idx"] = None
             st.session_state["bbox_click_ver"] += 1
+            st.session_state["rigger_bbox_click_ver"] += 1
             st.rerun()
 
         st.session_state["scale_dist_m"] = st.number_input(
@@ -939,7 +1127,14 @@ def main() -> None:
         )
 
     with col_left:
-        overlay_img = _draw_overlay(disp, anchor=a_px, bbox=b_px, scale0=s0_px, scale1=s1_px)
+        overlay_img = _draw_overlay(
+            disp,
+            anchor=a_px,
+            rigger_bbox=rigger_px,
+            bbox=b_px,
+            scale0=s0_px,
+            scale1=s1_px,
+        )
 
         if step in ("Anchor", "Scale #1", "Scale #2"):
             st.markdown("**Click on the image**")
@@ -963,8 +1158,57 @@ def main() -> None:
                     st.session_state["annotations_ref_idx"] = int(ref_idx)
                 st.rerun()
 
-        elif step == "BBox":
-            st.markdown("**BBox via 2 clicks**: click **top-left**, then click **bottom-right**.")
+        elif step == "Rigger BBox":
+            st.markdown(
+                "**Rigger bbox via 2 clicks**: click **top-left**, then click **bottom-right**."
+            )
+            st.caption("Tip: Make it tight around the rigger/oarlock hardware for stable tracking.")
+
+            click = streamlit_image_coordinates(
+                overlay_img,
+                key=f"click_rigger_{st.session_state['rigger_bbox_click_ver']}_{ref_idx}",
+            )
+            if click is not None:
+                ts = click.get("unix_time")
+                last_ts = st.session_state["last_click_ts"].get("Rigger BBox")
+                if ts is not None and ts != last_ts:
+                    st.session_state["last_click_ts"]["Rigger BBox"] = ts
+                    x_disp = float(click["x"])
+                    y_disp = float(click["y"])
+                    x_orig, y_orig = disp.to_orig_xy(x_disp, y_disp)
+
+                    if rigger_tl_px is None or (
+                        rigger_tl_px is not None and rigger_br_px is not None
+                    ):
+                        st.session_state["rigger_bbox_tl_px"] = (x_orig, y_orig)
+                        st.session_state["rigger_bbox_br_px"] = None
+                        st.session_state["rigger_bbox_px"] = None
+                    else:
+                        st.session_state["rigger_bbox_br_px"] = (x_orig, y_orig)
+                        x0 = float(min(st.session_state["rigger_bbox_tl_px"][0], x_orig))
+                        y0 = float(min(st.session_state["rigger_bbox_tl_px"][1], y_orig))
+                        x1 = float(max(st.session_state["rigger_bbox_tl_px"][0], x_orig))
+                        y1 = float(max(st.session_state["rigger_bbox_tl_px"][1], y_orig))
+                        w = float(x1 - x0)
+                        h = float(y1 - y0)
+                        if w > 1 and h > 1:
+                            st.session_state["rigger_bbox_px"] = (x0, y0, w, h)
+
+                    if st.session_state.get("annotations_ref_idx") is None:
+                        st.session_state["annotations_ref_idx"] = int(ref_idx)
+                    st.rerun()
+
+            if st.button("Clear rigger bbox"):
+                st.session_state["rigger_bbox_px"] = None
+                st.session_state["rigger_bbox_tl_px"] = None
+                st.session_state["rigger_bbox_br_px"] = None
+                st.session_state["rigger_bbox_click_ver"] += 1
+                st.rerun()
+
+        elif step == "Athlete BBox":
+            st.markdown(
+                "**Athlete bbox via 2 clicks**: click **top-left**, then click **bottom-right**."
+            )
             st.caption(
                 "Tip: If you want to redraw, just click again after completing both corners (it will restart)."
             )
@@ -974,20 +1218,18 @@ def main() -> None:
             )
             if click is not None:
                 ts = click.get("unix_time")
-                last_ts = st.session_state["last_click_ts"].get("BBox")
+                last_ts = st.session_state["last_click_ts"].get("Athlete BBox")
                 if ts is not None and ts != last_ts:
-                    st.session_state["last_click_ts"]["BBox"] = ts
+                    st.session_state["last_click_ts"]["Athlete BBox"] = ts
                     x_disp = float(click["x"])
                     y_disp = float(click["y"])
                     x_orig, y_orig = disp.to_orig_xy(x_disp, y_disp)
 
                     if bbox_tl_px is None or (bbox_tl_px is not None and bbox_br_px is not None):
-                        # Start / restart bbox definition.
                         st.session_state["bbox_tl_px"] = (x_orig, y_orig)
                         st.session_state["bbox_br_px"] = None
                         st.session_state["bbox_px"] = None
                     else:
-                        # Finish bbox.
                         st.session_state["bbox_br_px"] = (x_orig, y_orig)
                         x0 = float(min(st.session_state["bbox_tl_px"][0], x_orig))
                         y0 = float(min(st.session_state["bbox_tl_px"][1], y_orig))
@@ -1002,7 +1244,7 @@ def main() -> None:
                         st.session_state["annotations_ref_idx"] = int(ref_idx)
                     st.rerun()
 
-            if st.button("Clear bbox"):
+            if st.button("Clear athlete bbox"):
                 st.session_state["bbox_px"] = None
                 st.session_state["bbox_tl_px"] = None
                 st.session_state["bbox_br_px"] = None
@@ -1017,6 +1259,7 @@ def main() -> None:
     # Validate readiness.
     ready = (
         st.session_state["anchor_px"] is not None
+        and st.session_state["rigger_bbox_px"] is not None
         and st.session_state["bbox_px"] is not None
         and st.session_state["scale0_px"] is not None
         and st.session_state["scale1_px"] is not None
@@ -1036,16 +1279,20 @@ def main() -> None:
             st.session_state.get("annotations_ref_idx") is None
             or int(st.session_state.get("annotations_ref_idx")) == int(ref_idx)
         )
+        and (not strict_id or deepsort_available)
     )
 
     if not ready:
         st.warning("Complete annotation and ensure required model files are ready (see sidebar).")
         return
 
+    progress_slot = st.empty()
     run_btn = st.button("Run pipeline + generate 3D overlay", type="primary")
 
     if run_btn:
         st.session_state["last_run_error"] = None
+        progress_slot.empty()
+        progress = StreamlitProgress(progress_slot.container())
         try:
             # Write run.json (prevents OpenCV annotation UI from running).
             rel_video = str(Path("debug") / video_dest_path.name)
@@ -1066,6 +1313,7 @@ def main() -> None:
                 reference_frame_idx=int(ref_idx),
                 annotations=Annotations(
                     anchor_px=st.session_state["anchor_px"],
+                    rigger_bbox_px=st.session_state["rigger_bbox_px"],
                     bbox_px=st.session_state["bbox_px"],
                     scale_points_px=(st.session_state["scale0_px"], st.session_state["scale1_px"]),
                     scale_distance_m=dist_m,
@@ -1078,6 +1326,8 @@ def main() -> None:
                         "lk_max_corners": 1,
                         "template_half_size": 16,
                         "template_search_radius": 50,
+                        "ema_alpha": 0.8,
+                        "min_points": 10,
                     },
                     "crop": {
                         "padding": 0.2,
@@ -1089,6 +1339,14 @@ def main() -> None:
                         "conf_threshold": float(conf_threshold),
                         "max_gap": int(max_gap),
                         "median_window": int(median_window),
+                    },
+                    "pose_tracking": {
+                        "enabled": bool(pose_tracking_enabled),
+                        "smooth_alpha": float(pose_track_smooth_alpha),
+                        "strict_id": bool(strict_id),
+                        "deepsort_model": str(deepsort_model).strip() or "yolov8n.pt",
+                        "deepsort_min_conf": float(deepsort_min_conf),
+                        "deepsort_padding": float(deepsort_padding),
                     },
                 },
             )
@@ -1121,6 +1379,7 @@ def main() -> None:
                     rootrel=bool(rootrel),
                     skip_2d=not enable_2d,
                     skip_3d=not enable_3d,
+                    progress=progress,
                 )
 
             # Generate 3D overlay video.
@@ -1142,6 +1401,7 @@ def main() -> None:
                         mirror_3d=bool(mirror_3d),
                         flip_3d=bool(flip_3d),
                         flip_3d_depth=bool(flip_3d_depth),
+                        progress=progress,
                     )
 
         except Exception as e:

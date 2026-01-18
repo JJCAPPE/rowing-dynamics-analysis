@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from .io_video import VideoWriter, get_video_metadata, iter_frames, read_frame
+from .progress import ProgressReporter, get_progress
 
 Point2D = Tuple[float, float]
 
@@ -21,12 +22,94 @@ class StabilizationResult:
     status: np.ndarray  # (T,) uint8  (1=tracked, 0=bad)
 
 
+def _build_stabilization_from_anchor_series(
+    *,
+    anchor_xy: np.ndarray,
+    anchor0_px: Point2D,
+    reference_frame_idx: int,
+) -> StabilizationResult:
+    """Build translation-only stabilization from a per-frame anchor series."""
+
+    anchor_xy = np.asarray(anchor_xy, dtype=np.float32)
+    if anchor_xy.ndim != 2 or anchor_xy.shape[1] != 2:
+        raise ValueError(f"Expected anchor_xy shape (T,2). Got {anchor_xy.shape}")
+
+    T = int(anchor_xy.shape[0])
+    status = np.isfinite(anchor_xy[:, 0]) & np.isfinite(anchor_xy[:, 1])
+    status_u8 = status.astype(np.uint8)
+
+    def interp_nan(v: np.ndarray) -> np.ndarray:
+        out = v.astype(np.float32, copy=True)
+        n = out.shape[0]
+        x = np.arange(n, dtype=np.float32)
+        mask = np.isfinite(out)
+        if mask.all():
+            return out
+        if not mask.any():
+            out[:] = out[reference_frame_idx]
+            return out
+        out[~mask] = np.interp(x[~mask], x[mask], out[mask]).astype(np.float32)
+        return out
+
+    anchor_filled = anchor_xy.copy()
+    anchor_filled[:, 0] = interp_nan(anchor_filled[:, 0])
+    anchor_filled[:, 1] = interp_nan(anchor_filled[:, 1])
+
+    dx = float(anchor0_px[0]) - anchor_filled[:, 0]
+    dy = float(anchor0_px[1]) - anchor_filled[:, 1]
+    try:
+        win = min(31, T if T % 2 == 1 else T - 1)
+        if win >= 5:
+            from scipy.signal import savgol_filter  # type: ignore
+
+            dx_s = savgol_filter(dx, window_length=win, polyorder=2, mode="interp")
+            dy_s = savgol_filter(dy, window_length=win, polyorder=2, mode="interp")
+            dx = dx_s.astype(np.float32)
+            dy = dy_s.astype(np.float32)
+    except Exception:
+        dx = dx.astype(np.float32)
+        dy = dy.astype(np.float32)
+
+    dx = dx - float(dx[reference_frame_idx])
+    dy = dy - float(dy[reference_frame_idx])
+
+    A = np.zeros((T, 2, 3), dtype=np.float32)
+    A[:, 0, 0] = 1.0
+    A[:, 1, 1] = 1.0
+    A[:, 0, 2] = dx
+    A[:, 1, 2] = dy
+
+    return StabilizationResult(A=A, anchor_xy=anchor_filled, status=status_u8)
+
+
+def _save_stabilization_npz(
+    *,
+    out_npz: Path,
+    result: StabilizationResult,
+    anchor0_px: Point2D,
+    reference_frame_idx: int,
+    meta: "VideoMeta",
+) -> None:
+    np.savez_compressed(
+        out_npz,
+        A=result.A,
+        anchor_xy=result.anchor_xy,
+        status=result.status,
+        reference_frame_idx=int(reference_frame_idx),
+        anchor0_px=np.array(anchor0_px, dtype=np.float32),
+        width=int(meta.width),
+        height=int(meta.height),
+        fps=float(meta.fps),
+    )
+
+
 def compute_stabilization(
     video_path: Path,
     anchor0_px: Point2D,
     reference_frame_idx: int,
     out_npz: Path,
     debug_video_path: Optional[Path] = None,
+    progress: Optional[ProgressReporter] = None,
 ) -> StabilizationResult:
     """Track anchor point and create per-frame affine translations.
 
@@ -41,6 +124,7 @@ def compute_stabilization(
         raise ValueError("reference_frame_idx out of range.")
 
     out_npz.parent.mkdir(parents=True, exist_ok=True)
+    prog = get_progress(progress)
 
     # Params (kept here for now; `run.json` also stores defaults)
     lk_win_size = (21, 21)
@@ -135,6 +219,7 @@ def compute_stabilization(
                 status[idx] = 0
                 prev_has_anchor = False
                 prev_gray = gray
+                track_stage.update(1)
                 continue
 
             anchor_xy[idx, :] = (pt_xy[0], pt_xy[1])
@@ -144,6 +229,7 @@ def compute_stabilization(
             prev_has_anchor = True
             last_good_gray = gray
             last_good_pt = pt_xy
+            track_stage.update(1)
 
     def _open_capture() -> cv2.VideoCapture:
         cap = cv2.VideoCapture(str(video_path))
@@ -196,7 +282,8 @@ def compute_stabilization(
                     status[idx] = 0
                     prev_has_anchor = False
                     prev_gray = gray
-                    continue
+                track_stage.update(1)
+                continue
 
                 anchor_xy[idx, :] = (pt_xy[0], pt_xy[1])
                 status[idx] = 1
@@ -205,87 +292,113 @@ def compute_stabilization(
                 prev_has_anchor = True
                 last_good_gray = gray
                 last_good_pt = pt_xy
+            track_stage.update(1)
         finally:
             cap.release()
 
     # Seed reference.
     anchor_xy[reference_frame_idx, :] = (float(anchor0_px[0]), float(anchor0_px[1]))
     status[reference_frame_idx] = 1
+    track_stage = prog.start("Stage B: stabilization tracking", total=T, unit="frame")
+    track_stage.update(1)
 
     # Track forward and backward from reference.
     if reference_frame_idx < T - 1:
         track_forward()
     if reference_frame_idx > 0:
         track_backward()
+    track_stage.close()
 
-    # Interpolate any missing anchors (per coordinate).
-    def interp_nan(v: np.ndarray) -> np.ndarray:
-        out = v.astype(np.float32, copy=True)
-        n = out.shape[0]
-        x = np.arange(n, dtype=np.float32)
-        mask = np.isfinite(out)
-        if mask.all():
-            return out
-        if not mask.any():
-            # catastrophic failure; fall back to constant anchor0
-            out[:] = out[reference_frame_idx]
-            return out
-        out[~mask] = np.interp(x[~mask], x[mask], out[mask]).astype(np.float32)
-        return out
-
-    anchor_xy[:, 0] = interp_nan(anchor_xy[:, 0])
-    anchor_xy[:, 1] = interp_nan(anchor_xy[:, 1])
-
-    # Build dx/dy translation series and smooth gently (while preserving ref=0 shift).
-    dx = float(anchor0_px[0]) - anchor_xy[:, 0]
-    dy = float(anchor0_px[1]) - anchor_xy[:, 1]
-    try:
-        # window length must be odd and <= T
-        win = min(31, T if T % 2 == 1 else T - 1)
-        if win >= 5:
-            from scipy.signal import savgol_filter  # type: ignore
-
-            dx_s = savgol_filter(dx, window_length=win, polyorder=2, mode="interp")
-            dy_s = savgol_filter(dy, window_length=win, polyorder=2, mode="interp")
-            dx = dx_s.astype(np.float32)
-            dy = dy_s.astype(np.float32)
-    except Exception:
-        # If SciPy isn't available or filter fails, keep raw dx/dy.
-        dx = dx.astype(np.float32)
-        dy = dy.astype(np.float32)
-
-    dx = dx - float(dx[reference_frame_idx])
-    dy = dy - float(dy[reference_frame_idx])
-
-    A = np.zeros((T, 2, 3), dtype=np.float32)
-    A[:, 0, 0] = 1.0
-    A[:, 1, 1] = 1.0
-    A[:, 0, 2] = dx
-    A[:, 1, 2] = dy
-
-    np.savez_compressed(
-        out_npz,
-        A=A,
+    result = _build_stabilization_from_anchor_series(
         anchor_xy=anchor_xy,
-        status=status,
-        reference_frame_idx=int(reference_frame_idx),
-        anchor0_px=np.array(anchor0_px, dtype=np.float32),
-        width=int(meta.width),
-        height=int(meta.height),
-        fps=float(meta.fps),
+        anchor0_px=anchor0_px,
+        reference_frame_idx=reference_frame_idx,
+    )
+    _save_stabilization_npz(
+        out_npz=out_npz,
+        result=result,
+        anchor0_px=anchor0_px,
+        reference_frame_idx=reference_frame_idx,
+        meta=meta,
     )
 
     if debug_video_path is not None:
         debug_video_path.parent.mkdir(parents=True, exist_ok=True)
         out_size = (int(meta.width), int(meta.height))
         with VideoWriter(debug_video_path, fps=meta.fps, frame_size=out_size) as vw:
+            debug_stage = prog.start("Stage B: stabilization debug video", total=T, unit="frame")
             for idx, frame in iter_frames(video_path):
-                stab = warp_frame(frame, A[idx], out_size)
+                stab = warp_frame(frame, result.A[idx], out_size)
                 x0, y0 = int(round(anchor0_px[0])), int(round(anchor0_px[1]))
                 cv2.circle(stab, (x0, y0), 6, (0, 0, 255), -1)
                 vw.write(stab)
+                debug_stage.update(1)
+            debug_stage.close()
 
-    return StabilizationResult(A=A, anchor_xy=anchor_xy, status=status)
+    return result
+
+
+def compute_stabilization_from_rigger_track(
+    video_path: Path,
+    rigger_track_npz: Path,
+    anchor0_px: Point2D,
+    reference_frame_idx: int,
+    out_npz: Path,
+    debug_video_path: Optional[Path] = None,
+    progress: Optional[ProgressReporter] = None,
+) -> StabilizationResult:
+    """Compute stabilization using a tracked rigger bbox center."""
+
+    meta = get_video_metadata(video_path)
+    prog = get_progress(progress)
+    track = np.load(rigger_track_npz)
+    if "centers_xy" in track:
+        centers = track["centers_xy"].astype(np.float32)
+    else:
+        boxes = track["boxes_xywh"].astype(np.float32)
+        centers = np.stack([boxes[:, 0] + boxes[:, 2] / 2.0, boxes[:, 1] + boxes[:, 3] / 2.0], axis=1)
+
+    result = _build_stabilization_from_anchor_series(
+        anchor_xy=centers,
+        anchor0_px=anchor0_px,
+        reference_frame_idx=reference_frame_idx,
+    )
+    _save_stabilization_npz(
+        out_npz=out_npz,
+        result=result,
+        anchor0_px=anchor0_px,
+        reference_frame_idx=reference_frame_idx,
+        meta=meta,
+    )
+
+    if debug_video_path is not None:
+        debug_video_path.parent.mkdir(parents=True, exist_ok=True)
+        out_size = (int(meta.width), int(meta.height))
+        boxes = track["boxes_xywh"].astype(np.float32) if "boxes_xywh" in track else None
+        with VideoWriter(debug_video_path, fps=meta.fps, frame_size=out_size) as vw:
+            debug_stage = prog.start("Stage B: stabilization debug video", total=int(meta.frame_count), unit="frame")
+            for idx, frame in iter_frames(video_path):
+                stab = warp_frame(frame, result.A[idx], out_size)
+                x0, y0 = int(round(anchor0_px[0])), int(round(anchor0_px[1]))
+                cv2.circle(stab, (x0, y0), 6, (0, 0, 255), -1)
+                if boxes is not None and idx < boxes.shape[0]:
+                    x, y, w, h = [float(v) for v in boxes[idx]]
+                    dx = float(result.A[idx, 0, 2])
+                    dy = float(result.A[idx, 1, 2])
+                    x_s = int(round(x + dx))
+                    y_s = int(round(y + dy))
+                    cv2.rectangle(
+                        stab,
+                        (x_s, y_s),
+                        (int(round(x_s + w)), int(round(y_s + h))),
+                        (0, 128, 255),
+                        2,
+                    )
+                vw.write(stab)
+                debug_stage.update(1)
+            debug_stage.close()
+
+    return result
 
 
 def warp_frame(frame_bgr: np.ndarray, A_2x3: np.ndarray, out_size: Tuple[int, int]) -> np.ndarray:

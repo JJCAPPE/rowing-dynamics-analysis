@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
+from .progress import ProgressReporter, get_progress
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ def lift_pose3d_motionbert(
     overlap: Optional[int] = None,
     flip: bool = False,
     rootrel: bool = False,
+    progress: Optional[ProgressReporter] = None,
 ) -> np.ndarray:
     """Lift 2D→3D using MotionBERT.
 
@@ -109,6 +111,8 @@ def lift_pose3d_motionbert(
     out = np.zeros((T, 17, 3), dtype=np.float32)
     wsum = np.zeros((T,), dtype=np.float32)
 
+    prog = get_progress(progress)
+    stage = prog.start("Stage F/G: pose3d lift (MotionBERT)", total=len(starts), unit="clip")
     with torch.no_grad():
         for st in starts:
             ed = min(T, st + clip_len)
@@ -144,6 +148,8 @@ def lift_pose3d_motionbert(
 
             out[st:ed] += pred_np * w[:, None, None]
             wsum[st:ed] += w
+            stage.update(1)
+    stage.close()
 
     mask = wsum > 1e-9
     out[mask] /= wsum[mask, None, None]
