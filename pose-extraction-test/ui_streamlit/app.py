@@ -168,6 +168,7 @@ def _apply_annotations_from_run(ss: st.session_state.__class__, cfg: RunConfig) 
     ss["scale0_px"] = ann.scale_points_px[0]
     ss["scale1_px"] = ann.scale_points_px[1]
     ss["scale_dist_m"] = ann.scale_distance_m
+    ss["scale_dist_m_input"] = f"{ann.scale_distance_m}"
     ss["annotations_ref_idx"] = int(cfg.reference_frame_idx)
     ss["reference_frame_idx"] = int(cfg.reference_frame_idx)
     ss["bbox_click_ver"] += 1
@@ -229,6 +230,22 @@ def _make_display_frame(frame_bgr: np.ndarray, max_w: int = 900) -> DisplayFrame
     return DisplayFrame(
         orig_w=orig_w, orig_h=orig_h, disp_w=disp_w, disp_h=disp_h, pil_disp=pil_disp
     )
+
+
+def _estimate_run_json_preview_height(
+    meta: Any, *, max_width: int = 640, min_height: int = 220, max_height: int = 720
+) -> int:
+    """Estimate a reasonable preview height without exceeding typical video display size."""
+    try:
+        width = float(meta.width)
+        height = float(meta.height)
+    except Exception:
+        return min_height
+    if width <= 0 or height <= 0:
+        return min_height
+    scale = min(1.0, float(max_width) / width)
+    preview_h = int(round(height * scale))
+    return int(max(min_height, min(preview_h, max_height)))
 
 
 @dataclass(frozen=True)
@@ -591,6 +608,7 @@ def _init_state() -> None:
     ss.setdefault("scale0_px", None)
     ss.setdefault("scale1_px", None)
     ss.setdefault("scale_dist_m", 2.0)
+    ss.setdefault("scale_dist_m_input", f"{ss['scale_dist_m']}")
 
     ss.setdefault("bbox_click_ver", 0)
     ss.setdefault("rigger_bbox_click_ver", 0)
@@ -1093,6 +1111,24 @@ def main() -> None:
 
     col_left, col_right = st.columns([3, 2])
     with col_right:
+        scale_input_raw = st.session_state.get("scale_dist_m_input", "")
+        scale_dist_m_valid = False
+        scale_dist_error = None
+        if isinstance(scale_input_raw, str):
+            scale_input_raw = scale_input_raw.strip()
+        if scale_input_raw:
+            try:
+                scale_val = float(scale_input_raw)
+            except ValueError:
+                scale_val = None
+            if scale_val is not None and scale_val > 0:
+                st.session_state["scale_dist_m"] = scale_val
+                scale_dist_m_valid = True
+            else:
+                scale_dist_error = "Enter a number greater than 0."
+        else:
+            scale_dist_error = "Enter a number greater than 0."
+
         st.markdown("**Current annotations (original px)**")
         st.write(
             {
@@ -1118,13 +1154,13 @@ def main() -> None:
             st.session_state["rigger_bbox_click_ver"] += 1
             st.rerun()
 
-        st.session_state["scale_dist_m"] = st.number_input(
+        st.text_input(
             "Known distance between scale points (meters)",
-            min_value=0.01,
-            max_value=1000.0,
-            value=float(st.session_state["scale_dist_m"]),
-            step=0.1,
+            key="scale_dist_m_input",
+            help="Type a positive number (e.g., 2.0).",
         )
+        if scale_dist_error is not None:
+            st.error(scale_dist_error)
 
     with col_left:
         overlay_img = _draw_overlay(
@@ -1263,7 +1299,7 @@ def main() -> None:
         and st.session_state["bbox_px"] is not None
         and st.session_state["scale0_px"] is not None
         and st.session_state["scale1_px"] is not None
-        and float(st.session_state["scale_dist_m"]) > 0
+        and scale_dist_m_valid
         and (not enable_2d or pose2d_ready)
         and (
             not enable_3d
@@ -1415,7 +1451,23 @@ def main() -> None:
     pose3d_overlay = out_dir / "debug" / "pose3d_overlay.mp4"
     if pose3d_overlay.exists():
         st.success("Done.")
-        st.video(str(pose3d_overlay))
+        result_cols = st.columns([3, 2])
+        with result_cols[0]:
+            st.video(str(pose3d_overlay))
+        with result_cols[1]:
+            st.markdown("**run.json preview**")
+            run_json_path = out_dir / "run.json"
+            if run_json_path.exists():
+                preview_height = _estimate_run_json_preview_height(meta)
+                try:
+                    run_json_text = run_json_path.read_text(encoding="utf-8")
+                except Exception as exc:
+                    st.error(f"Failed to read run.json: {exc}")
+                else:
+                    with st.container(height=preview_height, border=True):
+                        st.code(run_json_text, language="json")
+            else:
+                st.info("run.json not found yet.")
 
         # Also show existing pipeline output if present.
         angles_overlay = out_dir / "debug" / "angles_overlay.mp4"
