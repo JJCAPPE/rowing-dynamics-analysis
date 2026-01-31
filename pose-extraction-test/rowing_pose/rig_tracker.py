@@ -27,7 +27,7 @@ def track_rigger_bbox(
     reference_frame_idx: int,
     out_npz: Path,
     debug_video_path: Optional[Path] = None,
-    ema_alpha: float = 0.8,
+    ema_alpha: float = 0.5,
     min_points: int = 10,
     progress: Optional[ProgressReporter] = None,
 ) -> RiggerTrackResult:

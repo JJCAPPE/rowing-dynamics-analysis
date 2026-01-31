@@ -361,6 +361,10 @@ def run_pipeline(
         ang = compute_basic_angles_h36m17(J_use, joint_names_use)
         deg = np.degrees(ang.values_rad)
         df = pd.DataFrame(deg, columns=[f"{n}_deg" for n in ang.names])
+        if {"left_elbow_deg", "right_elbow_deg"}.issubset(df.columns):
+            df["elbow_avg_deg"] = df[["left_elbow_deg", "right_elbow_deg"]].mean(
+                axis=1, skipna=True
+            )
         df.insert(0, "frame_idx", np.arange(df.shape[0], dtype=int))
         if cfg.video.fps > 0:
             df.insert(1, "time_s", df["frame_idx"] / float(cfg.video.fps))

@@ -214,12 +214,12 @@ class DisplayFrame:
         return float(x_disp) * sx, float(y_disp) * sy
 
 
-def _make_display_frame(frame_bgr: np.ndarray, max_w: int = 900) -> DisplayFrame:
+def _make_display_frame(frame_bgr: np.ndarray, max_w: Optional[int] = None) -> DisplayFrame:
     pil = _bgr_to_pil_rgb(frame_bgr)
     orig_w, orig_h = pil.size
     if orig_w <= 0 or orig_h <= 0:
         raise ValueError("Invalid frame size.")
-    if orig_w > max_w:
+    if max_w is not None and orig_w > max_w:
         scale = float(max_w) / float(orig_w)
         disp_w = int(round(orig_w * scale))
         disp_h = int(round(orig_h * scale))
@@ -865,8 +865,8 @@ def main() -> None:
         pose_track_smooth_alpha = st.slider(
             "Tracking smoothing alpha (EMA)",
             min_value=0.0,
-            max_value=0.1,
-            value=0.05,
+            max_value=0.2,
+            value=0.1,
             step=0.01,
             disabled=not enable_2d or not pose_tracking_enabled,
         )
@@ -1046,7 +1046,7 @@ def main() -> None:
         key="reference_frame_idx",
     )
     frame0 = read_frame(video_dest_path, int(ref_idx))
-    disp = _make_display_frame(frame0, max_w=900)
+    disp = _make_display_frame(frame0, max_w=1200)
 
     st.subheader("2) Annotation")
     st.caption(
@@ -1109,8 +1109,132 @@ def main() -> None:
         horizontal=True,
     )
 
-    col_left, col_right = st.columns([3, 2])
-    with col_right:
+    overlay_img = _draw_overlay(
+        disp,
+        anchor=a_px,
+        rigger_bbox=rigger_px,
+        bbox=b_px,
+        scale0=s0_px,
+        scale1=s1_px,
+    )
+
+    if step in ("Anchor", "Scale #1", "Scale #2"):
+        st.markdown("**Click on the image**")
+        click = streamlit_image_coordinates(overlay_img, key=f"click_{step}_{ref_idx}")
+        if click is not None:
+            ts = click.get("unix_time")
+            last_ts = st.session_state["last_click_ts"].get(step)
+            if ts is None or ts == last_ts:
+                st.stop()
+            st.session_state["last_click_ts"][step] = ts
+            x_disp = float(click["x"])
+            y_disp = float(click["y"])
+            x_orig, y_orig = disp.to_orig_xy(x_disp, y_disp)
+            if step == "Anchor":
+                st.session_state["anchor_px"] = (x_orig, y_orig)
+            elif step == "Scale #1":
+                st.session_state["scale0_px"] = (x_orig, y_orig)
+            elif step == "Scale #2":
+                st.session_state["scale1_px"] = (x_orig, y_orig)
+            if st.session_state.get("annotations_ref_idx") is None:
+                st.session_state["annotations_ref_idx"] = int(ref_idx)
+            st.rerun()
+
+    elif step == "Rigger BBox":
+        st.markdown(
+            "**Rigger bbox via 2 clicks**: click **top-left**, then click **bottom-right**."
+        )
+        st.caption("Tip: Make it tight around the rigger/oarlock hardware for stable tracking.")
+
+        click = streamlit_image_coordinates(
+            overlay_img,
+            key=f"click_rigger_{st.session_state['rigger_bbox_click_ver']}_{ref_idx}",
+        )
+        if click is not None:
+            ts = click.get("unix_time")
+            last_ts = st.session_state["last_click_ts"].get("Rigger BBox")
+            if ts is not None and ts != last_ts:
+                st.session_state["last_click_ts"]["Rigger BBox"] = ts
+                x_disp = float(click["x"])
+                y_disp = float(click["y"])
+                x_orig, y_orig = disp.to_orig_xy(x_disp, y_disp)
+
+                if rigger_tl_px is None or (rigger_tl_px is not None and rigger_br_px is not None):
+                    st.session_state["rigger_bbox_tl_px"] = (x_orig, y_orig)
+                    st.session_state["rigger_bbox_br_px"] = None
+                    st.session_state["rigger_bbox_px"] = None
+                else:
+                    st.session_state["rigger_bbox_br_px"] = (x_orig, y_orig)
+                    x0 = float(min(st.session_state["rigger_bbox_tl_px"][0], x_orig))
+                    y0 = float(min(st.session_state["rigger_bbox_tl_px"][1], y_orig))
+                    x1 = float(max(st.session_state["rigger_bbox_tl_px"][0], x_orig))
+                    y1 = float(max(st.session_state["rigger_bbox_tl_px"][1], y_orig))
+                    w = float(x1 - x0)
+                    h = float(y1 - y0)
+                    if w > 1 and h > 1:
+                        st.session_state["rigger_bbox_px"] = (x0, y0, w, h)
+
+                if st.session_state.get("annotations_ref_idx") is None:
+                    st.session_state["annotations_ref_idx"] = int(ref_idx)
+                st.rerun()
+
+        if st.button("Clear rigger bbox"):
+            st.session_state["rigger_bbox_px"] = None
+            st.session_state["rigger_bbox_tl_px"] = None
+            st.session_state["rigger_bbox_br_px"] = None
+            st.session_state["rigger_bbox_click_ver"] += 1
+            st.rerun()
+
+    elif step == "Athlete BBox":
+        st.markdown(
+            "**Athlete bbox via 2 clicks**: click **top-left**, then click **bottom-right**."
+        )
+        st.caption(
+            "Tip: If you want to redraw, just click again after completing both corners (it will restart)."
+        )
+
+        click = streamlit_image_coordinates(
+            overlay_img, key=f"click_bbox_{st.session_state['bbox_click_ver']}_{ref_idx}"
+        )
+        if click is not None:
+            ts = click.get("unix_time")
+            last_ts = st.session_state["last_click_ts"].get("Athlete BBox")
+            if ts is not None and ts != last_ts:
+                st.session_state["last_click_ts"]["Athlete BBox"] = ts
+                x_disp = float(click["x"])
+                y_disp = float(click["y"])
+                x_orig, y_orig = disp.to_orig_xy(x_disp, y_disp)
+
+                if bbox_tl_px is None or (bbox_tl_px is not None and bbox_br_px is not None):
+                    st.session_state["bbox_tl_px"] = (x_orig, y_orig)
+                    st.session_state["bbox_br_px"] = None
+                    st.session_state["bbox_px"] = None
+                else:
+                    st.session_state["bbox_br_px"] = (x_orig, y_orig)
+                    x0 = float(min(st.session_state["bbox_tl_px"][0], x_orig))
+                    y0 = float(min(st.session_state["bbox_tl_px"][1], y_orig))
+                    x1 = float(max(st.session_state["bbox_tl_px"][0], x_orig))
+                    y1 = float(max(st.session_state["bbox_tl_px"][1], y_orig))
+                    w = float(x1 - x0)
+                    h = float(y1 - y0)
+                    if w > 1 and h > 1:
+                        st.session_state["bbox_px"] = (x0, y0, w, h)
+
+                if st.session_state.get("annotations_ref_idx") is None:
+                    st.session_state["annotations_ref_idx"] = int(ref_idx)
+                st.rerun()
+
+        if st.button("Clear athlete bbox"):
+            st.session_state["bbox_px"] = None
+            st.session_state["bbox_tl_px"] = None
+            st.session_state["bbox_br_px"] = None
+            st.session_state["bbox_click_ver"] += 1
+            st.rerun()
+
+    else:
+        st.image(overlay_img, caption="Reference frame with annotations", width="content")
+
+    with st.expander("Annotation details", expanded=True):
         scale_input_raw = st.session_state.get("scale_dist_m_input", "")
         scale_dist_m_valid = False
         scale_dist_error = None
@@ -1161,134 +1285,6 @@ def main() -> None:
         )
         if scale_dist_error is not None:
             st.error(scale_dist_error)
-
-    with col_left:
-        overlay_img = _draw_overlay(
-            disp,
-            anchor=a_px,
-            rigger_bbox=rigger_px,
-            bbox=b_px,
-            scale0=s0_px,
-            scale1=s1_px,
-        )
-
-        if step in ("Anchor", "Scale #1", "Scale #2"):
-            st.markdown("**Click on the image**")
-            click = streamlit_image_coordinates(overlay_img, key=f"click_{step}_{ref_idx}")
-            if click is not None:
-                ts = click.get("unix_time")
-                last_ts = st.session_state["last_click_ts"].get(step)
-                if ts is None or ts == last_ts:
-                    st.stop()
-                st.session_state["last_click_ts"][step] = ts
-                x_disp = float(click["x"])
-                y_disp = float(click["y"])
-                x_orig, y_orig = disp.to_orig_xy(x_disp, y_disp)
-                if step == "Anchor":
-                    st.session_state["anchor_px"] = (x_orig, y_orig)
-                elif step == "Scale #1":
-                    st.session_state["scale0_px"] = (x_orig, y_orig)
-                elif step == "Scale #2":
-                    st.session_state["scale1_px"] = (x_orig, y_orig)
-                if st.session_state.get("annotations_ref_idx") is None:
-                    st.session_state["annotations_ref_idx"] = int(ref_idx)
-                st.rerun()
-
-        elif step == "Rigger BBox":
-            st.markdown(
-                "**Rigger bbox via 2 clicks**: click **top-left**, then click **bottom-right**."
-            )
-            st.caption("Tip: Make it tight around the rigger/oarlock hardware for stable tracking.")
-
-            click = streamlit_image_coordinates(
-                overlay_img,
-                key=f"click_rigger_{st.session_state['rigger_bbox_click_ver']}_{ref_idx}",
-            )
-            if click is not None:
-                ts = click.get("unix_time")
-                last_ts = st.session_state["last_click_ts"].get("Rigger BBox")
-                if ts is not None and ts != last_ts:
-                    st.session_state["last_click_ts"]["Rigger BBox"] = ts
-                    x_disp = float(click["x"])
-                    y_disp = float(click["y"])
-                    x_orig, y_orig = disp.to_orig_xy(x_disp, y_disp)
-
-                    if rigger_tl_px is None or (
-                        rigger_tl_px is not None and rigger_br_px is not None
-                    ):
-                        st.session_state["rigger_bbox_tl_px"] = (x_orig, y_orig)
-                        st.session_state["rigger_bbox_br_px"] = None
-                        st.session_state["rigger_bbox_px"] = None
-                    else:
-                        st.session_state["rigger_bbox_br_px"] = (x_orig, y_orig)
-                        x0 = float(min(st.session_state["rigger_bbox_tl_px"][0], x_orig))
-                        y0 = float(min(st.session_state["rigger_bbox_tl_px"][1], y_orig))
-                        x1 = float(max(st.session_state["rigger_bbox_tl_px"][0], x_orig))
-                        y1 = float(max(st.session_state["rigger_bbox_tl_px"][1], y_orig))
-                        w = float(x1 - x0)
-                        h = float(y1 - y0)
-                        if w > 1 and h > 1:
-                            st.session_state["rigger_bbox_px"] = (x0, y0, w, h)
-
-                    if st.session_state.get("annotations_ref_idx") is None:
-                        st.session_state["annotations_ref_idx"] = int(ref_idx)
-                    st.rerun()
-
-            if st.button("Clear rigger bbox"):
-                st.session_state["rigger_bbox_px"] = None
-                st.session_state["rigger_bbox_tl_px"] = None
-                st.session_state["rigger_bbox_br_px"] = None
-                st.session_state["rigger_bbox_click_ver"] += 1
-                st.rerun()
-
-        elif step == "Athlete BBox":
-            st.markdown(
-                "**Athlete bbox via 2 clicks**: click **top-left**, then click **bottom-right**."
-            )
-            st.caption(
-                "Tip: If you want to redraw, just click again after completing both corners (it will restart)."
-            )
-
-            click = streamlit_image_coordinates(
-                overlay_img, key=f"click_bbox_{st.session_state['bbox_click_ver']}_{ref_idx}"
-            )
-            if click is not None:
-                ts = click.get("unix_time")
-                last_ts = st.session_state["last_click_ts"].get("Athlete BBox")
-                if ts is not None and ts != last_ts:
-                    st.session_state["last_click_ts"]["Athlete BBox"] = ts
-                    x_disp = float(click["x"])
-                    y_disp = float(click["y"])
-                    x_orig, y_orig = disp.to_orig_xy(x_disp, y_disp)
-
-                    if bbox_tl_px is None or (bbox_tl_px is not None and bbox_br_px is not None):
-                        st.session_state["bbox_tl_px"] = (x_orig, y_orig)
-                        st.session_state["bbox_br_px"] = None
-                        st.session_state["bbox_px"] = None
-                    else:
-                        st.session_state["bbox_br_px"] = (x_orig, y_orig)
-                        x0 = float(min(st.session_state["bbox_tl_px"][0], x_orig))
-                        y0 = float(min(st.session_state["bbox_tl_px"][1], y_orig))
-                        x1 = float(max(st.session_state["bbox_tl_px"][0], x_orig))
-                        y1 = float(max(st.session_state["bbox_tl_px"][1], y_orig))
-                        w = float(x1 - x0)
-                        h = float(y1 - y0)
-                        if w > 1 and h > 1:
-                            st.session_state["bbox_px"] = (x0, y0, w, h)
-
-                    if st.session_state.get("annotations_ref_idx") is None:
-                        st.session_state["annotations_ref_idx"] = int(ref_idx)
-                    st.rerun()
-
-            if st.button("Clear athlete bbox"):
-                st.session_state["bbox_px"] = None
-                st.session_state["bbox_tl_px"] = None
-                st.session_state["bbox_br_px"] = None
-                st.session_state["bbox_click_ver"] += 1
-                st.rerun()
-
-        else:
-            st.image(overlay_img, caption="Reference frame with annotations", width="content")
 
     st.subheader("3) Run + results")
 
