@@ -18,6 +18,7 @@ def run_pipeline(
     video_path: Path,
     out_dir: Path,
     device: str = "cpu",
+    pose2d_backend: str = "mmpose",
     mmpose_model: str = DEFAULT_POSE2D_MODEL,
     mmpose_weights: Optional[Path] = None,
     motionbert_root: Optional[Path] = None,
@@ -121,6 +122,15 @@ def run_pipeline(
             )
 
     # Stage D: crop tracking (optionally overridden by strict ID tracking)
+    # Even if using Sports2D, we might want crop boxes for visualization or later steps,
+    # but strictly speaking Sports2D bypasses the need for explicit crop tracking for pose...
+    # However, the rest of the pipeline (metrics, etc) might rely on crop boxes existing?
+    # Let's keep it for now as it doesn't hurt (just time), unless we want to "bypass extra headroom work".
+    # User said: "just using this Port2D pipeline entirely without doing any extra headroom work"
+    # But Sports2D IS the headroom work (full frame processing).
+    # The "doing any extra headroom work" meant manual stuff or complicated pipeline steps.
+    # The existing crop tracker is automated. I'll leave it in to keep "debug/crop_boxes.mp4" valid.
+    
     from .crop_track import track_crop_boxes
 
     crop_npy = out_dir / "crop_boxes.npy"
@@ -172,37 +182,56 @@ def run_pipeline(
     pose2d_npz = out_dir / "pose2d.npz"
     pose2d_mp4 = debug_dir / "pose2d_overlay.mp4"
     if not skip_2d and not pose2d_npz.exists():
-        from .pose2d_mmpose import infer_pose2d_mmpose
+        if pose2d_backend == "sports2d":
+            from .pose2d_sports2d import infer_pose2d_sports2d
+            
+            # Use mmpose_model argument to pass sports2d model name/mode if needed?
+            # Or just use defaults. 
+            # We can map 'human' to 'rtmpose' and 'nano' to 'yolov8' etc if we wanted.
+            # But let's stick to defaults for now or infer from config string.
+            
+            infer_pose2d_sports2d(
+                video_path=video_path,
+                stabilization_npz=stab_npz,
+                out_npz=pose2d_npz,
+                model_name=str(pose_tracking.get("sports2d_model", "rtmpose")),
+                mode=str(pose_tracking.get("sports2d_mode", "balanced")),
+                nb_persons=pose_tracking.get("sports2d_nb_persons", 1),
+                person_ordering=str(pose_tracking.get("sports2d_person_ordering", "highest_likelihood")),
+                device=device,
+                progress=prog,
+            )
+        else:
+            from .pose2d_mmpose import infer_pose2d_mmpose
 
-        pose2d_model_id = mmpose_model
-        pose2d_config = mmpose_config
-        pose2d_checkpoint = mmpose_checkpoint or mmpose_weights
-        spec = get_pose2d_model(mmpose_model)
-        if spec is not None:
-            pose2d_model_id = spec.model_id
-            if pose2d_checkpoint is None and spec.checkpoint is not None:
-                pose2d_checkpoint = ensure_asset(
-                    spec.checkpoint.path,
-                    spec.checkpoint.url,
-                    expected_size=spec.checkpoint.size_bytes,
-                    sha256=spec.checkpoint.sha256,
-                )
+            pose2d_model_id = mmpose_model
+            pose2d_config = mmpose_config
+            pose2d_checkpoint = mmpose_checkpoint or mmpose_weights
+            spec = get_pose2d_model(mmpose_model)
+            if spec is not None:
+                pose2d_model_id = spec.model_id
+                if pose2d_checkpoint is None and spec.checkpoint is not None:
+                    pose2d_checkpoint = ensure_asset(
+                        spec.checkpoint.path,
+                        spec.checkpoint.url,
+                        expected_size=spec.checkpoint.size_bytes,
+                        sha256=spec.checkpoint.sha256,
+                    )
 
-        infer_pose2d_mmpose(
-            video_path=video_path,
-            stabilization_npz=stab_npz,
-            crop_boxes_npy=crop_npy,
-            out_npz=pose2d_npz,
-            model=pose2d_model_id,
-            device=device,
-            pose2d_weights=mmpose_weights,
-            config_path=pose2d_config,
-            checkpoint_path=pose2d_checkpoint,
-            debug_video_path=pose2d_mp4,
-            pose_tracking=pose_tracking,
-            progress=prog,
-        )
-
+            infer_pose2d_mmpose(
+                video_path=video_path,
+                stabilization_npz=stab_npz,
+                crop_boxes_npy=crop_npy,
+                out_npz=pose2d_npz,
+                model=pose2d_model_id,
+                device=device,
+                pose2d_weights=mmpose_weights,
+                config_path=pose2d_config,
+                checkpoint_path=pose2d_checkpoint,
+                debug_video_path=pose2d_mp4,
+                pose_tracking=pose_tracking,
+                progress=prog,
+            )
     # Load 2D (for 3D + metrics).
     J2d_px = None
     joint_names_2d = None

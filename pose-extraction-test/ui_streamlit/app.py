@@ -35,7 +35,15 @@ from rowing_pose.config import (
     save_run_config,
 )
 from rowing_pose.io_video import VideoWriter, get_video_metadata, iter_frames, read_frame
-from rowing_pose.model_assets import MODEL_PRESETS, MOTIONBERT_REPO, AssetSpec, ensure_asset
+from rowing_pose.model_assets import (
+    DEFAULT_MOTIONBERT_MODEL,
+    DEFAULT_POSE2D_MODEL,
+    MODEL_PRESETS,
+    MOTIONBERT_MODELS,
+    MOTIONBERT_REPO,
+    AssetSpec,
+    ensure_asset,
+)
 from rowing_pose.pipeline import run_pipeline
 from rowing_pose.progress import ProgressReporter, get_progress
 from rowing_pose.pose2d_mmpose import COCO17_EDGES
@@ -634,6 +642,7 @@ def main() -> None:
     deepsort_available = _module_available("ultralytics") and _module_available(
         "deep_sort_realtime"
     )
+    sports2d_available = _module_available("sports2d") or _module_available("Sports2D")
 
     st.title("Rowing Pose — Streamlit UI")
     st.caption("Browser-based annotation → run pipeline → 3D overlay video")
@@ -674,10 +683,30 @@ def main() -> None:
         st.subheader("2) Pipeline stages")
         st.caption("Always on: stabilization + crop.")
         enable_2d = st.checkbox(
-            "Include 2D pose (MMPose)", value=mmpose_available, disabled=not mmpose_available
+            "Include 2D pose", value=True, disabled=False
         )
-        if not mmpose_available:
+        pose2d_backend = "mmpose"
+        if enable_2d:
+            opts = []
+            if mmpose_available:
+                opts.append("MMPose")
+            if sports2d_available:
+                opts.append("Sports2D")
+            
+            if not opts:
+                st.error("No 2D backend available. Install mmpose or sports2d.")
+                enable_2d = False
+            else:
+                pose2d_backend = st.radio("2D Backend", options=opts, index=0, horizontal=True)
+                if pose2d_backend == "MMPose":
+                     st.caption("Standard pipeline using MMPose.")
+                else:
+                     st.caption("Alternative pipeline using Sports2D (RTMPose/YOLO).")
+
+        if enable_2d and pose2d_backend == "MMPose" and not mmpose_available:
             st.info("MMPose not installed. Install mmpose + mmcv + mmdet to enable 2D.")
+        if enable_2d and pose2d_backend == "Sports2D" and not sports2d_available:
+             st.info("Sports2D not installed. Install sports2d.")
 
         enable_3d = st.checkbox(
             "Include 3D lift (MotionBERT)",
@@ -691,52 +720,116 @@ def main() -> None:
             enable_3d = False
 
         st.divider()
-        st.subheader("3) Model level")
-        preset_keys = list(MODEL_PRESETS.keys())
-        preset_key = st.selectbox(
-            "Model level (accuracy vs. speed)",
-            options=preset_keys,
-            index=0,
-            format_func=lambda k: MODEL_PRESETS[k].label,
-        )
-        preset = MODEL_PRESETS[preset_key]
+        preset = None
+        motionbert_spec = None
+        if pose2d_backend == "Sports2D":
+            if enable_3d:
+                st.subheader("3) MotionBERT model")
+                motionbert_keys = list(MOTIONBERT_MODELS.keys())
+                default_motionbert_key = (
+                    DEFAULT_MOTIONBERT_MODEL
+                    if DEFAULT_MOTIONBERT_MODEL in MOTIONBERT_MODELS
+                    else motionbert_keys[0]
+                )
+                motionbert_key = st.selectbox(
+                    "3D model (accuracy vs. speed)",
+                    options=motionbert_keys,
+                    index=motionbert_keys.index(default_motionbert_key),
+                    format_func=lambda k: MOTIONBERT_MODELS[k].label,
+                )
+                motionbert_spec = MOTIONBERT_MODELS[motionbert_key]
+            else:
+                motionbert_spec = MOTIONBERT_MODELS.get(
+                    DEFAULT_MOTIONBERT_MODEL, next(iter(MOTIONBERT_MODELS.values()))
+                )
+        else:
+            st.subheader("3) Model level")
+            preset_keys = list(MODEL_PRESETS.keys())
+            preset_key = st.selectbox(
+                "Model level (accuracy vs. speed)",
+                options=preset_keys,
+                index=0,
+                format_func=lambda k: MODEL_PRESETS[k].label,
+            )
+            preset = MODEL_PRESETS[preset_key]
+            motionbert_spec = preset.motionbert
 
-        st.caption(f"2D model: {preset.pose2d.label}")
-        st.caption(f"3D model: {preset.motionbert.label}")
+        sports2d_model = "rtmpose"
+        sports2d_mode = "balanced"
+        sports2d_person_ordering = "highest_likelihood"
+        sports2d_nb_persons = 1
+        mmpose_model = DEFAULT_POSE2D_MODEL
+        mmpose_config = None
+        mmpose_checkpoint = None
+        pose2d_config_asset = None
+        pose2d_ckpt_asset = None
 
-        mmpose_model = preset.pose2d.model_id
-        pose2d_config_asset = preset.pose2d.config
-        pose2d_ckpt_asset = preset.pose2d.checkpoint
-        mmpose_config = pose2d_config_asset.path if pose2d_config_asset else None
-        mmpose_checkpoint = pose2d_ckpt_asset.path if pose2d_ckpt_asset else None
-        motionbert_model = preset.motionbert.key
+        if pose2d_backend == "API" or pose2d_backend == "Sports2D":
+             # If Sports2D is selected, we override the MMPose preset selection visually
+             st.markdown("**Sports2D Settings**")
+             sports2d_model = st.selectbox("Pose Model", ["rtmpose", "yolov8"], index=0)
+             sports2d_mode = st.selectbox("Mode", ["lightweight", "balanced", "performance"], index=1)
+             sports2d_person_ordering = st.selectbox(
+                 "Person ordering",
+                 options=[
+                     "highest_likelihood",
+                     "largest_size",
+                     "greatest_displacement",
+                     "first_detected",
+                     "last_detected",
+                     "on_click",
+                 ],
+                 index=0,
+             )
+             sports2d_nb_persons = st.selectbox("Persons to detect", options=[1, "all"], index=0)
+             if sports2d_person_ordering == "on_click":
+                 st.warning("Sports2D 'on_click' needs its own GUI; not supported in Streamlit.")
+             
+             if enable_3d and motionbert_spec is not None:
+                  st.info(f"Using MotionBERT settings: {motionbert_spec.label}")
+
+        elif enable_2d: # MMPose
+             st.caption(f"2D model: {preset.pose2d.label}")
+        
+        if enable_3d and motionbert_spec is not None:
+             st.caption(f"3D model: {motionbert_spec.label}")
+
+        if pose2d_backend == "MMPose":
+             mmpose_model = preset.pose2d.model_id
+             pose2d_config_asset = preset.pose2d.config
+             pose2d_ckpt_asset = preset.pose2d.checkpoint
+             mmpose_config = pose2d_config_asset.path if pose2d_config_asset else None
+             mmpose_checkpoint = pose2d_ckpt_asset.path if pose2d_ckpt_asset else None
+        
+        motionbert_model = motionbert_spec.key if motionbert_spec is not None else DEFAULT_MOTIONBERT_MODEL
         motionbert_root = MOTIONBERT_REPO if MOTIONBERT_REPO.exists() else None
-        motionbert_ckpt = preset.motionbert.checkpoint.path
-        motionbert_config = preset.motionbert.config_path
+        motionbert_ckpt = motionbert_spec.checkpoint.path if motionbert_spec is not None else None
+        motionbert_config = motionbert_spec.config_path if motionbert_spec is not None else None
 
         use_custom_pose2d = False
         use_custom_motionbert = False
         with st.expander("Advanced model paths"):
-            use_custom_pose2d = st.checkbox("Custom 2D model/config/weights", value=False)
-            if use_custom_pose2d:
-                mmpose_model = st.text_input("MMPose model id/alias", value=mmpose_model)
-                custom_cfg_path = st.text_input(
-                    "MMPose config path (optional)",
-                    value=str(mmpose_config) if mmpose_config else "",
-                )
-                if custom_cfg_path.strip():
-                    mmpose_config = Path(custom_cfg_path).expanduser()
-                else:
-                    mmpose_config = None
+            if pose2d_backend == "MMPose":
+                use_custom_pose2d = st.checkbox("Custom 2D model/config/weights", value=False)
+                if use_custom_pose2d:
+                    mmpose_model = st.text_input("MMPose model id/alias", value=mmpose_model)
+                    custom_cfg_path = st.text_input(
+                        "MMPose config path (optional)",
+                        value=str(mmpose_config) if mmpose_config else "",
+                    )
+                    if custom_cfg_path.strip():
+                        mmpose_config = Path(custom_cfg_path).expanduser()
+                    else:
+                        mmpose_config = None
 
-                custom_ckpt_path = st.text_input(
-                    "MMPose checkpoint path (optional)",
-                    value=str(mmpose_checkpoint) if mmpose_checkpoint else "",
-                )
-                if custom_ckpt_path.strip():
-                    mmpose_checkpoint = Path(custom_ckpt_path).expanduser()
-                else:
-                    mmpose_checkpoint = None
+                    custom_ckpt_path = st.text_input(
+                        "MMPose checkpoint path (optional)",
+                        value=str(mmpose_checkpoint) if mmpose_checkpoint else "",
+                    )
+                    if custom_ckpt_path.strip():
+                        mmpose_checkpoint = Path(custom_ckpt_path).expanduser()
+                    else:
+                        mmpose_checkpoint = None
 
             use_custom_motionbert = st.checkbox("Custom MotionBERT paths", value=False)
             if use_custom_motionbert:
@@ -798,7 +891,7 @@ def main() -> None:
             return False
 
         pose2d_ready = True
-        if enable_2d:
+        if enable_2d and pose2d_backend == "MMPose":
             if not use_custom_pose2d:
                 if pose2d_config_asset is not None:
                     cfg_spec = DownloadSpec(
@@ -834,11 +927,11 @@ def main() -> None:
                 st.error("MotionBERT checkpoint not set.")
                 pose3d_ready = False
 
-            if not use_custom_motionbert:
+            if not use_custom_motionbert and motionbert_spec is not None:
                 mb_spec = DownloadSpec(
-                    key=f"motionbert_{preset.motionbert.key}",
-                    label=f"{preset.motionbert.label} weights",
-                    asset=preset.motionbert.checkpoint,
+                    key=f"motionbert_{motionbert_spec.key}",
+                    label=f"{motionbert_spec.label} weights",
+                    asset=motionbert_spec.checkpoint,
                 )
                 pose3d_ready = pose3d_ready and ensure_download(mb_spec, enabled=True)
             elif motionbert_ckpt is not None and not motionbert_ckpt.exists():
@@ -1049,10 +1142,25 @@ def main() -> None:
     disp = _make_display_frame(frame0, max_w=1200)
 
     st.subheader("2) Annotation")
-    st.caption(
-        "Pick: anchor point → rigger bbox → athlete bbox → scale point #1 → scale point #2 → "
-        "enter known distance (m)."
-    )
+    sports2d_selected = pose2d_backend == "Sports2D"
+    require_rigger_bbox = not sports2d_selected
+    require_athlete_bbox = (not sports2d_selected) or strict_id
+    if sports2d_selected:
+        if strict_id:
+            st.caption(
+                "Pick: anchor point → athlete bbox → scale point #1 → scale point #2 → "
+                "enter known distance (m). (DeepSORT requires an athlete bbox.)"
+            )
+        else:
+            st.caption(
+                "Pick: anchor point → scale point #1 → scale point #2 → enter known distance (m). "
+                "Rigger/athlete bboxes are optional (only needed for DeepSORT or crop tracking)."
+            )
+    else:
+        st.caption(
+            "Pick: anchor point → rigger bbox → athlete bbox → scale point #1 → scale point #2 → "
+            "enter known distance (m)."
+        )
     if st.session_state.get("preloaded_run_json"):
         rel = Path(st.session_state["preloaded_run_json"])
         try:
@@ -1084,9 +1192,9 @@ def main() -> None:
     missing_steps = []
     if a_px is None:
         missing_steps.append("Anchor")
-    if rigger_px is None:
+    if require_rigger_bbox and rigger_px is None:
         missing_steps.append("Rigger BBox")
-    if b_px is None:
+    if require_athlete_bbox and b_px is None:
         missing_steps.append("Athlete BBox")
     if s0_px is None:
         missing_steps.append("Scale #1")
@@ -1291,8 +1399,8 @@ def main() -> None:
     # Validate readiness.
     ready = (
         st.session_state["anchor_px"] is not None
-        and st.session_state["rigger_bbox_px"] is not None
-        and st.session_state["bbox_px"] is not None
+        and (not require_rigger_bbox or st.session_state["rigger_bbox_px"] is not None)
+        and (not require_athlete_bbox or st.session_state["bbox_px"] is not None)
         and st.session_state["scale0_px"] is not None
         and st.session_state["scale1_px"] is not None
         and scale_dist_m_valid
@@ -1332,6 +1440,13 @@ def main() -> None:
             m_per_px = compute_m_per_px(
                 (st.session_state["scale0_px"], st.session_state["scale1_px"]), dist_m
             )
+            if sports2d_selected and not require_athlete_bbox and st.session_state["bbox_px"] is None:
+                st.session_state["bbox_px"] = (
+                    0.0,
+                    0.0,
+                    float(meta.width),
+                    float(meta.height),
+                )
 
             cfg = RunConfig(
                 version=1,
@@ -1379,6 +1494,10 @@ def main() -> None:
                         "deepsort_model": str(deepsort_model).strip() or "yolov8n.pt",
                         "deepsort_min_conf": float(deepsort_min_conf),
                         "deepsort_padding": float(deepsort_padding),
+                        "sports2d_model": sports2d_model,
+                        "sports2d_mode": sports2d_mode,
+                        "sports2d_person_ordering": sports2d_person_ordering,
+                        "sports2d_nb_persons": sports2d_nb_persons,
                     },
                 },
             )
@@ -1411,6 +1530,7 @@ def main() -> None:
                     rootrel=bool(rootrel),
                     skip_2d=not enable_2d,
                     skip_3d=not enable_3d,
+                    pose2d_backend=pose2d_backend.lower(),  # "mmpose" or "sports2d"
                     progress=progress,
                 )
 
