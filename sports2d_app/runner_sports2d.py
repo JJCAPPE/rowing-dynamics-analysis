@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import sys
+import copy
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +37,15 @@ class Sports2DRunResult:
 
 class Sports2DError(RuntimeError):
     pass
+
+
+def _deep_update(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_update(base[key], value)
+        else:
+            base[key] = value
+    return base
 
 
 def _import_sports2d() -> object:
@@ -119,13 +130,16 @@ def _sanitize_pose_model(name: str) -> str:
     return "Whole_body"
 
 
-def run_sports2d(video_path: Path, out_dir: Path, options: Sports2DOptions) -> Sports2DRunResult:
-    Sports2D = _import_sports2d()
-    _check_pose2sim_version()
-
+def build_sports2d_config(
+    video_path: Path,
+    out_dir: Path,
+    options: Sports2DOptions,
+    *,
+    include_defaults: bool = False,
+    strip_custom: bool = False,
+) -> Dict[str, Any]:
     video_path = Path(video_path).resolve()
     out_dir = Path(out_dir).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     pose_model = _sanitize_pose_model(options.pose_model)
     nb_persons = _normalize_nb_persons(options.nb_persons)
@@ -137,7 +151,7 @@ def run_sports2d(video_path: Path, out_dir: Path, options: Sports2DOptions) -> S
         else 10.0
     )
 
-    config = {
+    overrides = {
         "base": {
             "video_input": str(video_path),
             "video_dir": "",
@@ -154,12 +168,17 @@ def run_sports2d(video_path: Path, out_dir: Path, options: Sports2DOptions) -> S
             "compare": False,
         },
         "pose": {
+            "slowmo_factor": 1.0,
             "pose_model": pose_model,
             "mode": str(options.mode),
             "det_frequency": int(options.det_frequency),
             "device": device,
             "backend": "auto",
             "tracking_mode": "sports2d",
+            "keypoint_likelihood_threshold": 0.3,
+            "average_likelihood_threshold": 0.5,
+            "keypoint_number_threshold": 0.3,
+            "max_distance": 250,
         },
         "px_to_meters_conversion": {
             "to_meters": True,
@@ -231,8 +250,40 @@ def run_sports2d(video_path: Path, out_dir: Path, options: Sports2DOptions) -> S
         "logging": {"use_custom_logging": False},
     }
 
+    if not include_defaults:
+        return overrides
+
+    Sports2D = _import_sports2d()
+    default_config = getattr(Sports2D, "DEFAULT_CONFIG", None)
+    if not isinstance(default_config, dict):
+        return overrides
+
+    merged = _deep_update(copy.deepcopy(default_config), overrides)
+    if strip_custom:
+        pose_cfg = merged.get("pose")
+        if isinstance(pose_cfg, dict) and "CUSTOM" in pose_cfg:
+            pose_cfg = dict(pose_cfg)
+            pose_cfg["CUSTOM"] = "<omitted>"
+            merged["pose"] = pose_cfg
+    return merged
+
+
+def run_sports2d(video_path: Path, out_dir: Path, options: Sports2DOptions) -> Sports2DRunResult:
+    Sports2D = _import_sports2d()
+    _check_pose2sim_version()
+
+    video_path = Path(video_path).resolve()
+    out_dir = Path(out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    config = build_sports2d_config(video_path, out_dir, options, include_defaults=False)
+
     try:
-        Sports2D.process(config)
+        console_log = out_dir / "console.log"
+        with console_log.open("w", encoding="utf-8") as log_f, redirect_stdout(
+            log_f
+        ), redirect_stderr(log_f):
+            Sports2D.process(config)
     except Exception as exc:
         raise Sports2DError(f"Sports2D failed: {exc}") from exc
 

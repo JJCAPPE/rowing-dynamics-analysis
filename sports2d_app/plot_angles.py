@@ -14,8 +14,10 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 import numpy as np
 import pandas as pd
+import cv2
 
 
 @dataclass(frozen=True)
@@ -34,8 +36,20 @@ class PlotResult:
     stroke_times: list[StrokeTimes]
 
 
+@dataclass(frozen=True)
+class StrokeEvent:
+    kind: str
+    time_s: float
+    frame_idx: int
+
+
 def _normalize_name(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", name.lower())
+    norm = re.sub(r"[^a-z0-9]+", "", name.lower())
+    for suffix in ("degrees", "deg"):
+        if norm.endswith(suffix):
+            norm = norm[: -len(suffix)]
+            break
+    return norm
 
 
 def _find_column(columns: Iterable[str], target: str) -> Optional[str]:
@@ -247,6 +261,89 @@ def _detect_strokes(
     return stroke_times
 
 
+def _event_frame_idx(
+    frame_idx_series: Optional[np.ndarray],
+    event_idx: int,
+    *,
+    time_s: np.ndarray,
+    event_time_s: float,
+    fps: Optional[float],
+) -> int:
+    if frame_idx_series is not None:
+        val = frame_idx_series[event_idx]
+        if np.isfinite(val):
+            return int(round(float(val)))
+    if fps is not None and fps > 0:
+        return int(round(float(event_time_s) * float(fps)))
+    if time_s.size > 1:
+        return int(event_idx)
+    return int(event_idx)
+
+
+def _extract_frames(
+    video_path: Path,
+    frame_indices: list[int],
+    *,
+    thumb_max_px: Optional[int],
+) -> dict[int, np.ndarray]:
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video: {video_path}")
+
+    thumbnails: dict[int, np.ndarray] = {}
+    for idx in sorted(set(frame_indices)):
+        if idx < 0:
+            continue
+        ok = cap.set(cv2.CAP_PROP_POS_FRAMES, float(idx))
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            continue
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if thumb_max_px and thumb_max_px > 0:
+            h_px, w_px = frame_rgb.shape[:2]
+            scale = float(thumb_max_px) / float(max(h_px, w_px))
+            if scale < 1.0:
+                new_w = max(1, int(round(w_px * scale)))
+                new_h = max(1, int(round(h_px * scale)))
+                frame_rgb = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        thumbnails[idx] = frame_rgb
+
+    cap.release()
+    return thumbnails
+
+
+def _overlay_thumbnails(
+    ax: plt.Axes,
+    events: list[StrokeEvent],
+    thumbnails: dict[int, np.ndarray],
+    *,
+    zoom: float,
+) -> None:
+    if not events:
+        return
+
+    for event in events:
+        img = thumbnails.get(event.frame_idx)
+        if img is None:
+            continue
+        y_axes = 1.02 if event.kind == "catch" else 1.12
+        edge_color = "tab:green" if event.kind == "catch" else "tab:red"
+        imagebox = OffsetImage(img, zoom=zoom)
+        ab = AnnotationBbox(
+            imagebox,
+            (event.time_s, y_axes),
+            xycoords=ax.get_xaxis_transform(),
+            box_alignment=(0.5, 0.0),
+            frameon=True,
+            pad=0.2,
+            bboxprops=dict(edgecolor=edge_color, linewidth=1.0, facecolor="white", alpha=0.9),
+        )
+        ab.set_clip_on(False)
+        ax.add_artist(ab)
+
+
 def generate_angles_plot(
     csv_path: Path,
     output_path: Path,
@@ -259,6 +356,11 @@ def generate_angles_plot(
     prominence_frac: float = 0.1,
     smooth_window_s: float = 0.2,
     title: Optional[str] = None,
+    video_path: Optional[Path] = None,
+    include_thumbnails: bool = True,
+    thumb_max_px: Optional[int] = None,
+    thumb_zoom: float = 0.2,
+    fig_dpi: int = 300,
 ) -> PlotResult:
     csv_path = Path(csv_path)
     df = pd.read_csv(csv_path)
@@ -311,7 +413,7 @@ def generate_angles_plot(
                 smooth_window_s=smooth_window_s,
             )
 
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(14, 7))
     for col in plot_cols:
         ax.plot(time_s, df[col], label=col, linewidth=1.3, alpha=0.85)
 
@@ -348,9 +450,51 @@ def generate_angles_plot(
         fontsize=8,
     )
 
+    if include_thumbnails and video_path and stroke_times:
+        frame_idx_series = None
+        if "frame_idx" in df.columns:
+            frame_idx_series = pd.to_numeric(df["frame_idx"], errors="coerce").to_numpy(
+                dtype=float
+            )
+        cap = cv2.VideoCapture(str(video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+
+        stroke_events: list[StrokeEvent] = []
+        for stroke in stroke_times:
+            catch_frame = _event_frame_idx(
+                frame_idx_series,
+                stroke.catch_idx,
+                time_s=time_s,
+                event_time_s=stroke.catch_time_s,
+                fps=fps,
+            )
+            finish_frame = _event_frame_idx(
+                frame_idx_series,
+                stroke.finish_idx,
+                time_s=time_s,
+                event_time_s=stroke.finish_time_s,
+                fps=fps,
+            )
+            stroke_events.append(
+                StrokeEvent(kind="catch", time_s=stroke.catch_time_s, frame_idx=catch_frame)
+            )
+            stroke_events.append(
+                StrokeEvent(kind="finish", time_s=stroke.finish_time_s, frame_idx=finish_frame)
+            )
+        stroke_events.sort(key=lambda e: e.time_s)
+
+        thumbnails = _extract_frames(
+            video_path,
+            [event.frame_idx for event in stroke_events],
+            thumb_max_px=thumb_max_px,
+        )
+        _overlay_thumbnails(ax, stroke_events, thumbnails, zoom=thumb_zoom)
+        fig.subplots_adjust(top=0.78)
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    fig.savefig(output_path, dpi=fig_dpi, bbox_inches="tight")
     plt.close(fig)
 
     return PlotResult(
@@ -413,6 +557,35 @@ def _parse_args() -> argparse.Namespace:
         help="Smoothing window in seconds (default: 0.2)",
     )
     parser.add_argument("--title", default=None, help="Plot title override")
+    parser.add_argument(
+        "--video",
+        type=Path,
+        default=None,
+        help="Optional video path for overlay thumbnails",
+    )
+    parser.add_argument(
+        "--no-thumbnails",
+        action="store_true",
+        help="Disable thumbnail overlays",
+    )
+    parser.add_argument(
+        "--thumb-max-px",
+        type=int,
+        default=None,
+        help="Max width/height for thumbnails in pixels (default: keep full size)",
+    )
+    parser.add_argument(
+        "--thumb-zoom",
+        type=float,
+        default=0.2,
+        help="Zoom factor for thumbnail overlays (default: 0.2)",
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="Output DPI for the saved plot (default: 300)",
+    )
     return parser.parse_args()
 
 
@@ -433,6 +606,11 @@ def main() -> None:
         prominence_frac=args.prominence_frac,
         smooth_window_s=args.smooth_window_s,
         title=args.title,
+        video_path=args.video,
+        include_thumbnails=not args.no_thumbnails,
+        thumb_max_px=args.thumb_max_px,
+        thumb_zoom=args.thumb_zoom,
+        fig_dpi=args.dpi,
     )
     print(f"Saved plot: {result.plot_path}")
     if result.stroke_times:
