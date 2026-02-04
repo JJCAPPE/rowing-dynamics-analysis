@@ -1,0 +1,9 @@
+streamlit>=1.40
+numpy>=1.26
+pandas>=2.0
+opencv-python-headless>=4.8
+pillow>=10
+sports2d
+pyyaml
+easydict
+torch
