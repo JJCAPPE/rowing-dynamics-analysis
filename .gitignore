@@ -27,3 +27,4 @@ pose-extraction-test/source-videos/
 pose-extraction-test/models/*
 .cursor/debug.log
 pose-extraction-test/yolov8n.pt
+sports2d_app/runs/
