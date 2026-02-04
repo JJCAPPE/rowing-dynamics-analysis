@@ -359,7 +359,7 @@ def generate_angles_plot(
     video_path: Optional[Path] = None,
     include_thumbnails: bool = True,
     thumb_max_px: Optional[int] = None,
-    thumb_zoom: float = 0.2,
+    thumb_zoom: float = 0.05,
     fig_dpi: int = 300,
 ) -> PlotResult:
     csv_path = Path(csv_path)

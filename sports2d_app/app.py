@@ -480,7 +480,7 @@ def _generate_motionbert_angles_plot(
             video_path=video_path,
             include_thumbnails=video_path is not None,
             thumb_max_px=None,
-            thumb_zoom=0.18,
+            thumb_zoom=0.045,
             fig_dpi=300,
         )
         return [plot_path], []
