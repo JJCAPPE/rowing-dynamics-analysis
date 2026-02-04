@@ -17,6 +17,7 @@ from parse_sports2d import (
     write_points_csv,
     write_points_npz,
 )
+from plot_angles import generate_angles_plot
 from runner_sports2d import Sports2DOptions, Sports2DError, run_sports2d
 from motionbert_3d import run_motionbert
 from overlay_3d import generate_pose3d_overlay_video, get_video_metadata
@@ -46,6 +47,8 @@ class ExportSummary:
     points_csv: List[Path]
     points_npz: List[Path]
     angles_csv: List[Path]
+    angles_plots: List[Path]
+    angle_plot_errors: List[str]
 
 
 def _sanitize_stem(name: str) -> str:
@@ -103,6 +106,8 @@ def _export_sports2d_outputs(
     points_csv = []
     points_npz = []
     angles_csv = []
+    angles_plots = []
+    angle_plot_errors: List[str] = []
 
     for trc in trc_files:
         trc_data = parse_trc_file(trc)
@@ -120,6 +125,12 @@ def _export_sports2d_outputs(
         out_csv = exports_dir / f"{stem}_angles.csv"
         write_angles_csv(mot_data, out_csv)
         angles_csv.append(out_csv)
+        plot_path = exports_dir / f"{stem}_plot.png"
+        try:
+            generate_angles_plot(out_csv, plot_path)
+            angles_plots.append(plot_path)
+        except Exception as exc:
+            angle_plot_errors.append(f"{out_csv.name}: {exc}")
 
     return ExportSummary(
         trc_files=trc_files,
@@ -127,6 +138,8 @@ def _export_sports2d_outputs(
         points_csv=points_csv,
         points_npz=points_npz,
         angles_csv=angles_csv,
+        angles_plots=angles_plots,
+        angle_plot_errors=angle_plot_errors,
     )
 
 
@@ -303,11 +316,28 @@ def main() -> None:
         else:
             st.info("3D overlay video not available.")
 
+        st.subheader("Angles Plot")
+        if summary.angles_plots:
+            labels = [p.stem.replace("_plot", "") for p in summary.angles_plots]
+            if len(summary.angles_plots) > 1:
+                selected = st.selectbox("Angles plot source", labels, index=0)
+                plot_idx = labels.index(selected)
+            else:
+                plot_idx = 0
+            st.image(str(summary.angles_plots[plot_idx]))
+        else:
+            st.info("Angles plot not available.")
+        if summary.angle_plot_errors:
+            with st.expander("Angle plot warnings"):
+                for msg in summary.angle_plot_errors:
+                    st.write(msg)
+
         st.subheader("Outputs")
         st.markdown(
             "- Sports2D output folder (annotated video, TRC, MOT)\n"
             "- Consolidated points CSV/NPZ\n"
             "- Sports2D angles CSV\n"
+            "- Angles plot image (`*_plot.png`)\n"
             "- MotionBERT 3D pose (`pose3d.npz`)\n"
             "- H36M angles (`angles_h36m.csv`)\n"
             "- 3D overlay video (`pose3d_overlay.mp4`)"

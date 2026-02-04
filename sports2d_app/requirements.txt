@@ -3,6 +3,7 @@ numpy>=1.26
 pandas>=2.0
 opencv-python-headless>=4.8
 pillow>=10
+matplotlib>=3.7
 Pose2Sim>=0.10.40
 sports2d
 pyyaml

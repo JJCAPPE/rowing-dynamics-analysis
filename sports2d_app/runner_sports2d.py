@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOCAL_SPORTS2D = REPO_ROOT / "pose-extraction-test" / "third_party" / "Sports2D"
+LOCAL_SPORTS2D = REPO_ROOT / "sports2d_app" / "third_party" / "Sports2D"
 MIN_POSE2SIM_VERSION = (0, 10, 40)
 
 

@@ -10,11 +10,10 @@ import numpy as np
 import pandas as pd
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-POSE_ROOT = REPO_ROOT / "pose-extraction-test"
+APP_ROOT = Path(__file__).resolve().parent
 
-if str(POSE_ROOT) not in sys.path:
-    sys.path.insert(0, str(POSE_ROOT))
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
 from rowing_pose.kinematics import compute_basic_angles_h36m17  # type: ignore
 from rowing_pose.model_assets import (  # type: ignore

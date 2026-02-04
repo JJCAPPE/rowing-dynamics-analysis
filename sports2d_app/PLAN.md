@@ -14,7 +14,7 @@ Goal: build a completely separate Streamlit app that runs the Sports2D pipeline 
   - `sports2d_app/README.md`
 
 ## 2. Sports2D Runner (maximum reuse)
-- Import from the local repo clone: `pose-extraction-test/third_party/Sports2D`.
+- Import from the local repo clone: `sports2d_app/third_party/Sports2D`.
 - Build a config dict and call `Sports2D.process(config_dict)` directly.
 - Required config flags:
   - `save_vid = true` (Sports2D annotated video)
@@ -37,7 +37,7 @@ Goal: build a completely separate Streamlit app that runs the Sports2D pipeline 
 
 ## 4. 3D Lift (always on, Person 0 only)
 - Build a COCO-17 subset from the TRC (by name mapping) for Person 0 only.
-- Use the MotionBERT submodule at `pose-extraction-test/third_party/MotionBERT`.
+- Use the MotionBERT copy at `sports2d_app/third_party/MotionBERT`.
 - Run MotionBERT and write:
   - `pose3d.npz` (raw + scaled)
   - `angles_h36m.csv` (H36M angles from 3D)

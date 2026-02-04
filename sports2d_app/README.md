@@ -14,13 +14,13 @@ pip install -r sports2d_app/requirements.txt
 Sports2D uses a local clone at:
 
 ```
-pose-extraction-test/third_party/Sports2D
+sports2d_app/third_party/Sports2D
 ```
 
-MotionBERT uses the existing submodule at:
+MotionBERT uses the local copy at:
 
 ```
-pose-extraction-test/third_party/MotionBERT
+sports2d_app/third_party/MotionBERT
 ```
 
 If Sports2D fails with a Pose2Sim import error, ensure Pose2Sim is upgraded:
