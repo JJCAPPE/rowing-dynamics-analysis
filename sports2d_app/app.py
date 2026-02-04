@@ -7,7 +7,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -311,6 +311,19 @@ def _estimate_json_preview_height(text: str) -> int:
     return min(800, max(240, lines * 18))
 
 
+ProgressCallback = Callable[[str, float], None]
+
+
+def _report_progress(
+    callback: Optional[ProgressCallback],
+    label: str,
+    progress: float,
+) -> None:
+    if callback is None:
+        return
+    callback(label, max(0.0, min(1.0, progress)))
+
+
 def _build_sports2d_run_details(
     *,
     input_video: Path,
@@ -493,14 +506,25 @@ def _run_pipeline(
     input_video: Path,
     run_dir: Path,
     options: Sports2DOptions,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Tuple[RunArtifacts, ExportSummary, Optional[Path]]:
     sports2d_out_dir = run_dir / "sports2d"
     exports_dir = run_dir / "exports"
     motionbert_dir = run_dir / "motionbert"
     overlay_dir = run_dir / "overlay"
 
+    _report_progress(
+        progress_callback,
+        "Step 1/6: Running Sports2D (pose + tracking)",
+        0.05,
+    )
     result = run_sports2d(input_video, sports2d_out_dir, options)
 
+    _report_progress(
+        progress_callback,
+        "Step 2/6: Exporting Sports2D outputs",
+        0.45,
+    )
     exports_dir.mkdir(parents=True, exist_ok=True)
     summary_base = _export_sports2d_outputs(result.trc_files, result.mot_files, exports_dir)
 
@@ -508,10 +532,20 @@ def _run_pipeline(
     if person0_trc is None:
         raise RuntimeError("No TRC files found for Sports2D output.")
 
+    _report_progress(
+        progress_callback,
+        "Step 3/6: Preparing MotionBERT inputs",
+        0.6,
+    )
     trc_data = parse_trc_file(person0_trc)
     J2d_px, _ = extract_coco17_from_trc(trc_data)
 
     meta = get_video_metadata(result.annotated_video)
+    _report_progress(
+        progress_callback,
+        "Step 4/6: Running MotionBERT 3D lift",
+        0.7,
+    )
     mb_outputs = run_motionbert(
         J2d_px,
         width=meta.width,
@@ -523,6 +557,11 @@ def _run_pipeline(
         rootrel=False,
     )
 
+    _report_progress(
+        progress_callback,
+        "Step 5/6: Rendering 3D overlay + plots",
+        0.85,
+    )
     angles_plots, angle_plot_errors = _generate_motionbert_angles_plot(
         mb_outputs.angles_csv,
         exports_dir,
@@ -536,6 +575,11 @@ def _run_pipeline(
         out_video_path=overlay_video,
     )
 
+    _report_progress(
+        progress_callback,
+        "Step 6/6: Packaging outputs",
+        0.95,
+    )
     zip_path = run_dir / "results.zip"
     _zip_outputs(
         zip_path,
@@ -646,20 +690,30 @@ def main() -> None:
         )
 
         with st.status("Running Sports2D...", expanded=True) as status:
+            progress_bar = st.progress(0, text="Starting...")
+
+            def _on_progress(label: str, progress: float) -> None:
+                status.update(label=label, state="running")
+                progress_bar.progress(int(progress * 100), text=label)
+
             try:
                 artifacts, summary, overlay_video = _run_pipeline(
                     input_video=input_video,
                     run_dir=run_dir,
                     options=options,
+                    progress_callback=_on_progress,
                 )
             except Sports2DError as exc:
                 status.update(label="Sports2D failed", state="error")
+                progress_bar.progress(100, text="Failed")
                 st.error(str(exc))
                 st.stop()
             except Exception as exc:
                 status.update(label="Processing failed", state="error")
+                progress_bar.progress(100, text="Failed")
                 st.exception(exc)
                 st.stop()
+            progress_bar.progress(100, text="Done")
             status.update(label="Done", state="complete")
 
         st.subheader("Results")
