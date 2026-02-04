@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
+
+os.environ.setdefault("MPLCONFIGDIR", str(Path("/tmp/matplotlib")))
 
 import matplotlib
 
@@ -270,7 +273,14 @@ def generate_angles_plot(
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     plot_cols: list[str] = []
-    columns_set = {c for c in columns} if columns else None
+    columns_set: Optional[set[str]] = None
+    if columns:
+        columns_set = set()
+        normalized = {_normalize_name(col): col for col in df.columns}
+        for requested in columns:
+            match = normalized.get(_normalize_name(requested))
+            if match is not None:
+                columns_set.add(match)
     for col in df.columns:
         if col == time_col:
             continue
