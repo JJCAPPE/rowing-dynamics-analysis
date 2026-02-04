@@ -3,11 +3,12 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_SPORTS2D = REPO_ROOT / "pose-extraction-test" / "third_party" / "Sports2D"
+MIN_POSE2SIM_VERSION = (0, 10, 40)
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,33 @@ def _import_sports2d() -> object:
             ) from exc
 
 
+def _check_pose2sim_version() -> None:
+    try:
+        from importlib.metadata import version
+    except Exception as exc:
+        raise Sports2DError("Unable to read Pose2Sim version.") from exc
+
+    try:
+        ver = version("Pose2Sim")
+    except Exception as exc:
+        raise Sports2DError(
+            "Pose2Sim is not installed. Install Pose2Sim>=0.10.40 to use Sports2D."
+        ) from exc
+
+    def parse(v: str) -> Tuple[int, int, int]:
+        parts = v.split("+", 1)[0].split(".")
+        nums = [int(p) for p in parts[:3] if p.isdigit() or p.isnumeric()]
+        while len(nums) < 3:
+            nums.append(0)
+        return tuple(nums[:3])  # type: ignore[return-value]
+
+    if parse(ver) < MIN_POSE2SIM_VERSION:
+        raise Sports2DError(
+            f"Pose2Sim {ver} detected. Sports2D requires Pose2Sim >= 0.10.40. "
+            "Please upgrade with `pip install --upgrade Pose2Sim>=0.10.40`."
+        )
+
+
 def _normalize_device(device: str) -> str:
     d = (device or "auto").strip().lower()
     if d in {"cpu", "cuda", "mps", "rocm"}:
@@ -93,6 +121,7 @@ def _sanitize_pose_model(name: str) -> str:
 
 def run_sports2d(video_path: Path, out_dir: Path, options: Sports2DOptions) -> Sports2DRunResult:
     Sports2D = _import_sports2d()
+    _check_pose2sim_version()
 
     video_path = Path(video_path).resolve()
     out_dir = Path(out_dir).resolve()

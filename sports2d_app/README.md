@@ -23,6 +23,12 @@ MotionBERT uses the existing submodule at:
 pose-extraction-test/third_party/MotionBERT
 ```
 
+If Sports2D fails with a Pose2Sim import error, ensure Pose2Sim is upgraded:
+
+```bash
+pip install --upgrade "Pose2Sim>=0.10.40"
+```
+
 ## Run
 
 ```bash
