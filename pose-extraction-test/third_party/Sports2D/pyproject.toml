@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools-scm"] # PEP 508 specs
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sports2d"
+dynamic = ["version"] # Generate version from git tags
+authors = [
+    {name = "David Pagnon", email = "contact@david-pagnon.com"},
+]
+maintainers = [
+    {name = "David Pagnon", email = "contact@david-pagnon.com"},
+]
+description = "Compute 2D human pose and angles from a video or a webcam."
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["markerless", "kinematics", "OpenPose", "OpenSim", "Mocap", "biomechanics", "sports coaching", "pose estimation", "joint angles", "sports analytics", "kinovea"]
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Healthcare Industry",
+    "Intended Audience :: Education",
+    # "License :: OSI Approved :: BSD-3-Clause",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+]
+urls = {Homepage = "https://github.com/davidpagnon/Sports2D", "Bug Tracker" = "https://github.com/davidpagnon/Sports2D/issues"}
+dependencies = [
+    "imageio_ffmpeg",
+    "Pose2Sim>=0.10.40"
+]
+
+[tool.setuptools_scm]
+
+[tool.setuptools]
+packages = {find = {}}
+
+[tool.setuptools.package-data]
+"*" = ["Demo/**/*", "Demo/**/**/*"]
+
+[project.scripts]
+sports2d = "Sports2D.Sports2D:main"
+tests_sports2d = "Sports2D.Utilities.tests:test_workflow"
