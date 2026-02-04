@@ -82,7 +82,7 @@ def run_motionbert(
     mb_in = prepare_motionbert_input_from_coco(J2d_px, width=width, height=height, mode="pixel")
 
     J3d_raw = lift_pose3d_motionbert(
-        mb_in,
+        mb_in.X_h36m17,
         motionbert_root=motionbert_root,
         checkpoint_path=ckpt_path,
         clip_len=int(clip_len),
