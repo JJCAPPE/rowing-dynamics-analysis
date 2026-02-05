@@ -81,18 +81,23 @@ def _save_uploaded_video(uploaded, dest_dir: Path) -> Path:
     return dst
 
 
-def _find_person0_trc(trc_files: List[Path]) -> Optional[Path]:
-    for p in trc_files:
-        if "_person00" in p.stem:
-            return p
-    return trc_files[0] if trc_files else None
+def _person_tag(person_index: int) -> str:
+    return f"_person{person_index:02d}"
 
 
-def _find_person0_mot(mot_files: List[Path]) -> Optional[Path]:
-    for p in mot_files:
-        if "_person00" in p.stem:
-            return p
-    return mot_files[0] if mot_files else None
+def _person_pattern(person_index: int) -> re.Pattern[str]:
+    tag = _person_tag(person_index)
+    return re.compile(rf"{re.escape(tag)}(?!\\d)|_person{person_index}(?!\\d)")
+
+
+def _filter_person_files(files: List[Path], person_index: int) -> List[Path]:
+    pattern = _person_pattern(person_index)
+    return sorted(
+        [p for p in files if pattern.search(p.stem)],
+        key=lambda p: p.name,
+    )
+
+
 
 
 def _zip_outputs(zip_path: Path, paths: List[Path]) -> None:
@@ -330,6 +335,7 @@ def _build_sports2d_run_details(
     run_dir: Path,
     sports2d_out_dir: Path,
     options: Sports2DOptions,
+    person_index: int = 0,
 ) -> Dict[str, Any]:
     config_overrides = build_sports2d_config(
         input_video, sports2d_out_dir, options, include_defaults=False
@@ -369,6 +375,11 @@ def _build_sports2d_run_details(
             "algorithm": pose_cfg.get("tracking_mode", "sports2d"),
             "person_ordering_method": base_cfg.get("person_ordering_method"),
             "nb_persons_to_detect": base_cfg.get("nb_persons_to_detect"),
+        },
+        {
+            "step": "person_selection",
+            "person_index": person_index,
+            "person_file_tag": _person_tag(person_index),
         },
         {
             "step": "pose_post_processing",
@@ -475,20 +486,10 @@ def _generate_motionbert_angles_plot(
     video_path: Optional[Path],
 ) -> Tuple[List[Path], List[str]]:
     plot_path = exports_dir / f"{angles_csv.stem}_plot.png"
-    columns = [
-        "left_hip_deg",
-        "right_hip_deg",
-        "left_knee_deg",
-        "right_knee_deg",
-        "left_elbow_deg",
-        "right_elbow_deg",
-        "head_vs_trunk_deg",
-    ]
     try:
         generate_angles_plot(
             angles_csv,
             plot_path,
-            columns=columns,
             title="Rowing angles (3D)",
             video_path=video_path,
             include_thumbnails=video_path is not None,
@@ -506,6 +507,7 @@ def _run_pipeline(
     input_video: Path,
     run_dir: Path,
     options: Sports2DOptions,
+    person_index: int = 0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> Tuple[RunArtifacts, ExportSummary, Optional[Path]]:
     sports2d_out_dir = run_dir / "sports2d"
@@ -526,18 +528,27 @@ def _run_pipeline(
         0.45,
     )
     exports_dir.mkdir(parents=True, exist_ok=True)
-    summary_base = _export_sports2d_outputs(result.trc_files, result.mot_files, exports_dir)
+    person_trc_files = _filter_person_files(result.trc_files, person_index)
+    person_mot_files = _filter_person_files(result.mot_files, person_index)
+    if not person_trc_files:
+        raise RuntimeError(
+            f"No TRC files found for person index {person_index}. "
+            "Increase the number of persons to detect or choose a different index."
+        )
+    summary_base = _export_sports2d_outputs(
+        person_trc_files,
+        person_mot_files,
+        exports_dir,
+    )
 
-    person0_trc = _find_person0_trc(result.trc_files)
-    if person0_trc is None:
-        raise RuntimeError("No TRC files found for Sports2D output.")
+    person_trc = person_trc_files[0]
 
     _report_progress(
         progress_callback,
         "Step 3/6: Preparing MotionBERT inputs",
         0.6,
     )
-    trc_data = parse_trc_file(person0_trc)
+    trc_data = parse_trc_file(person_trc)
     J2d_px, _ = extract_coco17_from_trc(trc_data)
 
     meta = get_video_metadata(result.annotated_video)
@@ -620,7 +631,7 @@ def main() -> None:
     )
 
     st.markdown(
-        "**Note:** This app runs Sports2D end-to-end and always performs a 3D lift on Person 0."
+        "**Note:** This app runs Sports2D end-to-end and performs a 3D lift on the selected person (default Person 0)."
     )
     st.warning(
         "Results are most accurate when the athlete moves in a near-2D plane (side view)."
@@ -642,7 +653,14 @@ def main() -> None:
 
         st.divider()
         st.header("Sports2D Settings")
-        nb_persons = st.selectbox("Number of persons", [1, 2, 3, "all"], index=0)
+        nb_persons = st.selectbox("Max persons to detect", [1, 2, 3, "all"], index=0)
+        person_index = st.number_input(
+            "Person index (0-based)",
+            min_value=0,
+            value=0,
+            step=1,
+            help="Select which person to use for MotionBERT + exports. Only one person is processed per run.",
+        )
         first_person_height = st.number_input("First person height (m)", 1.2, 2.5, 1.7, 0.01)
         distance_m = st.number_input("Distance to camera (m)", 0.0, 50.0, 10.0, 0.5)
         pose_model = st.selectbox(
@@ -664,6 +682,12 @@ def main() -> None:
             st.stop()
         if mode == "Upload" and uploaded is None:
             st.error("Please upload a video.")
+            st.stop()
+        person_index = int(person_index)
+        if isinstance(nb_persons, int) and person_index >= nb_persons:
+            st.error(
+                f"Person index {person_index} is out of range for max persons {nb_persons}."
+            )
             st.stop()
 
         video_stem = _sanitize_stem(src_path.stem if src_path else "video")
@@ -701,6 +725,7 @@ def main() -> None:
                     input_video=input_video,
                     run_dir=run_dir,
                     options=options,
+                    person_index=person_index,
                     progress_callback=_on_progress,
                 )
             except Sports2DError as exc:
@@ -725,13 +750,13 @@ def main() -> None:
             st.markdown("**Sports2D annotated video**")
             st.video(str(artifacts.sports2d_annotated_video))
 
-        st.subheader("3D Overlay")
+        st.subheader(f"3D Overlay (Person {person_index})")
         if overlay_video is not None and overlay_video.exists():
             st.video(str(overlay_video))
         else:
             st.info("3D overlay video not available.")
 
-        st.subheader("3D Angles Plot")
+        st.subheader(f"3D Angles Plot (Person {person_index})")
         if summary.angles_plots:
             labels = [p.stem.replace("_plot", "") for p in summary.angles_plots]
             if len(summary.angles_plots) > 1:
@@ -750,8 +775,8 @@ def main() -> None:
         st.subheader("Outputs")
         st.markdown(
             "- Sports2D output folder (annotated video, TRC, MOT)\n"
-            "- Consolidated points CSV/NPZ\n"
-            "- Sports2D angles CSV\n"
+            f"- Consolidated points CSV/NPZ (person {person_index})\n"
+            f"- Sports2D angles CSV (person {person_index})\n"
             "- 3D angles plot image (`*_plot.png`)\n"
             "- MotionBERT 3D pose (`pose3d.npz`)\n"
             "- H36M angles (`angles_h36m.csv`)\n"
@@ -764,6 +789,7 @@ def main() -> None:
             run_dir=run_dir,
             sports2d_out_dir=artifacts.sports2d_output_dir.parent,
             options=options,
+            person_index=person_index,
         )
         run_details_text = json.dumps(run_details, indent=2, ensure_ascii=True)
         preview_height = _estimate_json_preview_height(run_details_text)

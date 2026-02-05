@@ -71,6 +71,23 @@ def _auto_time_column(columns: Iterable[str]) -> Optional[str]:
     return None
 
 
+def _is_non_angle_column(name: str) -> bool:
+    norm = re.sub(r"[^a-z0-9]+", "", name.lower())
+    return norm in {
+        "frame",
+        "frameidx",
+        "frameindex",
+        "idx",
+        "index",
+        "pelvisxm",
+    }
+
+
+def _looks_like_angle(name: str) -> bool:
+    lowered = name.lower()
+    return "deg" in lowered or "angle" in lowered
+
+
 def _median_dt(time_s: np.ndarray) -> float:
     diffs = np.diff(time_s.astype(float))
     diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
@@ -383,13 +400,26 @@ def generate_angles_plot(
             match = normalized.get(_normalize_name(requested))
             if match is not None:
                 columns_set.add(match)
-    for col in df.columns:
-        if col == time_col:
-            continue
-        if columns_set is not None and col not in columns_set:
-            continue
-        if df[col].notna().any():
-            plot_cols.append(col)
+    if columns_set is not None:
+        for col in df.columns:
+            if col == time_col:
+                continue
+            if col not in columns_set:
+                continue
+            if df[col].notna().any():
+                plot_cols.append(col)
+    else:
+        candidate_cols = []
+        for col in df.columns:
+            if col == time_col:
+                continue
+            if _is_non_angle_column(col):
+                continue
+            if df[col].notna().any():
+                candidate_cols.append(col)
+
+        angle_like = [col for col in candidate_cols if _looks_like_angle(col)]
+        plot_cols = angle_like if angle_like else candidate_cols
 
     if not plot_cols:
         raise ValueError("No numeric columns available to plot.")
