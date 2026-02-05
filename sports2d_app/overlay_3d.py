@@ -7,6 +7,8 @@ from typing import Iterator, Tuple
 import cv2
 import numpy as np
 
+from rowing_pose.kinematics import compute_basic_angles_h36m17
+from rowing_pose.skeletons import H36M17_JOINT_NAMES
 
 H36M17_EDGES = (
     (0, 1),
@@ -26,6 +28,18 @@ H36M17_EDGES = (
     (14, 15),
     (15, 16),
 )
+
+ANGLE_LABEL_JOINT = {
+    "left_knee": "left_knee",
+    "right_knee": "right_knee",
+    "left_hip": "left_hip",
+    "right_hip": "right_hip",
+    "left_elbow": "left_elbow",
+    "right_elbow": "right_elbow",
+    "trunk_vs_horizontal": "thorax",
+    "spine_flexion": "spine",
+    "head_vs_trunk": "neck",
+}
 
 
 @dataclass(frozen=True)
@@ -70,6 +84,7 @@ def _render_3d_inset(
     mirror_x: bool = True,
     flip_y: bool = False,
     flip_z: bool = False,
+    angle_labels: Tuple[Tuple[int, str], ...] | None = None,
 ) -> np.ndarray:
     W, H = int(size[0]), int(size[1])
     canvas = np.zeros((H, W, 3), dtype=np.uint8)
@@ -133,6 +148,43 @@ def _render_3d_inset(
             continue
         cv2.circle(canvas, (int(round(xj)), int(round(yj))), 3, (255, 255, 255), -1)
 
+    if angle_labels:
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.4
+        thickness = 1
+        for joint_idx, label in angle_labels:
+            if not (0 <= joint_idx < 17):
+                continue
+            xj, yj = float(x_img[joint_idx]), float(y_img[joint_idx])
+            if not (np.isfinite(xj) and np.isfinite(yj)):
+                continue
+            text = str(label)
+            (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+            x = int(round(xj + 6))
+            y = int(round(yj - 6))
+            x = max(2, min(x, W - tw - 2))
+            y = max(th + 2, min(y, H - 2))
+            cv2.putText(
+                canvas,
+                text,
+                (x + 1, y + 1),
+                font,
+                scale,
+                (0, 0, 0),
+                thickness + 2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                canvas,
+                text,
+                (x, y),
+                font,
+                scale,
+                (255, 255, 255),
+                thickness,
+                cv2.LINE_AA,
+            )
+
     cv2.putText(canvas, "3D", (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
     return canvas
 
@@ -145,6 +197,8 @@ def generate_pose3d_overlay_video(
     mirror_3d: bool = True,
     flip_3d: bool = False,
     flip_3d_depth: bool = False,
+    inset_bg_alpha: float = 0.5,
+    show_joint_angles: bool = True,
 ) -> None:
     video_path = Path(video_path)
     out_video_path = Path(out_video_path)
@@ -158,10 +212,39 @@ def generate_pose3d_overlay_video(
     else:
         J3d = np.asarray(d3["J3d_raw"], dtype=np.float32).reshape(-1, 17, 3)
 
+    angle_specs: Tuple[Tuple[int, int], ...] = ()
+    angles_deg: np.ndarray | None = None
+    if show_joint_angles:
+        try:
+            if d3.get("joint_names") is not None:
+                joint_names = tuple(str(x) for x in np.asarray(d3["joint_names"]).tolist())
+            else:
+                joint_names = H36M17_JOINT_NAMES
+            ang = compute_basic_angles_h36m17(J3d, joint_names)
+            angles_deg = np.degrees(ang.values_rad)
+            name_to_idx = {str(n): i for i, n in enumerate(joint_names)}
+            specs = []
+            for a_idx, a_name in enumerate(ang.names):
+                joint_name = ANGLE_LABEL_JOINT.get(a_name)
+                if joint_name is None:
+                    continue
+                joint_idx = name_to_idx.get(joint_name)
+                if joint_idx is None:
+                    continue
+                specs.append((a_idx, int(joint_idx)))
+            angle_specs = tuple(specs)
+        except Exception:
+            angles_deg = None
+            angle_specs = ()
+
     inset_w, inset_h = int(inset_size[0]), int(inset_size[1])
     margin = 12
-    x0 = max(0, meta.width - inset_w - margin)
-    y0 = margin
+    x0 = margin
+    y0 = meta.height - inset_h - margin
+    if x0 + inset_w > meta.width:
+        x0 = max(0, meta.width - inset_w)
+    if y0 < 0:
+        y0 = 0
 
     fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(
@@ -185,16 +268,36 @@ def generate_pose3d_overlay_video(
                 mirror_x=mirror_3d,
                 flip_y=flip_3d,
                 flip_z=flip_3d_depth,
+                angle_labels=(
+                    tuple(
+                        (
+                            joint_idx,
+                            f"{int(round(float(angles_deg[idx, a_idx])))}deg",
+                        )
+                        for a_idx, joint_idx in angle_specs
+                        if np.isfinite(angles_deg[idx, a_idx])
+                    )
+                    if angles_deg is not None and angle_specs
+                    else None
+                ),
             )
             # Draw border and composite
-            cv2.rectangle(
-                frame,
-                (x0 - 2, y0 - 2),
-                (x0 + inset_w + 2, y0 + inset_h + 2),
-                (0, 0, 0),
-                -1,
-            )
-            frame[y0 : y0 + inset_h, x0 : x0 + inset_w] = inset
+            roi = frame[y0 : y0 + inset_h, x0 : x0 + inset_w]
+            bg_alpha = float(np.clip(inset_bg_alpha, 0.0, 1.0))
+            if bg_alpha > 0:
+                dimmed = (roi.astype(np.float32) * (1.0 - bg_alpha)).astype(np.uint8)
+            else:
+                dimmed = roi.copy()
+            composite = dimmed
+            mask = np.any(inset != 0, axis=2)
+            composite[mask] = inset[mask]
+            frame[y0 : y0 + inset_h, x0 : x0 + inset_w] = composite
+
+            bx0 = max(0, x0 - 2)
+            by0 = max(0, y0 - 2)
+            bx1 = min(meta.width - 1, x0 + inset_w + 1)
+            by1 = min(meta.height - 1, y0 + inset_h + 1)
+            cv2.rectangle(frame, (bx0, by0), (bx1, by1), (0, 0, 0), 1)
             writer.write(frame)
     finally:
         writer.release()
