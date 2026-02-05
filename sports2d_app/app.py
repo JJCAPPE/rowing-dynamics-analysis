@@ -653,8 +653,8 @@ def main() -> None:
             step=1,
             help="Select which person to use for MotionBERT + exports. Only one person is processed per run.",
         )
-        first_person_height = st.number_input("First person height (m)", 1.2, 2.5, 1.7, 0.01)
-        distance_m = st.number_input("Distance to camera (m)", 0.0, 50.0, 10.0, 0.5)
+        first_person_height = st.number_input("First person height (m)", 1.2, 2.5, 1.95, 0.01)
+        distance_m = st.number_input("Distance to camera (m)", 0.0, 50.0, 5.0, 0.5)
         pose_model = st.selectbox(
             "Pose model",
             ["Whole_body", "Whole_body_wrist", "Body_with_feet", "Body"],
@@ -662,6 +662,19 @@ def main() -> None:
         )
         mode_choice = st.selectbox("Mode", ["lightweight", "balanced", "performance"], index=1)
         det_frequency = st.slider("Detection frequency (frames)", 1, 30, 4, 1)
+
+        #to convert 30fps video to realtime and keep frames use
+        #ffmpeg -y -i /Users/giacomo/dev/rowing-video-analysis/source-videos/rp3-slow.MOV \
+        #     -vf "setpts=N/(240*TB)" -an -c:v libx264 -crf 23 -preset medium \
+        #    /Users/giacomo/dev/rowing-video-analysis/source-videos/rp3-normal-240cfr.mp4
+        slowmo_factor = st.number_input(
+            "Slow-motion factor",
+            min_value=0.1,
+            max_value=32.0,
+            value=1.0,
+            step=0.5,
+            help="Use 8 for 240fps captured and exported at 30fps. Use 1 for normal-speed video.",
+        )
         device = st.selectbox("Device", ["auto", "cpu", "cuda", "mps"], index=0)
 
         st.divider()
@@ -701,6 +714,7 @@ def main() -> None:
             distance_to_camera_m=float(distance_m) if distance_m > 0 else None,
             device=device,
             det_frequency=int(det_frequency),
+            slowmo_factor=float(slowmo_factor),
             save_images=False,
             save_graphs=False,
         )

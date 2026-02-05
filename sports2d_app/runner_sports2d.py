@@ -23,6 +23,7 @@ class Sports2DOptions:
     distance_to_camera_m: Optional[float] = None
     device: str = "auto"
     det_frequency: int = 4
+    slowmo_factor: float = 1.0
     save_images: bool = False
     save_graphs: bool = False
 
@@ -168,7 +169,7 @@ def build_sports2d_config(
             "compare": False,
         },
         "pose": {
-            "slowmo_factor": 1.0,
+            "slowmo_factor": float(options.slowmo_factor),
             "pose_model": pose_model,
             "mode": str(options.mode),
             "det_frequency": int(options.det_frequency),
