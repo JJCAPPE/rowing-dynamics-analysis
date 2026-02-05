@@ -44,6 +44,7 @@ def compute_basic_angles_h36m17(J3d: np.ndarray, joint_names: Sequence[str]) -> 
         return int(name_to_idx[name])
 
     pelvis = idx("pelvis")
+    spine = idx("spine")
     thorax = idx("thorax")
     neck = idx("neck")
     head = idx("head")
@@ -53,7 +54,7 @@ def compute_basic_angles_h36m17(J3d: np.ndarray, joint_names: Sequence[str]) -> 
     rsho, relb, rwri = idx("right_shoulder"), idx("right_elbow"), idx("right_wrist")
 
     T = int(J3d.shape[0])
-    vals = np.full((T, 8), np.nan, dtype=np.float32)
+    vals = np.full((T, 9), np.nan, dtype=np.float32)
 
     # Knee angles.
     for t in range(T):
@@ -75,8 +76,11 @@ def compute_basic_angles_h36m17(J3d: np.ndarray, joint_names: Sequence[str]) -> 
             cos = float(np.clip(v[0] / nv, -1.0, 1.0))
             vals[t, 6] = float(np.arccos(cos))
 
+        # Spine flexion: pelvis–spine–thorax angle.
+        vals[t, 7] = angle_abc(J3d[t, pelvis, :3], J3d[t, spine, :3], J3d[t, thorax, :3])
+
         # Head angle relative to trunk (thorax-neck-head) at the neck.
-        vals[t, 7] = angle_abc(J3d[t, thorax, :3], J3d[t, neck, :3], J3d[t, head, :3])
+        vals[t, 8] = angle_abc(J3d[t, thorax, :3], J3d[t, neck, :3], J3d[t, head, :3])
 
     names = (
         "left_knee",
@@ -86,6 +90,7 @@ def compute_basic_angles_h36m17(J3d: np.ndarray, joint_names: Sequence[str]) -> 
         "left_elbow",
         "right_elbow",
         "trunk_vs_horizontal",
+        "spine_flexion",
         "head_vs_trunk",
     )
     return AnglesPerFrame(names=names, values_rad=vals)
