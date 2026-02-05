@@ -626,15 +626,7 @@ def main() -> None:
 
     st.title("Sports2D Analysis Demo")
     st.caption(
-        "Sports2D-only pipeline (no manual annotation) with MotionBERT 3D overlay. "
-        "All Sports2D outputs are preserved."
-    )
-
-    st.markdown(
-        "**Note:** This app runs Sports2D end-to-end and performs a 3D lift on the selected person (default Person 0)."
-    )
-    st.warning(
-        "Results are most accurate when the athlete moves in a near-2D plane (side view)."
+        "Sports2D-only pipeline with MotionBERT 3D lift overlay. "
     )
 
     with st.sidebar:
