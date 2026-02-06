@@ -35,6 +35,12 @@ pip install --upgrade "Pose2Sim>=0.10.40"
 .venv/bin/python -m streamlit run sports2d_app/app.py
 ```
 
+CLI version (no Streamlit UI):
+
+```bash
+.venv/bin/python sports2d_app/app_cli.py
+```
+
 ## Outputs
 Each run writes to:
 
