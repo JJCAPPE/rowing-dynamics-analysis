@@ -23,6 +23,7 @@ from parse_sports2d import (
 )
 from plot_angles import generate_angles_plot
 from runner_sports2d import Sports2DError, Sports2DOptions, run_sports2d
+from stroke_signal import StrokeTrackingOutputs, run_stroke_signal_tracking
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -39,6 +40,9 @@ class RunArtifacts:
     exports_dir: Path
     motionbert_dir: Path
     overlay_dir: Path
+    stroke_dir: Optional[Path]
+    stroke_signal_csv: Optional[Path]
+    stroke_signal_npz: Optional[Path]
     zip_path: Path
 
 
@@ -51,6 +55,22 @@ class ExportSummary:
     angles_csv: List[Path]
     angles_plots: List[Path]
     angle_plot_errors: List[str]
+
+
+@dataclass(frozen=True)
+class StrokeTrackingOptions:
+    enabled: bool
+    annotate: bool = True
+    machine_bbox: Optional[Tuple[float, float, float, float]] = None
+    handle_bbox: Optional[Tuple[float, float, float, float]] = None
+    m_per_px: Optional[float] = None
+    ema_alpha: float = 0.4
+    min_points: int = 10
+    min_stroke_distance_s: float = 0.8
+    prominence: Optional[float] = None
+    prominence_frac: float = 0.1
+    smooth_window_s: float = 0.2
+    debug_video: bool = True
 
 
 def _sanitize_stem(name: str) -> str:
@@ -168,6 +188,7 @@ def _run_pipeline(
     input_video: Path,
     run_dir: Path,
     options: Sports2DOptions,
+    stroke_tracking: StrokeTrackingOptions,
     person_index: int = 0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> Tuple[RunArtifacts, ExportSummary, Optional[Path]]:
@@ -175,17 +196,18 @@ def _run_pipeline(
     exports_dir = run_dir / "exports"
     motionbert_dir = run_dir / "motionbert"
     overlay_dir = run_dir / "overlay"
+    stroke_dir = run_dir / "stroke"
 
     _report_progress(
         progress_callback,
-        "Step 1/6: Running Sports2D (pose + tracking)",
+        "Step 1/7: Running Sports2D (pose + tracking)",
         0.05,
     )
     result = run_sports2d(input_video, sports2d_out_dir, options)
 
     _report_progress(
         progress_callback,
-        "Step 2/6: Exporting Sports2D outputs",
+        "Step 2/7: Exporting Sports2D outputs",
         0.45,
     )
     exports_dir.mkdir(parents=True, exist_ok=True)
@@ -206,7 +228,7 @@ def _run_pipeline(
 
     _report_progress(
         progress_callback,
-        "Step 3/6: Preparing MotionBERT inputs",
+        "Step 3/7: Preparing MotionBERT inputs",
         0.60,
     )
     trc_data = parse_trc_file(person_trc)
@@ -215,7 +237,7 @@ def _run_pipeline(
     meta = get_video_metadata(result.annotated_video)
     _report_progress(
         progress_callback,
-        "Step 4/6: Running MotionBERT 3D lift",
+        "Step 4/7: Running MotionBERT 3D lift",
         0.70,
     )
     mb_outputs = run_motionbert(
@@ -231,29 +253,76 @@ def _run_pipeline(
 
     _report_progress(
         progress_callback,
-        "Step 5/6: Rendering 3D overlay + plots",
-        0.85,
+        "Step 5/7: Tracking handle vs machine",
+        0.78,
     )
-    angles_plots, angle_plot_errors = _generate_motionbert_angles_plot(
-        mb_outputs.angles_csv,
-        exports_dir,
-        input_video,
+    stroke_outputs: Optional[StrokeTrackingOutputs] = None
+    stroke_error: Optional[str] = None
+    if stroke_tracking.enabled:
+        try:
+            stroke_dir.mkdir(parents=True, exist_ok=True)
+            stroke_outputs = run_stroke_signal_tracking(
+                video_path=result.annotated_video,
+                out_dir=stroke_dir,
+                angles_csv=mb_outputs.angles_csv,
+                reference_frame_idx=0,
+                machine_bbox=stroke_tracking.machine_bbox,
+                handle_bbox=stroke_tracking.handle_bbox,
+                annotate=stroke_tracking.annotate,
+                m_per_px=stroke_tracking.m_per_px,
+                ema_alpha=stroke_tracking.ema_alpha,
+                min_points=stroke_tracking.min_points,
+                min_stroke_distance_s=stroke_tracking.min_stroke_distance_s,
+                prominence=stroke_tracking.prominence,
+                prominence_frac=stroke_tracking.prominence_frac,
+                smooth_window_s=stroke_tracking.smooth_window_s,
+                create_plot=True,
+                plot_video_path=result.annotated_video,
+                debug_video=stroke_tracking.debug_video,
+            )
+        except Exception as exc:
+            stroke_error = str(exc)
+
+    _report_progress(
+        progress_callback,
+        "Step 6/7: Rendering 3D overlay + plots",
+        0.88,
     )
+    angles_plots: List[Path] = []
+    angle_plot_errors: List[str] = []
+    if stroke_outputs is not None and stroke_outputs.merged_angles_plot is not None:
+        angles_plots = [stroke_outputs.merged_angles_plot]
+    else:
+        angles_plots, angle_plot_errors = _generate_motionbert_angles_plot(
+            mb_outputs.angles_csv,
+            exports_dir,
+            input_video,
+        )
+    if stroke_error is not None:
+        angle_plot_errors.append(f"stroke tracking: {stroke_error}")
 
     overlay_video = overlay_dir / "pose3d_overlay.mp4"
     generate_pose3d_overlay_video(
         video_path=result.annotated_video,
         pose3d_npz=mb_outputs.pose3d_npz,
         out_video_path=overlay_video,
+        stroke_signal_npz=(
+            stroke_outputs.stroke_npz
+            if stroke_outputs is not None and stroke_outputs.stroke_npz.exists()
+            else None
+        ),
     )
 
     _report_progress(
         progress_callback,
-        "Step 6/6: Packaging outputs",
+        "Step 7/7: Packaging outputs",
         0.95,
     )
     zip_path = run_dir / "results.zip"
-    _zip_outputs(zip_path, [result.output_dir, exports_dir, motionbert_dir, overlay_dir])
+    zip_inputs = [result.output_dir, exports_dir, motionbert_dir, overlay_dir]
+    if stroke_outputs is not None:
+        zip_inputs.append(stroke_dir)
+    _zip_outputs(zip_path, zip_inputs)
 
     artifacts = RunArtifacts(
         run_dir=run_dir,
@@ -263,6 +332,9 @@ def _run_pipeline(
         exports_dir=exports_dir,
         motionbert_dir=motionbert_dir,
         overlay_dir=overlay_dir,
+        stroke_dir=stroke_dir if stroke_outputs is not None else None,
+        stroke_signal_csv=stroke_outputs.stroke_csv if stroke_outputs is not None else None,
+        stroke_signal_npz=stroke_outputs.stroke_npz if stroke_outputs is not None else None,
         zip_path=zip_path,
     )
 
@@ -406,6 +478,24 @@ def _prompt_optional_float(prompt: str, default: Optional[float]) -> Optional[fl
         return value
 
 
+def _prompt_bbox(prompt: str) -> Tuple[float, float, float, float]:
+    while True:
+        raw = input(f"{prompt} [x,y,w,h]: ").strip()
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) != 4:
+            print("Enter exactly four comma-separated values.")
+            continue
+        try:
+            x, y, w, h = [float(v) for v in parts]
+        except ValueError:
+            print("Invalid numeric values. Try again.")
+            continue
+        if w <= 1 or h <= 1:
+            print("Width and height must be > 1.")
+            continue
+        return float(x), float(y), float(w), float(h)
+
+
 def _open_path(path: Path) -> None:
     if not path.exists():
         return
@@ -429,7 +519,7 @@ def _open_path(path: Path) -> None:
         print(f"Failed to open {path}: {exc}")
 
 
-def _collect_options() -> Tuple[Path, int, Sports2DOptions]:
+def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOptions]:
     print("Sports2D CLI Pipeline")
     print("=====================\n")
     video_path = _prompt_existing_file("Path to input video")
@@ -467,6 +557,45 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions]:
     det_frequency = _prompt_int("Detection frequency (frames)", default=4, minimum=1)
     slowmo_factor = _prompt_float("Slow-motion factor", default=1.0, minimum=0.1)
 
+    enable_stroke = (
+        _choose_option(
+            "Enable handle/machine stroke tracking",
+            ["yes", "no"],
+            default_index=0,
+        )
+        == "yes"
+    )
+    stroke_tracking = StrokeTrackingOptions(enabled=False)
+    if enable_stroke:
+        bbox_mode = _choose_option(
+            "Stroke ROI source",
+            ["annotate interactively", "enter bbox values"],
+            default_index=0,
+        )
+        annotate = bbox_mode == "annotate interactively"
+        machine_bbox = None if annotate else _prompt_bbox("Machine reference bbox")
+        handle_bbox = None if annotate else _prompt_bbox("Handle bbox")
+        m_per_px = _prompt_optional_float(
+            "Stroke meters-per-pixel scale",
+            default=None,
+        )
+        save_debug = (
+            _choose_option(
+                "Save stroke tracking debug video",
+                ["yes", "no"],
+                default_index=0,
+            )
+            == "yes"
+        )
+        stroke_tracking = StrokeTrackingOptions(
+            enabled=True,
+            annotate=annotate,
+            machine_bbox=machine_bbox,
+            handle_bbox=handle_bbox,
+            m_per_px=m_per_px,
+            debug_video=save_debug,
+        )
+
     options = Sports2DOptions(
         pose_model=pose_model,
         mode=mode_choice,
@@ -480,12 +609,12 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions]:
         save_images=False,
         save_graphs=False,
     )
-    return video_path, person_index, options
+    return video_path, person_index, options, stroke_tracking
 
 
 def main() -> int:
     try:
-        source_video, person_index, options = _collect_options()
+        source_video, person_index, options, stroke_tracking = _collect_options()
     except KeyboardInterrupt:
         print("\nCancelled.")
         return 130
@@ -510,6 +639,7 @@ def main() -> int:
             input_video=input_video,
             run_dir=run_dir,
             options=options,
+            stroke_tracking=stroke_tracking,
             person_index=person_index,
             progress_callback=_on_progress,
         )
@@ -523,6 +653,8 @@ def main() -> int:
     print("\nDone.\n")
     print(f"Run directory: {artifacts.run_dir}")
     print(f"Sports2D annotated video: {artifacts.sports2d_annotated_video}")
+    if artifacts.stroke_signal_csv is not None and artifacts.stroke_signal_csv.exists():
+        print(f"Stroke signal CSV: {artifacts.stroke_signal_csv}")
     if overlay_video is not None and overlay_video.exists():
         print(f"3D overlay video: {overlay_video}")
     else:
@@ -536,18 +668,16 @@ def main() -> int:
         for msg in summary.angle_plot_errors:
             print(f"Plot warning: {msg}")
     print(f"Results ZIP: {artifacts.zip_path}")
-
-    video_to_open = (
+    """ video_to_open = (
         overlay_video
         if overlay_video is not None and overlay_video.exists()
         else artifacts.sports2d_annotated_video
     )
-    _open_path(video_to_open)
+    _open_path(video_to_open) """
+
     if summary.angles_plots:
         _open_path(summary.angles_plots[0])
-
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

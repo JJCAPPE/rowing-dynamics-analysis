@@ -33,6 +33,7 @@ class PlotResult:
     plot_path: Path
     time_column: str
     plotted_columns: list[str]
+    aux_plotted_columns: list[str]
     stroke_times: list[StrokeTimes]
 
 
@@ -86,6 +87,21 @@ def _is_non_angle_column(name: str) -> bool:
 def _looks_like_angle(name: str) -> bool:
     lowered = name.lower()
     return "deg" in lowered or "angle" in lowered
+
+
+def _looks_like_aux_signal(name: str) -> bool:
+    norm = re.sub(r"[^a-z0-9]+", "", name.lower())
+    tokens = (
+        "distance",
+        "relative",
+        "velocity",
+        "phase",
+        "stroke",
+        "handle",
+        "machine",
+        "speed",
+    )
+    return any(tok in norm for tok in tokens)
 
 
 def _median_dt(time_s: np.ndarray) -> float:
@@ -367,12 +383,14 @@ def generate_angles_plot(
     *,
     time_column: Optional[str] = None,
     columns: Optional[list[str]] = None,
+    aux_columns: Optional[list[str]] = None,
     include_strokes: bool = True,
     min_distance_s: float = 0.8,
     prominence: Optional[float] = None,
     prominence_frac: float = 0.1,
     smooth_window_s: float = 0.2,
     title: Optional[str] = None,
+    aux_ylabel: str = "Auxiliary signal",
     video_path: Optional[Path] = None,
     include_thumbnails: bool = True,
     thumb_max_px: Optional[int] = None,
@@ -392,6 +410,7 @@ def generate_angles_plot(
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     plot_cols: list[str] = []
+    aux_plot_cols: list[str] = []
     columns_set: Optional[set[str]] = None
     if columns:
         columns_set = set()
@@ -400,6 +419,16 @@ def generate_angles_plot(
             match = normalized.get(_normalize_name(requested))
             if match is not None:
                 columns_set.add(match)
+
+    aux_columns_set: Optional[set[str]] = None
+    if aux_columns:
+        aux_columns_set = set()
+        normalized = {_normalize_name(col): col for col in df.columns}
+        for requested in aux_columns:
+            match = normalized.get(_normalize_name(requested))
+            if match is not None:
+                aux_columns_set.add(match)
+
     if columns_set is not None:
         for col in df.columns:
             if col == time_col:
@@ -408,6 +437,15 @@ def generate_angles_plot(
                 continue
             if df[col].notna().any():
                 plot_cols.append(col)
+        if aux_columns_set is not None:
+            for col in df.columns:
+                if col == time_col:
+                    continue
+                if col not in aux_columns_set:
+                    continue
+                if df[col].notna().any():
+                    aux_plot_cols.append(col)
+            plot_cols = [col for col in plot_cols if col not in aux_plot_cols]
     else:
         candidate_cols = []
         for col in df.columns:
@@ -419,9 +457,20 @@ def generate_angles_plot(
                 candidate_cols.append(col)
 
         angle_like = [col for col in candidate_cols if _looks_like_angle(col)]
-        plot_cols = angle_like if angle_like else candidate_cols
+        if angle_like:
+            plot_cols = angle_like
+            if aux_columns_set is not None:
+                aux_plot_cols = [col for col in candidate_cols if col in aux_columns_set]
+            else:
+                aux_plot_cols = [col for col in candidate_cols if _looks_like_aux_signal(col)]
+                aux_plot_cols = [col for col in aux_plot_cols if col not in plot_cols]
+        else:
+            plot_cols = candidate_cols
+            if aux_columns_set is not None:
+                aux_plot_cols = [col for col in candidate_cols if col in aux_columns_set]
+                plot_cols = [col for col in plot_cols if col not in aux_plot_cols]
 
-    if not plot_cols:
+    if not plot_cols and not aux_plot_cols:
         raise ValueError("No numeric columns available to plot.")
 
     time_s = df[time_col].to_numpy(dtype=float)
@@ -443,9 +492,29 @@ def generate_angles_plot(
                 smooth_window_s=smooth_window_s,
             )
 
-    fig, ax = plt.subplots(figsize=(14, 7))
+    ax_aux = None
+    if aux_plot_cols:
+        fig, axes = plt.subplots(
+            2,
+            1,
+            figsize=(14, 9),
+            sharex=True,
+            gridspec_kw={"height_ratios": [3, 1]},
+        )
+        ax = axes[0]
+        ax_aux = axes[1]
+    else:
+        fig, ax = plt.subplots(figsize=(14, 7))
+
     for col in plot_cols:
         ax.plot(time_s, df[col], label=col, linewidth=1.3, alpha=0.85)
+
+    if ax_aux is not None:
+        for col in aux_plot_cols:
+            ax_aux.plot(time_s, df[col], label=col, linewidth=1.2, alpha=0.9, linestyle="-")
+        ax_aux.set_ylabel(aux_ylabel)
+        ax_aux.grid(True, alpha=0.25)
+        ax_aux.margins(x=0)
 
     for i, stroke in enumerate(stroke_times):
         catch_label = "catch" if i == 0 else None
@@ -466,19 +535,56 @@ def generate_angles_plot(
             alpha=0.8,
             label=finish_label,
         )
+        if ax_aux is not None:
+            ax_aux.axvline(
+                stroke.catch_time_s,
+                color="tab:green",
+                linestyle="--",
+                linewidth=0.9,
+                alpha=0.7,
+            )
+            ax_aux.axvline(
+                stroke.finish_time_s,
+                color="tab:red",
+                linestyle="--",
+                linewidth=0.9,
+                alpha=0.7,
+            )
 
     ax.set_title(title or "Sports2D angles over time")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Angle (deg)")
+    if ax_aux is None:
+        ax.set_xlabel("Time (s)")
+    else:
+        ax_aux.set_xlabel("Time (s)")
+    if plot_cols and all(_looks_like_angle(col) for col in plot_cols):
+        ax.set_ylabel("Angle (deg)")
+    else:
+        ax.set_ylabel("Signal")
     ax.grid(True, alpha=0.3)
     ax.margins(x=0)
-    ax.legend(
-        title="Signals",
-        loc="upper left",
-        bbox_to_anchor=(1.02, 1),
-        borderaxespad=0,
-        fontsize=8,
-    )
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(
+            handles,
+            labels,
+            title="Signals",
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1),
+            borderaxespad=0,
+            fontsize=8,
+        )
+    if ax_aux is not None:
+        handles_aux, labels_aux = ax_aux.get_legend_handles_labels()
+        if handles_aux:
+            ax_aux.legend(
+                handles_aux,
+                labels_aux,
+                title="Handle Signals",
+                loc="upper left",
+                bbox_to_anchor=(1.02, 1),
+                borderaxespad=0,
+                fontsize=8,
+            )
 
     if include_thumbnails and video_path and stroke_times:
         frame_idx_series = None
@@ -520,7 +626,10 @@ def generate_angles_plot(
             thumb_max_px=thumb_max_px,
         )
         _overlay_thumbnails(ax, stroke_events, thumbnails, zoom=thumb_zoom)
-        fig.subplots_adjust(top=0.78)
+        if ax_aux is not None:
+            fig.subplots_adjust(top=0.82, hspace=0.10)
+        else:
+            fig.subplots_adjust(top=0.78)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,6 +640,7 @@ def generate_angles_plot(
         plot_path=output_path,
         time_column=time_col,
         plotted_columns=plot_cols,
+        aux_plotted_columns=aux_plot_cols,
         stroke_times=stroke_times,
     )
 
@@ -556,6 +666,17 @@ def _parse_args() -> argparse.Namespace:
         nargs="*",
         default=None,
         help="Subset of columns to plot (default: all numeric)",
+    )
+    parser.add_argument(
+        "--aux-columns",
+        nargs="*",
+        default=None,
+        help="Columns to render in a bottom subplot sharing the same time axis.",
+    )
+    parser.add_argument(
+        "--aux-ylabel",
+        default="Auxiliary signal",
+        help="Y-axis label for aux subplot.",
     )
     parser.add_argument(
         "--no-strokes",
@@ -630,12 +751,14 @@ def main() -> None:
         output_path,
         time_column=args.time_column,
         columns=args.columns,
+        aux_columns=args.aux_columns,
         include_strokes=not args.no_strokes,
         min_distance_s=args.min_distance_s,
         prominence=args.prominence,
         prominence_frac=args.prominence_frac,
         smooth_window_s=args.smooth_window_s,
         title=args.title,
+        aux_ylabel=args.aux_ylabel,
         video_path=args.video,
         include_thumbnails=not args.no_thumbnails,
         thumb_max_px=args.thumb_max_px,

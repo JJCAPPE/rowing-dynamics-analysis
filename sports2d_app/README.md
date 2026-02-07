@@ -41,6 +41,31 @@ CLI version (no Streamlit UI):
 .venv/bin/python sports2d_app/app_cli.py
 ```
 
+`app_cli.py` now includes an integrated stroke-tracking stage (machine + handle), and
+produces:
+- stroke signals aligned to frame/time
+- a merged angles plot with a bottom handle-domain subplot
+- overlay video with 3D + handle/machine tracking
+
+## Stroke Phase / Handle-Machine Tracking (Standalone)
+If you want to run stroke tracking separately from the full CLI pipeline:
+
+```bash
+.venv/bin/python sports2d_app/stroke_signal.py \
+  --video /absolute/path/to/video.mp4 \
+  --out-dir /absolute/path/to/output_dir \
+  --angles-csv /absolute/path/to/angles_h36m.csv \
+  --annotate \
+  --debug-video
+```
+
+What it outputs:
+- `stroke_signal.csv`: per-frame handle/machine centers, relative distance, velocity, stroke phase, catch/finish flags
+- `stroke_signal.npz`: same data + tracked boxes for reproducibility
+- `angles_h36m_with_stroke.csv` (if `--angles-csv` is provided)
+- `angles_h36m_with_stroke_plot.png` (combined angles + stroke signal plot)
+- `stroke_tracking_debug.mp4` (if `--debug-video` is enabled)
+
 ## Outputs
 Each run writes to:
 

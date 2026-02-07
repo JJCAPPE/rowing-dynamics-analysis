@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Tuple
+from typing import Iterator, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -76,6 +76,23 @@ def iter_frames(video_path: Path) -> Iterator[Tuple[int, np.ndarray]]:
             idx += 1
     finally:
         cap.release()
+
+
+def _draw_bbox_xywh(
+    frame_bgr: np.ndarray, box_xywh: Sequence[float], *, color: Tuple[int, int, int], label: str
+) -> None:
+    x, y, w, h = [int(round(float(v))) for v in box_xywh]
+    cv2.rectangle(frame_bgr, (x, y), (x + w, y + h), color, 2)
+    cv2.putText(
+        frame_bgr,
+        label,
+        (x, max(18, y - 6)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        color,
+        2,
+        cv2.LINE_AA,
+    )
 
 
 def _render_3d_inset(
@@ -193,6 +210,7 @@ def generate_pose3d_overlay_video(
     video_path: Path,
     pose3d_npz: Path,
     out_video_path: Path,
+    stroke_signal_npz: Path | None = None,
     inset_size: Tuple[int, int] = (520, 520),
     mirror_3d: bool = True,
     flip_3d: bool = False,
@@ -236,6 +254,38 @@ def generate_pose3d_overlay_video(
         except Exception:
             angles_deg = None
             angle_specs = ()
+
+    handle_boxes_xywh: np.ndarray | None = None
+    machine_boxes_xywh: np.ndarray | None = None
+    stroke_phase: np.ndarray | None = None
+    rel_axis_px: np.ndarray | None = None
+    catch_set: set[int] = set()
+    finish_set: set[int] = set()
+    if stroke_signal_npz is not None:
+        try:
+            ds = np.load(stroke_signal_npz, allow_pickle=False)
+            if "handle_boxes_xywh" in ds.files:
+                handle_boxes_xywh = np.asarray(ds["handle_boxes_xywh"], dtype=np.float32)
+            if "machine_boxes_xywh" in ds.files:
+                machine_boxes_xywh = np.asarray(ds["machine_boxes_xywh"], dtype=np.float32)
+            if "catch_idx" in ds.files:
+                catch_set = set(int(v) for v in np.asarray(ds["catch_idx"]).astype(int).tolist())
+            if "finish_idx" in ds.files:
+                finish_set = set(int(v) for v in np.asarray(ds["finish_idx"]).astype(int).tolist())
+            if "stroke_table" in ds.files:
+                rec = ds["stroke_table"]
+                names = tuple(rec.dtype.names or ())
+                if "stroke_phase" in names:
+                    stroke_phase = np.asarray(rec["stroke_phase"], dtype=np.float32)
+                if "relative_axis_px" in names:
+                    rel_axis_px = np.asarray(rec["relative_axis_px"], dtype=np.float32)
+        except Exception:
+            handle_boxes_xywh = None
+            machine_boxes_xywh = None
+            stroke_phase = None
+            rel_axis_px = None
+            catch_set = set()
+            finish_set = set()
 
     inset_w, inset_h = int(inset_size[0]), int(inset_size[1])
     margin = 12
@@ -298,6 +348,93 @@ def generate_pose3d_overlay_video(
             bx1 = min(meta.width - 1, x0 + inset_w + 1)
             by1 = min(meta.height - 1, y0 + inset_h + 1)
             cv2.rectangle(frame, (bx0, by0), (bx1, by1), (0, 0, 0), 1)
+
+            if (
+                handle_boxes_xywh is not None
+                and machine_boxes_xywh is not None
+                and idx < len(handle_boxes_xywh)
+                and idx < len(machine_boxes_xywh)
+            ):
+                _draw_bbox_xywh(
+                    frame, machine_boxes_xywh[idx], color=(0, 128, 255), label="machine"
+                )
+                _draw_bbox_xywh(
+                    frame, handle_boxes_xywh[idx], color=(0, 255, 0), label="handle"
+                )
+                hm = handle_boxes_xywh[idx]
+                mm = machine_boxes_xywh[idx]
+                hcx = int(round(float(hm[0] + hm[2] * 0.5)))
+                hcy = int(round(float(hm[1] + hm[3] * 0.5)))
+                mcx = int(round(float(mm[0] + mm[2] * 0.5)))
+                mcy = int(round(float(mm[1] + mm[3] * 0.5)))
+                cv2.line(frame, (mcx, mcy), (hcx, hcy), (255, 220, 0), 2, cv2.LINE_AA)
+
+            if rel_axis_px is not None and idx < len(rel_axis_px):
+                txt = f"handle_rel_px={float(rel_axis_px[idx]):.2f}"
+                cv2.putText(
+                    frame,
+                    txt,
+                    (16, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 0, 0),
+                    4,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    frame,
+                    txt,
+                    (16, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+            if stroke_phase is not None and idx < len(stroke_phase) and np.isfinite(stroke_phase[idx]):
+                ptxt = f"phase={float(stroke_phase[idx]):.3f}"
+                cv2.putText(
+                    frame,
+                    ptxt,
+                    (16, 58),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 0, 0),
+                    4,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    frame,
+                    ptxt,
+                    (16, 58),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+            if idx in catch_set:
+                cv2.putText(
+                    frame,
+                    "CATCH",
+                    (16, 88),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (40, 180, 40),
+                    2,
+                    cv2.LINE_AA,
+                )
+            elif idx in finish_set:
+                cv2.putText(
+                    frame,
+                    "FINISH",
+                    (16, 88),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (30, 30, 220),
+                    2,
+                    cv2.LINE_AA,
+                )
             writer.write(frame)
     finally:
         writer.release()
