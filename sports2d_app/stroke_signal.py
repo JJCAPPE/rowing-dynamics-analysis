@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
@@ -10,6 +11,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from parse_sports2d import COCO17_NAMES
 from plot_angles import generate_angles_plot
 
 
@@ -26,7 +28,7 @@ class VideoMeta:
 
 @dataclass(frozen=True)
 class TrackSeries:
-    boxes_xywh: np.ndarray  # (T,4)
+    boxes_xywh: Optional[np.ndarray]  # (T,4)
     centers_xy: np.ndarray  # (T,2)
     status: np.ndarray  # (T,) uint8
 
@@ -59,6 +61,44 @@ def _video_meta(video_path: Path) -> VideoMeta:
     frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
     return VideoMeta(width=width, height=height, fps=fps, frame_count=frames)
+
+
+def _normalize_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _load_pose_npz(npz_path: Path) -> Tuple[np.ndarray, Optional[np.ndarray], Sequence[str]]:
+    data = dict(np.load(npz_path, allow_pickle=False))
+    if "J2d_px" in data:
+        points = np.asarray(data["J2d_px"], dtype=np.float32)
+        names = [str(x) for x in data.get("joint_names", [])]
+        conf = points[:, :, 2] if points.shape[-1] >= 3 else None
+        return points[:, :, :2], conf, names
+    if "points" in data:
+        points = np.asarray(data["points"], dtype=np.float32)
+        names = [str(x) for x in data.get("keypoints", [])]
+        conf = None
+        if "conf" in data:
+            conf = np.asarray(data["conf"], dtype=np.float32)
+        return points[:, :, :2], conf, names
+    raise ValueError(f"Unsupported pose npz format (expected J2d_px or points): {npz_path}")
+
+
+def _resolve_joint_names(points_xy: np.ndarray, joint_names: Sequence[str]) -> Sequence[str]:
+    if joint_names:
+        return joint_names
+    if points_xy.shape[1] == len(COCO17_NAMES):
+        return COCO17_NAMES
+    raise ValueError("Pose keypoint names missing; cannot resolve wrist indices.")
+
+
+def _find_joint_index(joint_names: Sequence[str], candidates: Sequence[str]) -> Optional[int]:
+    norm_map = {_normalize_name(name): idx for idx, name in enumerate(joint_names)}
+    for name in candidates:
+        idx = norm_map.get(_normalize_name(name))
+        if idx is not None:
+            return idx
+    return None
 
 
 def _read_frame(video_path: Path, idx: int) -> np.ndarray:
@@ -126,6 +166,22 @@ def annotate_handle_and_machine(video_path: Path, reference_frame_idx: int) -> T
     finally:
         cv2.destroyAllWindows()
     return machine_bbox, handle_bbox
+
+
+def annotate_machine_only(video_path: Path, reference_frame_idx: int) -> BBoxXYWH:
+    frame = _read_frame(video_path, reference_frame_idx)
+    try:
+        machine_bbox = _select_bbox(
+            frame,
+            "Stroke Tracking: machine reference",
+            [
+                "Draw bbox around a rigid machine part (moves with the machine body).",
+                "Press ENTER/SPACE to confirm. Press C to cancel.",
+            ],
+        )
+    finally:
+        cv2.destroyAllWindows()
+    return machine_bbox
 
 
 def _iter_frames(video_path: Path, start: int = 0):
@@ -343,6 +399,135 @@ def _track_bbox_lk(
         boxes[i] = np.asarray(center_to_box(float(smooth[i, 0]), float(smooth[i, 1])), dtype=np.float32)
 
     return TrackSeries(boxes_xywh=boxes, centers_xy=smooth, status=status)
+
+
+def _track_handle_from_pose(
+    pose_npz: Path,
+    *,
+    frame_count: int,
+    width: int,
+    height: int,
+    conf_threshold: float = 0.2,
+    box_size_px: float = 36.0,
+) -> TrackSeries:
+    points_xy, conf, joint_names = _load_pose_npz(pose_npz)
+    joint_names = _resolve_joint_names(points_xy, joint_names)
+
+    left_idx = _find_joint_index(joint_names, ["left_wrist", "lwrist", "left_hand", "lhand"])
+    right_idx = _find_joint_index(joint_names, ["right_wrist", "rwrist", "right_hand", "rhand"])
+    if left_idx is None or right_idx is None:
+        raise ValueError("Failed to resolve left/right wrist indices from pose keypoints.")
+
+    T_pose = points_xy.shape[0]
+    T = int(frame_count)
+    centers = np.full((T, 2), np.nan, dtype=np.float32)
+    status = np.zeros((T,), dtype=np.uint8)
+
+    max_t = min(T_pose, T)
+    for idx in range(max_t):
+        lw = points_xy[idx, left_idx]
+        rw = points_xy[idx, right_idx]
+        if not np.isfinite(lw).all() or not np.isfinite(rw).all():
+            continue
+        if conf is not None:
+            lw_conf = float(conf[idx, left_idx])
+            rw_conf = float(conf[idx, right_idx])
+            if lw_conf < conf_threshold or rw_conf < conf_threshold:
+                continue
+        centers[idx] = (lw + rw) / 2.0
+        status[idx] = 1
+
+    valid = np.isfinite(centers).all(axis=1)
+    if not np.any(valid):
+        raise ValueError("Pose data missing valid wrist keypoints to compute handle midpoint.")
+
+    centers[:, 0] = _fill_signal(centers[:, 0])
+    centers[:, 1] = _fill_signal(centers[:, 1])
+
+    if T_pose < T:
+        last = centers[max_t - 1].copy()
+        centers[max_t:] = last
+        status[max_t:] = 0
+
+    half = max(2.0, float(box_size_px) / 2.0)
+    boxes = np.zeros((T, 4), dtype=np.float32)
+    for i in range(T):
+        cx, cy = float(centers[i, 0]), float(centers[i, 1])
+        cx = float(np.clip(cx, half, width - half))
+        cy = float(np.clip(cy, half, height - half))
+        boxes[i] = np.array([cx - half, cy - half, half * 2.0, half * 2.0], dtype=np.float32)
+
+    return TrackSeries(boxes_xywh=boxes, centers_xy=centers, status=status)
+
+
+def track_handle_and_machine(
+    *,
+    video_path: Path,
+    reference_frame_idx: int,
+    machine_bbox: Optional[BBoxXYWH],
+    handle_bbox: Optional[BBoxXYWH],
+    handle_source: str,
+    handle_pose_npz: Optional[Path],
+    annotate: bool,
+    ema_alpha: float,
+    min_points: int,
+) -> Tuple[TrackSeries, TrackSeries]:
+    meta = _video_meta(video_path)
+    handle_source = handle_source.lower().strip()
+    if handle_source not in {"manual", "pose"}:
+        raise ValueError("handle_source must be 'manual' or 'pose'.")
+
+    if handle_source == "manual":
+        if annotate or machine_bbox is None or handle_bbox is None:
+            machine_bbox, handle_bbox = annotate_handle_and_machine(
+                video_path=video_path,
+                reference_frame_idx=int(reference_frame_idx),
+            )
+        assert machine_bbox is not None and handle_bbox is not None
+        machine_track = _track_bbox_lk(
+            video_path,
+            machine_bbox,
+            int(reference_frame_idx),
+            ema_alpha=float(ema_alpha),
+            min_points=int(min_points),
+        )
+        handle_track = _track_bbox_lk(
+            video_path,
+            handle_bbox,
+            int(reference_frame_idx),
+            ema_alpha=float(ema_alpha),
+            min_points=int(min_points),
+        )
+        return handle_track, machine_track
+
+    if annotate or machine_bbox is None:
+        machine_bbox = annotate_machine_only(
+            video_path=video_path,
+            reference_frame_idx=int(reference_frame_idx),
+        )
+    assert machine_bbox is not None
+    machine_track = _track_bbox_lk(
+        video_path,
+        machine_bbox,
+        int(reference_frame_idx),
+        ema_alpha=float(ema_alpha),
+        min_points=int(min_points),
+    )
+    if handle_pose_npz is None:
+        candidates = [
+            Path(video_path).parent / "exports" / f"{video_path.stem}_points.npz",
+            Path(video_path).parent / "pose2d.npz",
+        ]
+        handle_pose_npz = next((p for p in candidates if p.exists()), None)
+    if handle_pose_npz is None or not Path(handle_pose_npz).exists():
+        raise FileNotFoundError("Pose NPZ not found for handle_source='pose'.")
+    handle_track = _track_handle_from_pose(
+        Path(handle_pose_npz),
+        frame_count=int(meta.frame_count),
+        width=int(meta.width),
+        height=int(meta.height),
+    )
+    return handle_track, machine_track
 
 
 def _fill_signal(signal: np.ndarray) -> np.ndarray:
@@ -595,7 +780,8 @@ def _write_debug_video(
             if idx >= handle_track.centers_xy.shape[0]:
                 break
             _draw_bbox(frame, machine_track.boxes_xywh[idx], (0, 128, 255), "machine")
-            _draw_bbox(frame, handle_track.boxes_xywh[idx], (0, 255, 0), "handle")
+            if handle_track.boxes_xywh is not None:
+                _draw_bbox(frame, handle_track.boxes_xywh[idx], (0, 255, 0), "handle")
 
             pm = machine_track.centers_xy[idx]
             ph = handle_track.centers_xy[idx]
@@ -778,6 +964,8 @@ def run_stroke_signal_tracking(
     reference_frame_idx: int = 0,
     machine_bbox: Optional[BBoxXYWH] = None,
     handle_bbox: Optional[BBoxXYWH] = None,
+    handle_source: str = "manual",
+    handle_pose_npz: Optional[Path] = None,
     annotate: bool = False,
     m_per_px: Optional[float] = None,
     ema_alpha: float = 0.4,
@@ -797,25 +985,23 @@ def run_stroke_signal_tracking(
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    if annotate or machine_bbox is None or handle_bbox is None:
-        machine_bbox, handle_bbox = annotate_handle_and_machine(
-            video_path=video_path,
-            reference_frame_idx=int(reference_frame_idx),
-        )
-    assert machine_bbox is not None and handle_bbox is not None
-
     meta = _video_meta(video_path)
-    machine_track = _track_bbox_lk(
-        video_path,
-        machine_bbox,
-        int(reference_frame_idx),
-        ema_alpha=float(ema_alpha),
-        min_points=int(min_points),
-    )
-    handle_track = _track_bbox_lk(
-        video_path,
-        handle_bbox,
-        int(reference_frame_idx),
+    if handle_source.lower().strip() == "pose" and handle_pose_npz is None:
+        candidates = [
+            out_dir / "pose2d.npz",
+            out_dir / f"{video_path.stem}_points.npz",
+            video_path.parent / "exports" / f"{video_path.stem}_points.npz",
+            video_path.parent / "pose2d.npz",
+        ]
+        handle_pose_npz = next((p for p in candidates if p.exists()), None)
+    handle_track, machine_track = track_handle_and_machine(
+        video_path=video_path,
+        reference_frame_idx=int(reference_frame_idx),
+        machine_bbox=machine_bbox,
+        handle_bbox=handle_bbox,
+        handle_source=handle_source,
+        handle_pose_npz=handle_pose_npz,
+        annotate=annotate,
         ema_alpha=float(ema_alpha),
         min_points=int(min_points),
     )
@@ -836,7 +1022,11 @@ def run_stroke_signal_tracking(
     stroke_df.to_csv(stroke_csv, index=False)
     np.savez_compressed(
         stroke_npz,
-        handle_boxes_xywh=handle_track.boxes_xywh,
+        handle_boxes_xywh=(
+            handle_track.boxes_xywh
+            if handle_track.boxes_xywh is not None
+            else np.zeros((0, 4), dtype=np.float32)
+        ),
         machine_boxes_xywh=machine_track.boxes_xywh,
         handle_centers_xy=handle_track.centers_xy,
         machine_centers_xy=machine_track.centers_xy,
@@ -940,6 +1130,19 @@ def _parse_args() -> argparse.Namespace:
         help="Handle bbox as x,y,w,h in pixels",
     )
     parser.add_argument(
+        "--handle-source",
+        type=str,
+        default="manual",
+        choices=["manual", "pose"],
+        help="Handle source: manual bbox or pose midpoint (default: manual)",
+    )
+    parser.add_argument(
+        "--pose-npz",
+        type=Path,
+        default=None,
+        help="Optional pose NPZ for handle_source=pose (e.g., pose2d.npz or *_points.npz)",
+    )
+    parser.add_argument(
         "--annotate",
         action="store_true",
         help="Open OpenCV ROI selector for machine/handle bbox annotation",
@@ -1017,6 +1220,8 @@ def main() -> None:
         reference_frame_idx=int(args.reference_frame_idx),
         machine_bbox=machine_bbox,
         handle_bbox=handle_bbox,
+        handle_source=str(args.handle_source),
+        handle_pose_npz=Path(args.pose_npz) if args.pose_npz is not None else None,
         annotate=bool(args.annotate),
         m_per_px=args.m_per_px,
         ema_alpha=float(args.ema_alpha),
