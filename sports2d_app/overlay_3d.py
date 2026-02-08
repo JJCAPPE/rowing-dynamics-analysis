@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence, Tuple
+from typing import Callable, Iterator, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
+
+from progress_utils import clamp01
 
 from rowing_pose.kinematics import compute_basic_angles_h36m17
 from rowing_pose.skeletons import H36M17_JOINT_NAMES
@@ -48,6 +50,19 @@ class VideoMeta:
     height: int
     fps: float
     frame_count: int
+
+
+ProgressCallback = Callable[[str, float], None]
+
+
+def _emit_progress(
+    callback: Optional[ProgressCallback],
+    label: str,
+    progress: float,
+) -> None:
+    if callback is None:
+        return
+    callback(label, clamp01(progress))
 
 
 def get_video_metadata(video_path: Path) -> VideoMeta:
@@ -217,11 +232,13 @@ def generate_pose3d_overlay_video(
     flip_3d_depth: bool = False,
     inset_bg_alpha: float = 0.5,
     show_joint_angles: bool = True,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> None:
     video_path = Path(video_path)
     out_video_path = Path(out_video_path)
     out_video_path.parent.mkdir(parents=True, exist_ok=True)
 
+    _emit_progress(progress_callback, "Overlay: preparing inputs", 0.0)
     meta = get_video_metadata(video_path)
 
     d3 = dict(np.load(pose3d_npz, allow_pickle=False))
@@ -307,6 +324,10 @@ def generate_pose3d_overlay_video(
         )
     if not writer.isOpened():
         raise RuntimeError(f"Failed to open video writer for {out_video_path}")
+
+    total_frames = int(min(meta.frame_count, len(J3d)))
+    if total_frames <= 0:
+        total_frames = int(len(J3d))
 
     try:
         for idx, frame in iter_frames(video_path):
@@ -436,5 +457,12 @@ def generate_pose3d_overlay_video(
                     cv2.LINE_AA,
                 )
             writer.write(frame)
+            if total_frames > 0 and ((idx + 1) % 10 == 0 or (idx + 1) == total_frames):
+                _emit_progress(
+                    progress_callback,
+                    "Overlay: rendering frames",
+                    (idx + 1) / float(total_frames),
+                )
     finally:
         writer.release()
+    _emit_progress(progress_callback, "Overlay: completed", 1.0)

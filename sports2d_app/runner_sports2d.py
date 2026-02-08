@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import sys
 import copy
+import re
+import sys
+import threading
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from progress_utils import clamp01
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +42,9 @@ class Sports2DRunResult:
 
 class Sports2DError(RuntimeError):
     pass
+
+
+ProgressCallback = Callable[[str, float], None]
 
 
 def _deep_update(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
@@ -269,7 +276,105 @@ def build_sports2d_config(
     return merged
 
 
-def run_sports2d(video_path: Path, out_dir: Path, options: Sports2DOptions) -> Sports2DRunResult:
+class _Sports2DProgressParser:
+    _FRAME_PROGRESS_RE = re.compile(r"(?P<pct>\d{1,3})%\|")
+    _STAGE_MARKERS: Tuple[Tuple[re.Pattern[str], float, str], ...] = (
+        (re.compile(r"Estimating pose", re.IGNORECASE), 0.05, "Sports2D: estimating pose"),
+        (
+            re.compile(r"Processing video stream", re.IGNORECASE),
+            0.12,
+            "Sports2D: processing video stream",
+        ),
+        (
+            re.compile(r"Video processing completed", re.IGNORECASE),
+            0.62,
+            "Sports2D: frame pass complete",
+        ),
+        (
+            re.compile(r"Post-processing pose", re.IGNORECASE),
+            0.70,
+            "Sports2D: post-processing pose",
+        ),
+        (
+            re.compile(r"Converting pose to meters", re.IGNORECASE),
+            0.80,
+            "Sports2D: converting pose to meters",
+        ),
+        (
+            re.compile(r"Post-processing angles", re.IGNORECASE),
+            0.88,
+            "Sports2D: post-processing angles",
+        ),
+        (
+            re.compile(r"Saving images of processed pose and angles", re.IGNORECASE),
+            0.92,
+            "Sports2D: rendering annotated output video",
+        ),
+        (
+            re.compile(r"Processed video saved to", re.IGNORECASE),
+            0.97,
+            "Sports2D: output video saved",
+        ),
+        (
+            re.compile(r"Processing .* took [0-9.]+ s", re.IGNORECASE),
+            0.99,
+            "Sports2D: wrapping up",
+        ),
+    )
+
+    def __init__(self, callback: Optional[ProgressCallback]) -> None:
+        self._callback = callback
+        self._progress = 0.0
+        self._last_label = ""
+
+    def _emit(self, label: str, progress: float) -> None:
+        if self._callback is None:
+            return
+        p = clamp01(progress)
+        if p < self._progress:
+            p = self._progress
+        # Keep updates readable while still frequent enough for live feedback.
+        if label != self._last_label or (p - self._progress) >= 0.002:
+            self._callback(label, p)
+            self._last_label = label
+            self._progress = p
+
+    def _consume_token(self, token: str) -> None:
+        line = token.strip()
+        if not line:
+            return
+
+        if match := self._FRAME_PROGRESS_RE.search(line):
+            pct = max(0, min(100, int(match.group("pct"))))
+            progress = 0.12 + 0.50 * (pct / 100.0)
+            self._emit(f"Sports2D: processing frames ({pct}%)", progress)
+            return
+
+        for pattern, progress, label in self._STAGE_MARKERS:
+            if pattern.search(line):
+                self._emit(label, progress)
+                return
+
+    def consume_text(self, text: str) -> str:
+        chunks = text.replace("\r", "\n").split("\n")
+        for token in chunks[:-1]:
+            self._consume_token(token)
+        return chunks[-1]
+
+    def finalize(self, tail: str) -> None:
+        if tail.strip():
+            self._consume_token(tail)
+        self._emit("Sports2D: completed", 1.0)
+
+
+def run_sports2d(
+    video_path: Path,
+    out_dir: Path,
+    options: Sports2DOptions,
+    *,
+    progress_callback: Optional[ProgressCallback] = None,
+    poll_interval_s: float = 0.2,
+) -> Sports2DRunResult:
     Sports2D = _import_sports2d()
     _check_pose2sim_version()
 
@@ -278,14 +383,71 @@ def run_sports2d(video_path: Path, out_dir: Path, options: Sports2DOptions) -> S
     out_dir.mkdir(parents=True, exist_ok=True)
 
     config = build_sports2d_config(video_path, out_dir, options, include_defaults=False)
+    console_log = out_dir / "console.log"
+    if progress_callback is None:
+        try:
+            with console_log.open("w", encoding="utf-8") as log_f, redirect_stdout(
+                log_f
+            ), redirect_stderr(log_f):
+                Sports2D.process(config)
+        except Exception as exc:
+            raise Sports2DError(f"Sports2D failed: {exc}") from exc
+        output_dir = out_dir / f"{video_path.stem}_Sports2D"
+        annotated_video = output_dir / f"{output_dir.name}.mp4"
+        trc_files = sorted(output_dir.glob("*_px*.trc"))
+        mot_files = sorted(output_dir.glob("*_angles*.mot"))
 
-    try:
-        console_log = out_dir / "console.log"
-        with console_log.open("w", encoding="utf-8") as log_f, redirect_stdout(
-            log_f
-        ), redirect_stderr(log_f):
-            Sports2D.process(config)
-    except Exception as exc:
+        if not output_dir.exists():
+            raise Sports2DError(f"Sports2D output directory not found: {output_dir}")
+        if not annotated_video.exists():
+            raise Sports2DError(f"Sports2D annotated video not found: {annotated_video}")
+
+        return Sports2DRunResult(
+            output_dir=output_dir,
+            annotated_video=annotated_video,
+            trc_files=trc_files,
+            mot_files=mot_files,
+        )
+
+    parser = _Sports2DProgressParser(progress_callback)
+    parser._emit("Sports2D: initializing", 0.0)
+
+    worker_error: List[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            with console_log.open("w", encoding="utf-8") as log_f, redirect_stdout(
+                log_f
+            ), redirect_stderr(log_f):
+                Sports2D.process(config)
+        except BaseException as exc:  # pragma: no cover - defensive rethrow
+            worker_error.append(exc)
+
+    worker = threading.Thread(target=_worker, daemon=True, name="sports2d-runner")
+    worker.start()
+
+    offset = 0
+    tail = ""
+    while worker.is_alive():
+        if console_log.exists():
+            with console_log.open("r", encoding="utf-8", errors="ignore") as log_f:
+                log_f.seek(offset)
+                chunk = log_f.read()
+                offset = log_f.tell()
+            if chunk:
+                tail = parser.consume_text(tail + chunk)
+        worker.join(timeout=max(0.05, float(poll_interval_s)))
+
+    if console_log.exists():
+        with console_log.open("r", encoding="utf-8", errors="ignore") as log_f:
+            log_f.seek(offset)
+            chunk = log_f.read()
+            if chunk:
+                tail = parser.consume_text(tail + chunk)
+    parser.finalize(tail)
+
+    if worker_error:
+        exc = worker_error[0]
         raise Sports2DError(f"Sports2D failed: {exc}") from exc
 
     output_dir = out_dir / f"{video_path.stem}_Sports2D"

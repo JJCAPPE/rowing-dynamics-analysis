@@ -28,6 +28,7 @@ from runner_sports2d import (
 )
 from motionbert_3d import run_motionbert
 from overlay_3d import generate_pose3d_overlay_video, get_video_metadata
+from progress_utils import ProgressMux
 from stroke_signal import StrokeTrackingOutputs, run_stroke_signal_tracking
 
 
@@ -349,16 +350,15 @@ def _estimate_json_preview_height(text: str) -> int:
 
 ProgressCallback = Callable[[str, float], None]
 
-
-def _report_progress(
-    callback: Optional[ProgressCallback],
-    label: str,
-    progress: float,
-) -> None:
-    if callback is None:
-        return
-    callback(label, max(0.0, min(1.0, progress)))
-
+STEP_SPANS: Dict[int, Tuple[float, float]] = {
+    1: (0.00, 0.52),
+    2: (0.52, 0.60),
+    3: (0.60, 0.64),
+    4: (0.64, 0.80),
+    5: (0.80, 0.88),
+    6: (0.88, 0.97),
+    7: (0.97, 1.00),
+}
 
 def _build_sports2d_run_details(
     *,
@@ -547,19 +547,26 @@ def _run_pipeline(
     motionbert_dir = run_dir / "motionbert"
     overlay_dir = run_dir / "overlay"
     stroke_dir = run_dir / "stroke"
+    progress = ProgressMux(progress_callback)
 
-    _report_progress(
-        progress_callback,
-        "Step 1/7: Running Sports2D (pose + tracking)",
-        0.05,
+    step1 = progress.span(
+        *STEP_SPANS[1],
+        prefix="Step 1/7: Running Sports2D (pose + tracking)",
     )
-    result = run_sports2d(input_video, sports2d_out_dir, options)
+    step1("Starting", 0.0)
+    result = run_sports2d(
+        input_video,
+        sports2d_out_dir,
+        options,
+        progress_callback=step1,
+    )
+    step1("Completed", 1.0)
 
-    _report_progress(
-        progress_callback,
-        "Step 2/7: Exporting Sports2D outputs",
-        0.45,
+    step2 = progress.span(
+        *STEP_SPANS[2],
+        prefix="Step 2/7: Exporting Sports2D outputs",
     )
+    step2("Collecting outputs", 0.05)
     exports_dir.mkdir(parents=True, exist_ok=True)
     person_trc_files = _filter_person_files(result.trc_files, person_index)
     person_mot_files = _filter_person_files(result.mot_files, person_index)
@@ -568,27 +575,30 @@ def _run_pipeline(
             f"No TRC files found for person index {person_index}. "
             "Increase the number of persons to detect or choose a different index."
         )
+    step2("Parsing TRC and MOT", 0.35)
     summary_base = _export_sports2d_outputs(
         person_trc_files,
         person_mot_files,
         exports_dir,
     )
+    step2("Completed", 1.0)
 
     person_trc = person_trc_files[0]
 
-    _report_progress(
-        progress_callback,
-        "Step 3/7: Preparing MotionBERT inputs",
-        0.6,
+    step3 = progress.span(
+        *STEP_SPANS[3],
+        prefix="Step 3/7: Preparing MotionBERT inputs",
     )
+    step3("Loading TRC data", 0.05)
     trc_data = parse_trc_file(person_trc)
+    step3("Extracting COCO-17 keypoints", 0.6)
     J2d_px, _ = extract_coco17_from_trc(trc_data)
-
     meta = get_video_metadata(result.annotated_video)
-    _report_progress(
-        progress_callback,
-        "Step 4/7: Running MotionBERT 3D lift",
-        0.7,
+    step3("Completed", 1.0)
+
+    step4 = progress.span(
+        *STEP_SPANS[4],
+        prefix="Step 4/7: Running MotionBERT 3D lift",
     )
     mb_outputs = run_motionbert(
         J2d_px,
@@ -599,16 +609,18 @@ def _run_pipeline(
         clip_len=243,
         flip=False,
         rootrel=False,
+        progress_callback=step4,
     )
+    step4("Completed", 1.0)
 
-    _report_progress(
-        progress_callback,
-        "Step 5/7: Tracking handle vs machine",
-        0.8,
+    step5 = progress.span(
+        *STEP_SPANS[5],
+        prefix="Step 5/7: Tracking handle vs machine",
     )
     stroke_outputs: Optional[StrokeTrackingOutputs] = None
     stroke_error: Optional[str] = None
     if stroke_tracking.enabled:
+        step5("Running stroke tracker", 0.05)
         try:
             stroke_dir.mkdir(parents=True, exist_ok=True)
             stroke_outputs = run_stroke_signal_tracking(
@@ -638,26 +650,35 @@ def _run_pipeline(
             )
         except Exception as exc:
             stroke_error = str(exc)
+        step5("Completed", 1.0)
+    else:
+        step5("Skipped (disabled)", 1.0)
 
-    _report_progress(
-        progress_callback,
-        "Step 6/7: Rendering 3D overlay + plots",
-        0.88,
+    step6 = progress.span(
+        *STEP_SPANS[6],
+        prefix="Step 6/7: Rendering 3D overlay + plots",
     )
     angles_plots: List[Path] = []
     angle_plot_errors: List[str] = []
     if stroke_outputs is not None and stroke_outputs.merged_angles_plot is not None:
         angles_plots = [stroke_outputs.merged_angles_plot]
+        step6("Using stroke-generated angles plot", 0.25)
     else:
+        step6("Generating angles plot", 0.05)
         angles_plots, angle_plot_errors = _generate_motionbert_angles_plot(
             mb_outputs.angles_csv,
             exports_dir,
             input_video,
         )
+        step6("Angles plot ready", 0.3)
     if stroke_error is not None:
         angle_plot_errors.append(f"stroke tracking: {stroke_error}")
 
     overlay_video = overlay_dir / "pose3d_overlay.mp4"
+
+    def _overlay_progress(label: str, prog: float) -> None:
+        step6(label, 0.3 + 0.7 * max(0.0, min(1.0, prog)))
+
     generate_pose3d_overlay_video(
         video_path=result.annotated_video,
         pose3d_npz=mb_outputs.pose3d_npz,
@@ -667,18 +688,21 @@ def _run_pipeline(
             if stroke_outputs is not None and stroke_outputs.stroke_npz.exists()
             else None
         ),
+        progress_callback=_overlay_progress,
     )
+    step6("Completed", 1.0)
 
-    _report_progress(
-        progress_callback,
-        "Step 7/7: Packaging outputs",
-        0.95,
+    step7 = progress.span(
+        *STEP_SPANS[7],
+        prefix="Step 7/7: Packaging outputs",
     )
+    step7("Creating ZIP archive", 0.2)
     zip_path = run_dir / "results.zip"
     zip_inputs = [result.output_dir, exports_dir, motionbert_dir, overlay_dir]
     if stroke_outputs is not None:
         zip_inputs.append(stroke_dir)
     _zip_outputs(zip_path, zip_inputs)
+    step7("Completed", 1.0)
 
     artifacts = RunArtifacts(
         run_dir=run_dir,
@@ -865,11 +889,30 @@ def main() -> None:
         )
 
         with st.status("Running Sports2D...", expanded=True) as status:
-            progress_bar = st.progress(0, text="Starting...")
+            progress_bar = st.progress(0, text="Overall progress")
+            step_progress_bar = st.progress(0, text="Current step")
 
             def _on_progress(label: str, progress: float) -> None:
                 status.update(label=label, state="running")
                 progress_bar.progress(int(progress * 100), text=label)
+                match = re.search(r"Step\s+(\d+)/7", label)
+                step_idx = int(match.group(1)) if match else None
+                if step_idx is None:
+                    for idx, (_, end) in STEP_SPANS.items():
+                        if progress <= end + 1e-9:
+                            step_idx = idx
+                            break
+                if step_idx is not None and step_idx in STEP_SPANS:
+                    start, end = STEP_SPANS[step_idx]
+                    if end <= start:
+                        local = 1.0
+                    else:
+                        local = (progress - start) / (end - start)
+                    local = max(0.0, min(1.0, local))
+                    step_progress_bar.progress(
+                        int(local * 100),
+                        text=f"Step {step_idx}/7 progress",
+                    )
 
             try:
                 artifacts, summary, overlay_video = _run_pipeline(
@@ -883,14 +926,17 @@ def main() -> None:
             except Sports2DError as exc:
                 status.update(label="Sports2D failed", state="error")
                 progress_bar.progress(100, text="Failed")
+                step_progress_bar.progress(100, text="Failed")
                 st.error(str(exc))
                 st.stop()
             except Exception as exc:
                 status.update(label="Processing failed", state="error")
                 progress_bar.progress(100, text="Failed")
+                step_progress_bar.progress(100, text="Failed")
                 st.exception(exc)
                 st.stop()
             progress_bar.progress(100, text="Done")
+            step_progress_bar.progress(100, text="Done")
             status.update(label="Done", state="complete")
 
         st.subheader("Results")
