@@ -63,6 +63,8 @@ class StrokeTrackingOptions:
     annotate: bool = True
     machine_bbox: Optional[Tuple[float, float, float, float]] = None
     handle_bbox: Optional[Tuple[float, float, float, float]] = None
+    handle_source: str = "manual"
+    handle_pose_npz: Optional[Path] = None
     m_per_px: Optional[float] = None
     ema_alpha: float = 0.4
     min_points: int = 10
@@ -268,6 +270,12 @@ def _run_pipeline(
                 reference_frame_idx=0,
                 machine_bbox=stroke_tracking.machine_bbox,
                 handle_bbox=stroke_tracking.handle_bbox,
+                handle_source=stroke_tracking.handle_source,
+                handle_pose_npz=(
+                    stroke_tracking.handle_pose_npz
+                    if stroke_tracking.handle_pose_npz is not None
+                    else (summary_base.points_npz[0] if summary_base.points_npz else None)
+                ),
                 annotate=stroke_tracking.annotate,
                 m_per_px=stroke_tracking.m_per_px,
                 ema_alpha=stroke_tracking.ema_alpha,
@@ -567,14 +575,30 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
     )
     stroke_tracking = StrokeTrackingOptions(enabled=False)
     if enable_stroke:
-        bbox_mode = _choose_option(
-            "Stroke ROI source",
-            ["annotate interactively", "enter bbox values"],
+        handle_source_choice = _choose_option(
+            "Handle source",
+            ["manual bbox", "pose midpoint"],
             default_index=0,
         )
-        annotate = bbox_mode == "annotate interactively"
-        machine_bbox = None if annotate else _prompt_bbox("Machine reference bbox")
-        handle_bbox = None if annotate else _prompt_bbox("Handle bbox")
+        handle_source = "pose" if handle_source_choice == "pose midpoint" else "manual"
+        if handle_source == "manual":
+            bbox_mode = _choose_option(
+                "Stroke ROI source",
+                ["annotate interactively", "enter bbox values"],
+                default_index=0,
+            )
+            annotate = bbox_mode == "annotate interactively"
+            machine_bbox = None if annotate else _prompt_bbox("Machine reference bbox")
+            handle_bbox = None if annotate else _prompt_bbox("Handle bbox")
+        else:
+            machine_mode = _choose_option(
+                "Machine ROI source",
+                ["annotate interactively", "enter bbox values"],
+                default_index=0,
+            )
+            annotate = machine_mode == "annotate interactively"
+            machine_bbox = None if annotate else _prompt_bbox("Machine reference bbox")
+            handle_bbox = None
         m_per_px = _prompt_optional_float(
             "Stroke meters-per-pixel scale",
             default=None,
@@ -592,6 +616,7 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
             annotate=annotate,
             machine_bbox=machine_bbox,
             handle_bbox=handle_bbox,
+            handle_source=handle_source,
             m_per_px=m_per_px,
             debug_video=save_debug,
         )

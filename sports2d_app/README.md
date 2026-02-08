@@ -46,6 +46,8 @@ produces:
 - stroke signals aligned to frame/time
 - a merged angles plot with a bottom handle-domain subplot
 - overlay video with 3D + handle/machine tracking
+The handle source can be either a manually annotated bbox or the pose midpoint between
+left/right wrists (from the Sports2D exports).
 
 ## Stroke Phase / Handle-Machine Tracking (Standalone)
 If you want to run stroke tracking separately from the full CLI pipeline:
@@ -55,6 +57,8 @@ If you want to run stroke tracking separately from the full CLI pipeline:
   --video /absolute/path/to/video.mp4 \
   --out-dir /absolute/path/to/output_dir \
   --angles-csv /absolute/path/to/angles_h36m.csv \
+  --handle-source pose \
+  --pose-npz /absolute/path/to/exports/video_points.npz \
   --annotate \
   --debug-video
 ```
