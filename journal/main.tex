@@ -79,6 +79,7 @@ Formally, given single- or multi-view video sequences $V(t)$ of a rowing athlete
   \item \textbf{Canonical representation:} create a standardized feature vector sequence $\hat{F}(t)$ per stroke (or per unit phase) to support downstream modeling.
 \end{enumerate}
 
+
 \subsubsection*{Progress update (January 21- February 4, 2026): data extraction experiments and findings}
 This section records what has been implemented and learned so far in the video-to-pose portion of the pipeline.
 
@@ -220,7 +221,7 @@ This heuristic was very effective on the videos tested, and it provides a concre
   \label{fig:with-elbows}
 \end{figure}
 
-\paragraph{Sports2D graph evidence (erg test).}
+
 The following plot clearly suggested that I was on the correct path: the inferred kinematic traces were extremely smooth and showed very high apparent precision. Although this is not conclusive (this example is from an erg video rather than on-water footage), it demonstrated the potential for very high accuracy---to the point where even fine details such as individual fingers appeared to be tracked correctly.
 
 \begin{figure}[H]
@@ -230,7 +231,37 @@ The following plot clearly suggested that I was on the correct path: the inferre
   \label{fig:graph-sports2d}
 \end{figure}
 
+\subsubsection*{Step 3.5: Stroke-length domain tracking and time$\leftrightarrow$distance reparameterization (planned)}
+\textbf{Goal:} represent and analyze strokes not only in the time domain $t$, but also in a stroke-length (distance) domain, and enable switching between these parameterizations.
 
+Time-indexed kinematics are natural from video, but many performance signals (and coaching interpretations) are more naturally expressed as functions of stroke progression (e.g., force vs. distance, or force vs. gate-angle on-water). To support direct alignment and comparison, the pipeline should estimate a monotonic ``stroke-length'' coordinate $s(t)$ and provide mappings $t \mapsto s$ and $s \mapsto t$.
+
+\begin{itemize}
+  \item \textbf{Handle proxy from 2D pose:} estimate the handle position in the image as the midpoint of the left and right hands (or wrists) from the 2D keypoints.
+  \item \textbf{Machine motion tracking:} track the moving ergometer component (e.g., carriage/seat/flywheel reference, depending on the machine) to obtain a second motion reference in the same video.
+  \item \textbf{Relative stroke-length estimate:} define the stroke-length coordinate as a relative displacement signal, computed from the position difference between the hand-midpoint proxy and the tracked machine motion reference.
+  \item \textbf{Domain switching:} use the estimated $s(t)$ to resample kinematics from uniform time steps to uniform stroke-length steps (and vice versa), enabling subsequent analysis in whichever domain is most appropriate.
+\end{itemize}
+
+\paragraph{Handle position and stroke-length alignment evidence.}
+Figure~\ref{fig:angles-h36m-with-stroke-plot} shows that we can effectively track handle position (and therefore derive velocity/acceleration proxies) from video, and more importantly infer where the athlete is within the stroke as a fraction of the total stroke length. This then allows matching that stroke-length domain back to the time domain. Crucially, both parameterizations are obtained from a single video simultaneously, requiring only minimal manual annotation (performed once per whole video).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{process-pics/angles_h36m_with_stroke_plot.png}
+  \caption{Example stroke-length tracking result: handle-position proxy and derived stroke-length coordinate enable switching between time and stroke-length domains from a single video with minimal manual annotation.}
+  \label{fig:angles-h36m-with-stroke-plot}
+\end{figure}
+
+\paragraph{Handle and machine tracking visualization.}
+Figure~\ref{fig:tracked-handle} visualizes the underlying signals used for stroke-length estimation: the midpoint of the hands (handle proxy from the 2D pose) and the moving machine reference are both correctly tracked in the same video.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.75\linewidth]{process-pics/tracked-handle.jpg}
+  \caption{Tracked handle proxy (midpoint of the hands) and tracked machine motion reference, used to compute a relative stroke-length coordinate from a single video.}
+  \label{fig:tracked-handle}
+\end{figure}
 
 \subsubsection*{Step 4: ``Average stroke'' synthesis (planned)}
 \textbf{Goal:} build an athlete-specific reference model representing typical technique.
@@ -256,7 +287,5 @@ The following plot clearly suggested that I was on the correct path: the inferre
   \item \textbf{Structural/biomechanical validity:} verify predicted motion and derived timing obey expected rowing constraints (e.g., plausible joint angle ranges; consistent event ordering catch$\rightarrow$drive$\rightarrow$finish$\rightarrow$recovery).
   \item \textbf{Ablations:} measure sensitivity to camera viewpoint, stabilization, smoothing, and 2D-to-3D lifting assumptions.
 \end{itemize}
-
-
 
 \end{document}
