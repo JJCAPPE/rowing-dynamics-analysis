@@ -263,6 +263,44 @@ Figure~\ref{fig:tracked-handle} visualizes the underlying signals used for strok
   \label{fig:tracked-handle}
 \end{figure}
 
+\paragraph{RP3 telemetry extraction (done).}
+I was able to extract the CSV of a workout from the RP3 web interface by inspecting the web app source code. However, the extracted force-curve data were not clean, and it was not obvious what the step/domain of each point in the curve corresponded to (e.g., time vs.\ distance). Despite this, it was clear that the relevant units included watts, which was the key quantity I needed for downstream alignment with video-derived kinematics.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{process-pics/bad-data.png}
+  \caption{RP3 CSV extraction: watts units are available, but the curve data are not clean and the sampling domain/step for each point is unclear (work-in-progress).}
+  \label{fig:rp3-bad-data}
+\end{figure}
+
+\paragraph{RP3 curve domain inference (distance-step confirmation).}
+With some further inspection of the extracted CSV, we inferred the step length via consistency checks:
+\begin{itemize}
+  \item For each stroke, $\texttt{len(curve\_data)}$ matches the reported stroke length divided by $2.2$ (cm), i.e.\ $n \approx \texttt{stroke\_length}/2.2$.
+  \item The reported peak-force position matches when computed as $\arg\max(\texttt{curve\_data}) \cdot (\texttt{stroke\_length}/n)$.
+  \item The website's SVG path for the curve has the same number of points as $\texttt{curve\_data}$ and matches the force values point-by-point after linear pixel scaling.
+\end{itemize}
+Therefore, each $\texttt{curve\_data}$ value corresponds to one force sample at a fixed $2.2$~cm distance step (x-axis = stroke length, not time which is fine thanks to the previous handle tracking we did).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{process-pics/cleaned-data.png}
+  \caption{Cleaned/interpreted RP3 curve data: each sample corresponds to a fixed 2.2~cm step in stroke length (distance domain), enabling alignment with video-derived stroke-length estimates.}
+  \label{fig:rp3-cleaned-data}
+\end{figure}
+
+\paragraph{Per-stroke reconstruction and portal validation.}
+Figure~\ref{fig:rp3-recreation} shows a per-stroke reconstruction plot of the cleaned curve data alongside each stroke's summary metrics. This representation will be useful for plotting and matching the telemetry curve overlaid on video-derived kinematics. It also validates the inferred fixed distance-step assumption by matching the RP3 portal visualization of the same data.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\linewidth]{process-pics/recreation.png}
+  \caption{Per-stroke recreation of the cleaned RP3 curve data with per-stroke metrics; matches the RP3 portal visualization, supporting the fixed 2.2~cm stroke-length sampling interpretation and enabling video/telemetry overlay.}
+  \label{fig:rp3-recreation}
+\end{figure}
+
+
+
 \subsubsection*{Step 4: ``Average stroke'' synthesis (planned)}
 \textbf{Goal:} build an athlete-specific reference model representing typical technique.
 
