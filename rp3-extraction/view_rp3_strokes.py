@@ -195,6 +195,8 @@ class StrokeViewer:
         self.slider = None
         self.textbox = None
         self.curve_line = None
+        self.peak_line = None
+        self.avg_pos_line = None
         self.value_artists: dict[str, Any] = {}
 
     def _extract_curve(self, row: dict[str, str]) -> tuple[list[float], list[float]]:
@@ -222,6 +224,8 @@ class StrokeViewer:
             ("energy_per_stroke", "Energy/stroke"),
             ("peak_force", "Peak force"),
             ("peak_force_pos", "Peak force pos"),
+            ("avg_force_pos", "Avg force pos"),
+            ("avg_force_pos_rel", "Avg force pos rel"),
             ("rel_peak_pos", "Rel. peak pos"),
             ("drive_time", "Drive time"),
             ("recover_time", "Recover time"),
@@ -234,7 +238,7 @@ class StrokeViewer:
         self.ax_info.set_ylim(0, 1)
 
         y0 = 0.95
-        dy = 0.135
+        dy = 0.105
         for i, (key, label) in enumerate(left_specs):
             y = y0 - i * dy
             self.ax_info.text(0.02, y - 0.05, label, fontsize=12, color="#222222")
@@ -259,7 +263,7 @@ class StrokeViewer:
                 weight="bold",
             )
 
-    def _stroke_metrics(self, idx: int) -> dict[str, str]:
+    def _stroke_metrics(self, idx: int, avg_force_pos: float | None) -> dict[str, str]:
         row = self.rows[idx]
 
         stroke_no = to_float(row.get("stroke_number"))
@@ -280,6 +284,9 @@ class StrokeViewer:
         drive = to_float(row.get("drive_time"))
         recover = to_float(row.get("recover_time"))
         avg_calc_power = to_float(row.get("avg_calculated_power"))
+        avg_force_pos_rel = None
+        if avg_force_pos is not None and stroke_length_cm is not None and stroke_length_cm > 0:
+            avg_force_pos_rel = (avg_force_pos / stroke_length_cm) * 100.0
 
         return {
             "stroke_no": stroke_no_text,
@@ -296,6 +303,8 @@ class StrokeViewer:
             "energy_per_stroke": fmt_number(energy, " J", precision=1),
             "peak_force": fmt_number(peak_force, " N", precision=0),
             "peak_force_pos": fmt_number(peak_pos, " cm", precision=1),
+            "avg_force_pos": fmt_number(avg_force_pos, " cm", precision=1),
+            "avg_force_pos_rel": fmt_number(avg_force_pos_rel, " %", precision=1),
             "rel_peak_pos": fmt_number(
                 (rel_peak * 100.0) if rel_peak is not None else None,
                 " %",
@@ -314,10 +323,32 @@ class StrokeViewer:
         xs, ys = self.curves[self.index]
         self.curve_line.set_data(xs, ys)
 
+        avg_force_pos: float | None = None
+        total_force = sum(ys)
+        if ys and total_force > 0:
+            avg_force_pos = sum(x * force for x, force in zip(xs, ys)) / total_force
+
+        peak_x = to_float(self.rows[self.index].get("peak_force_pos"))
+        if peak_x is None and xs and ys:
+            peak_idx = max(range(len(ys)), key=lambda i: ys[i])
+            peak_x = xs[peak_idx]
+        if self.peak_line is not None:
+            if peak_x is None:
+                self.peak_line.set_visible(False)
+            else:
+                self.peak_line.set_xdata([peak_x, peak_x])
+                self.peak_line.set_visible(True)
+        if self.avg_pos_line is not None:
+            if avg_force_pos is None:
+                self.avg_pos_line.set_visible(False)
+            else:
+                self.avg_pos_line.set_xdata([avg_force_pos, avg_force_pos])
+                self.avg_pos_line.set_visible(True)
+
         title = f"{self.csv_path.name}  |  Stroke {self.index + 1}/{self.total}"
         self.ax_curve.set_title(title, fontsize=14, pad=12)
 
-        metrics = self._stroke_metrics(self.index)
+        metrics = self._stroke_metrics(self.index, avg_force_pos)
         for key, artist in self.value_artists.items():
             artist.set_text(metrics.get(key, "-"))
 
@@ -395,7 +426,26 @@ class StrokeViewer:
         self.ax_curve.grid(True, alpha=0.3)
         self.ax_curve.set_xlim(0, self.x_max * 1.03)
         self.ax_curve.set_ylim(0, self.y_max * 1.08)
-        (self.curve_line,) = self.ax_curve.plot([], [], color="#12a8d3", linewidth=3.0)
+        (self.curve_line,) = self.ax_curve.plot([], [], color="#12a8d3", linewidth=1.0)
+        self.peak_line = self.ax_curve.axvline(
+            x=0,
+            color="#ff7f0e",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.9,
+            label="Peak position",
+            visible=False,
+        )
+        self.avg_pos_line = self.ax_curve.axvline(
+            x=0,
+            color="#2ca02c",
+            linestyle="-.",
+            linewidth=1.2,
+            alpha=0.9,
+            label="Avg force position",
+            visible=False,
+        )
+        self.ax_curve.legend(loc="upper right")
 
         self._build_info_panel()
 
