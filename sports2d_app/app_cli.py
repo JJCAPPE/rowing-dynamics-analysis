@@ -30,6 +30,20 @@ from stroke_signal import StrokeTrackingOutputs, run_stroke_signal_tracking
 APP_ROOT = Path(__file__).resolve().parent
 RUNS_DIR = APP_ROOT / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
+SOURCE_VIDEOS_DIR = Path("/Users/giacomo/dev/rowing-video-analysis/source-videos")
+VIDEO_SUFFIXES = {
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".m4v",
+    ".webm",
+    ".mpg",
+    ".mpeg",
+    ".mts",
+    ".m2ts",
+    ".wmv",
+}
 
 
 @dataclass(frozen=True)
@@ -406,26 +420,69 @@ def _curses_choose_option(
 ) -> str:
     import curses
 
+    def _fit_to_width(text: str, width: int) -> str:
+        if width <= 0:
+            return ""
+        if len(text) <= width:
+            return text
+        if width <= 3:
+            return text[:width]
+        return text[: width - 3] + "..."
+
     def _inner(stdscr: "curses._CursesWindow") -> str:
         selected = max(0, min(default_index, len(options) - 1))
-        curses.curs_set(0)
+        top = 0
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
         stdscr.keypad(True)
         while True:
             stdscr.erase()
-            stdscr.addstr(0, 0, prompt, curses.A_BOLD)
-            stdscr.addstr(1, 0, "Use UP/DOWN arrows and Enter.")
-            for idx, option in enumerate(options):
-                y = idx + 3
+            height, width = stdscr.getmaxyx()
+            max_width = max(0, width - 1)
+            visible_rows = max(1, height - 4)
+
+            def _safe_addstr(y: int, x: int, text: str, attr: int = 0) -> None:
+                if y < 0 or y >= height or not text:
+                    return
+                try:
+                    stdscr.addstr(y, x, text, attr)
+                except curses.error:
+                    pass
+
+            if selected < top:
+                top = selected
+            elif selected >= top + visible_rows:
+                top = selected - visible_rows + 1
+
+            _safe_addstr(0, 0, _fit_to_width(prompt, max_width), curses.A_BOLD)
+            _safe_addstr(1, 0, _fit_to_width("Use UP/DOWN arrows and Enter.", max_width))
+
+            visible_options = options[top : top + visible_rows]
+            for row, option in enumerate(visible_options):
+                idx = top + row
+                y = row + 3
                 prefix = "-> " if idx == selected else "   "
-                text = f"{prefix}{option}"
+                text = _fit_to_width(f"{prefix}{option}", max_width)
                 attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
-                stdscr.addstr(y, 0, text, attr)
+                _safe_addstr(y, 0, text, attr)
+
+            status = f"Option {selected + 1}/{len(options)}"
+            if top > 0 or top + visible_rows < len(options):
+                status = f"{status} (scroll for more)"
+            _safe_addstr(height - 1, 0, _fit_to_width(status, max_width), curses.A_DIM)
+
             stdscr.refresh()
             key = stdscr.getch()
             if key in (curses.KEY_UP, ord("k")):
                 selected = (selected - 1) % len(options)
             elif key in (curses.KEY_DOWN, ord("j")):
                 selected = (selected + 1) % len(options)
+            elif key == curses.KEY_PPAGE:
+                selected = max(0, selected - visible_rows)
+            elif key == curses.KEY_NPAGE:
+                selected = min(len(options) - 1, selected + visible_rows)
             elif key in (10, 13, curses.KEY_ENTER):
                 return options[selected]
 
@@ -457,6 +514,30 @@ def _prompt_existing_file(prompt: str) -> Path:
             print(f"Path is not a file: {p}")
             continue
         return p
+
+
+def _list_source_videos(directory: Path) -> List[Path]:
+    if not directory.exists():
+        raise FileNotFoundError(f"Source videos directory does not exist: {directory}")
+    if not directory.is_dir():
+        raise NotADirectoryError(f"Source videos path is not a directory: {directory}")
+    videos = [
+        path.resolve()
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES
+    ]
+    return sorted(videos, key=lambda p: p.name.lower())
+
+
+def _choose_source_video(directory: Path = SOURCE_VIDEOS_DIR) -> Path:
+    videos = _list_source_videos(directory)
+    if not videos:
+        raise ValueError(f"No video files found in source directory: {directory}")
+    labels = [path.name for path in videos]
+    selected = _choose_option("Source video", labels, default_index=0)
+    selected_path = videos[labels.index(selected)]
+    print(f"Selected source video: {selected_path}")
+    return selected_path
 
 
 def _prompt_int(prompt: str, default: int, minimum: int = 0) -> int:
@@ -554,7 +635,7 @@ def _open_path(path: Path) -> None:
 def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOptions]:
     print("Sports2D CLI Pipeline")
     print("=====================\n")
-    video_path = _prompt_existing_file("Path to input video")
+    video_path = _choose_source_video()
 
     mode_choice = _choose_option(
         "Sports2D mode",
