@@ -46,8 +46,10 @@ produces:
 - stroke signals aligned to frame/time
 - a merged angles plot with a bottom handle-domain subplot
 - overlay video with 3D + handle/machine tracking
-The handle source can be either a manually annotated bbox or the pose midpoint between
-left/right wrists (from the Sports2D exports).
+The machine ROI bbox is tracked for stability, while a separate cable-entry point defines
+the machine-side anchor used for relative handle displacement.
+The default handle source is the pose midpoint between left/right wrists (from Sports2D
+exports), with optional manual handle bbox tracking.
 
 ## Stroke Phase / Handle-Machine Tracking (Standalone)
 If you want to run stroke tracking separately from the full CLI pipeline:
@@ -63,9 +65,13 @@ If you want to run stroke tracking separately from the full CLI pipeline:
   --debug-video
 ```
 
+If you do not use `--annotate`, provide both:
+- `--machine-bbox x,y,w,h`
+- `--machine-cable-point x,y`
+
 What it outputs:
-- `stroke_signal.csv`: per-frame handle/machine centers, relative distance, velocity, stroke phase, catch/finish flags
-- `stroke_signal.npz`: same data + tracked boxes for reproducibility
+- `stroke_signal.csv`: per-frame handle center, machine bbox center, machine cable anchor center (`machine_cable_cx_px`, `machine_cable_cy_px`), relative distance, velocity, stroke phase, catch/finish flags
+- `stroke_signal.npz`: same data + tracked boxes, plus cable anchor arrays (`machine_cable_centers_xy`, `machine_cable_ref_xy`, `machine_cable_offset_px`)
 - `angles_h36m_with_stroke.csv` (if `--angles-csv` is provided)
 - `angles_h36m_with_stroke_plot.png` (combined angles + stroke signal plot)
 - `stroke_tracking_debug.mp4` (if `--debug-video` is enabled)

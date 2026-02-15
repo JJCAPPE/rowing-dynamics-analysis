@@ -16,6 +16,7 @@ from plot_angles import generate_angles_plot
 
 
 BBoxXYWH = Tuple[float, float, float, float]
+PointXY = Tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,12 @@ class StrokeTrackingOutputs:
     fps: float
     catch_idx: np.ndarray
     finish_idx: np.ndarray
+
+
+@dataclass(frozen=True)
+class MachineReference:
+    bbox_ref: BBoxXYWH
+    cable_point_ref: PointXY
 
 
 def _video_meta(video_path: Path) -> VideoMeta:
@@ -144,7 +151,47 @@ def _select_bbox(frame_bgr: np.ndarray, title: str, prompt: Sequence[str]) -> BB
     return float(x), float(y), float(w), float(h)
 
 
-def annotate_handle_and_machine(video_path: Path, reference_frame_idx: int) -> Tuple[BBoxXYWH, BBoxXYWH]:
+def _pick_point(frame_bgr: np.ndarray, title: str, prompt: str) -> PointXY:
+    clicked: list[Tuple[int, int]] = []
+
+    def on_mouse(event, x, y, flags, userdata):  # noqa: ARG001
+        if event == cv2.EVENT_LBUTTONDOWN:
+            clicked.clear()
+            clicked.append((int(x), int(y)))
+
+    cv2.namedWindow(title, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(title, on_mouse)
+
+    while True:
+        disp = frame_bgr.copy()
+        disp = _draw_help(
+            disp,
+            [
+                prompt,
+                "LMB: set point | ENTER: confirm | R: reset | ESC: cancel",
+            ],
+        )
+        if clicked:
+            x, y = clicked[0]
+            cv2.circle(disp, (x, y), 6, (255, 220, 0), -1)
+            cv2.circle(disp, (x, y), 12, (0, 0, 0), 2)
+        cv2.imshow(title, disp)
+        k = cv2.waitKey(20) & 0xFF
+        if k in (13, 10):  # Enter
+            if clicked:
+                x, y = clicked[0]
+                cv2.destroyWindow(title)
+                return float(x), float(y)
+        elif k in (ord("r"), ord("R")):
+            clicked.clear()
+        elif k == 27:  # Esc
+            cv2.destroyWindow(title)
+            raise KeyboardInterrupt("Annotation cancelled.")
+
+
+def annotate_handle_and_machine(
+    video_path: Path, reference_frame_idx: int
+) -> Tuple[BBoxXYWH, PointXY, BBoxXYWH]:
     frame = _read_frame(video_path, reference_frame_idx)
     try:
         machine_bbox = _select_bbox(
@@ -154,6 +201,11 @@ def annotate_handle_and_machine(video_path: Path, reference_frame_idx: int) -> T
                 "Draw bbox around a rigid machine part (moves with the machine body).",
                 "Press ENTER/SPACE to confirm. Press C to cancel.",
             ],
+        )
+        machine_cable_point = _pick_point(
+            frame,
+            "Stroke Tracking: machine cable entry",
+            "Click where the cable enters the erg.",
         )
         handle_bbox = _select_bbox(
             frame,
@@ -165,10 +217,10 @@ def annotate_handle_and_machine(video_path: Path, reference_frame_idx: int) -> T
         )
     finally:
         cv2.destroyAllWindows()
-    return machine_bbox, handle_bbox
+    return machine_bbox, machine_cable_point, handle_bbox
 
 
-def annotate_machine_only(video_path: Path, reference_frame_idx: int) -> BBoxXYWH:
+def annotate_machine_only(video_path: Path, reference_frame_idx: int) -> Tuple[BBoxXYWH, PointXY]:
     frame = _read_frame(video_path, reference_frame_idx)
     try:
         machine_bbox = _select_bbox(
@@ -179,9 +231,14 @@ def annotate_machine_only(video_path: Path, reference_frame_idx: int) -> BBoxXYW
                 "Press ENTER/SPACE to confirm. Press C to cancel.",
             ],
         )
+        machine_cable_point = _pick_point(
+            frame,
+            "Stroke Tracking: machine cable entry",
+            "Click where the cable enters the erg.",
+        )
     finally:
         cv2.destroyAllWindows()
-    return machine_bbox
+    return machine_bbox, machine_cable_point
 
 
 def _iter_frames(video_path: Path, start: int = 0):
@@ -460,30 +517,54 @@ def _track_handle_from_pose(
     return TrackSeries(boxes_xywh=boxes, centers_xy=centers, status=status)
 
 
+def _bbox_center_xy(box_xywh: BBoxXYWH) -> np.ndarray:
+    x, y, w, h = [float(v) for v in box_xywh]
+    return np.asarray([x + w * 0.5, y + h * 0.5], dtype=np.float32)
+
+
+def _machine_cable_series(
+    machine_track: TrackSeries,
+    machine_ref: MachineReference,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    machine_center_ref = _bbox_center_xy(machine_ref.bbox_ref)
+    cable_ref_xy = np.asarray(machine_ref.cable_point_ref, dtype=np.float32)
+    cable_offset_xy = (cable_ref_xy - machine_center_ref).astype(np.float32)
+    cable_centers_xy = (machine_track.centers_xy + cable_offset_xy[None, :]).astype(np.float32)
+    return cable_centers_xy, cable_ref_xy, cable_offset_xy
+
+
 def track_handle_and_machine(
     *,
     video_path: Path,
     reference_frame_idx: int,
     machine_bbox: Optional[BBoxXYWH],
+    machine_cable_point: Optional[PointXY],
     handle_bbox: Optional[BBoxXYWH],
     handle_source: str,
     handle_pose_npz: Optional[Path],
     annotate: bool,
     ema_alpha: float,
     min_points: int,
-) -> Tuple[TrackSeries, TrackSeries]:
+) -> Tuple[TrackSeries, TrackSeries, MachineReference]:
     meta = _video_meta(video_path)
     handle_source = handle_source.lower().strip()
     if handle_source not in {"manual", "pose"}:
         raise ValueError("handle_source must be 'manual' or 'pose'.")
 
     if handle_source == "manual":
-        if annotate or machine_bbox is None or handle_bbox is None:
-            machine_bbox, handle_bbox = annotate_handle_and_machine(
+        if annotate:
+            machine_bbox, machine_cable_point, handle_bbox = annotate_handle_and_machine(
                 video_path=video_path,
                 reference_frame_idx=int(reference_frame_idx),
             )
-        assert machine_bbox is not None and handle_bbox is not None
+        if machine_bbox is None:
+            raise ValueError("machine_bbox is required for handle_source='manual' when annotate=False.")
+        if machine_cable_point is None:
+            raise ValueError(
+                "machine_cable_point is required for handle_source='manual' when annotate=False."
+            )
+        if handle_bbox is None:
+            raise ValueError("handle_bbox is required for handle_source='manual' when annotate=False.")
         machine_track = _track_bbox_lk(
             video_path,
             machine_bbox,
@@ -498,14 +579,21 @@ def track_handle_and_machine(
             ema_alpha=float(ema_alpha),
             min_points=int(min_points),
         )
-        return handle_track, machine_track
+        return (
+            handle_track,
+            machine_track,
+            MachineReference(bbox_ref=machine_bbox, cable_point_ref=machine_cable_point),
+        )
 
-    if annotate or machine_bbox is None:
-        machine_bbox = annotate_machine_only(
+    if annotate:
+        machine_bbox, machine_cable_point = annotate_machine_only(
             video_path=video_path,
             reference_frame_idx=int(reference_frame_idx),
         )
-    assert machine_bbox is not None
+    if machine_bbox is None:
+        raise ValueError("machine_bbox is required for handle_source='pose' when annotate=False.")
+    if machine_cable_point is None:
+        raise ValueError("machine_cable_point is required for handle_source='pose' when annotate=False.")
     machine_track = _track_bbox_lk(
         video_path,
         machine_bbox,
@@ -527,7 +615,11 @@ def track_handle_and_machine(
         width=int(meta.width),
         height=int(meta.height),
     )
-    return handle_track, machine_track
+    return (
+        handle_track,
+        machine_track,
+        MachineReference(bbox_ref=machine_bbox, cable_point_ref=machine_cable_point),
+    )
 
 
 def _fill_signal(signal: np.ndarray) -> np.ndarray:
@@ -756,10 +848,12 @@ def _write_debug_video(
     *,
     handle_track: TrackSeries,
     machine_track: TrackSeries,
+    machine_cable_centers_xy: np.ndarray,
     rel_axis_px: np.ndarray,
     phase: np.ndarray,
     catch_idx: np.ndarray,
     finish_idx: np.ndarray,
+    max_duration_s: Optional[float] = None,
 ) -> None:
     meta = _video_meta(video_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -774,21 +868,31 @@ def _write_debug_video(
 
     catch_set = set(int(v) for v in catch_idx.tolist())
     finish_set = set(int(v) for v in finish_idx.tolist())
+    max_frames: Optional[int] = None
+    if max_duration_s is not None:
+        max_duration_s = float(max_duration_s)
+        if max_duration_s <= 0:
+            raise ValueError("max_duration_s must be > 0 when provided.")
+        max_frames = max(1, int(round(meta.fps * max_duration_s)))
 
     try:
         for idx, frame in _iter_frames(video_path, start=0):
             if idx >= handle_track.centers_xy.shape[0]:
                 break
+            if max_frames is not None and idx >= max_frames:
+                break
             _draw_bbox(frame, machine_track.boxes_xywh[idx], (0, 128, 255), "machine")
             if handle_track.boxes_xywh is not None:
                 _draw_bbox(frame, handle_track.boxes_xywh[idx], (0, 255, 0), "handle")
 
-            pm = machine_track.centers_xy[idx]
+            pm = machine_cable_centers_xy[idx]
             ph = handle_track.centers_xy[idx]
             if np.isfinite(pm).all() and np.isfinite(ph).all():
                 p0 = (int(round(float(pm[0]))), int(round(float(pm[1]))))
                 p1 = (int(round(float(ph[0]))), int(round(float(ph[1]))))
                 cv2.line(frame, p0, p1, (255, 220, 0), 2, cv2.LINE_AA)
+                cv2.circle(frame, p0, 4, (255, 220, 0), -1)
+                cv2.circle(frame, p0, 8, (0, 0, 0), 1)
 
             text = f"rel_px={float(rel_axis_px[idx]):.2f}"
             cv2.putText(frame, text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 20, 20), 4, cv2.LINE_AA)
@@ -855,11 +959,20 @@ def _parse_bbox(text: str) -> BBoxXYWH:
     return float(x), float(y), float(w), float(h)
 
 
+def _parse_point(text: str) -> PointXY:
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 2:
+        raise ValueError("Point must have 2 comma-separated values: x,y")
+    x, y = [float(p) for p in parts]
+    return float(x), float(y)
+
+
 def _build_stroke_dataframe(
     *,
     fps: float,
     handle_track: TrackSeries,
     machine_track: TrackSeries,
+    machine_cable_centers_xy: np.ndarray,
     m_per_px: Optional[float],
     min_stroke_distance_s: float,
     prominence: Optional[float],
@@ -869,8 +982,10 @@ def _build_stroke_dataframe(
     T = int(handle_track.centers_xy.shape[0])
     if machine_track.centers_xy.shape[0] != T:
         raise ValueError("handle and machine tracks must have same frame count.")
+    if machine_cable_centers_xy.shape != (T, 2):
+        raise ValueError("machine_cable_centers_xy must have shape (T,2).")
 
-    rel_vec = handle_track.centers_xy - machine_track.centers_xy
+    rel_vec = handle_track.centers_xy - machine_cable_centers_xy
     axis = _principal_axis(rel_vec)
     axis_perp = np.asarray([-axis[1], axis[0]], dtype=np.float32)
     rel_axis_px = np.sum(rel_vec * axis[None, :], axis=1).astype(np.float32)
@@ -911,6 +1026,8 @@ def _build_stroke_dataframe(
             "handle_cy_px": handle_track.centers_xy[:, 1].astype(np.float32),
             "machine_cx_px": machine_track.centers_xy[:, 0].astype(np.float32),
             "machine_cy_px": machine_track.centers_xy[:, 1].astype(np.float32),
+            "machine_cable_cx_px": machine_cable_centers_xy[:, 0].astype(np.float32),
+            "machine_cable_cy_px": machine_cable_centers_xy[:, 1].astype(np.float32),
             "handle_status": handle_track.status.astype(np.uint8),
             "machine_status": machine_track.status.astype(np.uint8),
             "relative_axis_px": rel_axis_smooth.astype(np.float32),
@@ -963,8 +1080,9 @@ def run_stroke_signal_tracking(
     angles_csv: Optional[Path] = None,
     reference_frame_idx: int = 0,
     machine_bbox: Optional[BBoxXYWH] = None,
+    machine_cable_point: Optional[PointXY] = None,
     handle_bbox: Optional[BBoxXYWH] = None,
-    handle_source: str = "manual",
+    handle_source: str = "pose",
     handle_pose_npz: Optional[Path] = None,
     annotate: bool = False,
     m_per_px: Optional[float] = None,
@@ -977,6 +1095,7 @@ def run_stroke_signal_tracking(
     create_plot: bool = True,
     plot_video_path: Optional[Path] = None,
     debug_video: bool = False,
+    debug_video_max_seconds: Optional[float] = None,
 ) -> StrokeTrackingOutputs:
     video_path = Path(video_path)
     out_dir = Path(out_dir)
@@ -994,10 +1113,11 @@ def run_stroke_signal_tracking(
             video_path.parent / "pose2d.npz",
         ]
         handle_pose_npz = next((p for p in candidates if p.exists()), None)
-    handle_track, machine_track = track_handle_and_machine(
+    handle_track, machine_track, machine_ref = track_handle_and_machine(
         video_path=video_path,
         reference_frame_idx=int(reference_frame_idx),
         machine_bbox=machine_bbox,
+        machine_cable_point=machine_cable_point,
         handle_bbox=handle_bbox,
         handle_source=handle_source,
         handle_pose_npz=handle_pose_npz,
@@ -1005,11 +1125,15 @@ def run_stroke_signal_tracking(
         ema_alpha=float(ema_alpha),
         min_points=int(min_points),
     )
+    machine_cable_centers_xy, machine_cable_ref_xy, machine_cable_offset_px = _machine_cable_series(
+        machine_track, machine_ref
+    )
 
     stroke_df, events, rel_axis_px = _build_stroke_dataframe(
         fps=float(meta.fps),
         handle_track=handle_track,
         machine_track=machine_track,
+        machine_cable_centers_xy=machine_cable_centers_xy,
         m_per_px=m_per_px,
         min_stroke_distance_s=float(min_stroke_distance_s),
         prominence=prominence,
@@ -1030,6 +1154,9 @@ def run_stroke_signal_tracking(
         machine_boxes_xywh=machine_track.boxes_xywh,
         handle_centers_xy=handle_track.centers_xy,
         machine_centers_xy=machine_track.centers_xy,
+        machine_cable_centers_xy=machine_cable_centers_xy,
+        machine_cable_ref_xy=machine_cable_ref_xy,
+        machine_cable_offset_px=machine_cable_offset_px,
         handle_status=handle_track.status,
         machine_status=machine_track.status,
         stroke_table=stroke_df.to_records(index=False),
@@ -1046,10 +1173,12 @@ def run_stroke_signal_tracking(
             debug_video_path,
             handle_track=handle_track,
             machine_track=machine_track,
+            machine_cable_centers_xy=machine_cable_centers_xy,
             rel_axis_px=rel_axis_px,
             phase=stroke_df["stroke_phase"].to_numpy(dtype=np.float32),
             catch_idx=events.catch_idx,
             finish_idx=events.finish_idx,
+            max_duration_s=debug_video_max_seconds,
         )
 
     merged_csv: Optional[Path] = None
@@ -1124,6 +1253,12 @@ def _parse_args() -> argparse.Namespace:
         help="Machine bbox as x,y,w,h in pixels",
     )
     parser.add_argument(
+        "--machine-cable-point",
+        type=str,
+        default=None,
+        help="Machine cable entry point as x,y in pixels",
+    )
+    parser.add_argument(
         "--handle-bbox",
         type=str,
         default=None,
@@ -1132,9 +1267,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--handle-source",
         type=str,
-        default="manual",
+        default="pose",
         choices=["manual", "pose"],
-        help="Handle source: manual bbox or pose midpoint (default: manual)",
+        help="Handle source: manual bbox or pose midpoint (default: pose)",
     )
     parser.add_argument(
         "--pose-npz",
@@ -1145,7 +1280,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--annotate",
         action="store_true",
-        help="Open OpenCV ROI selector for machine/handle bbox annotation",
+        help="Open OpenCV selectors for machine bbox, machine cable entry point, and handle bbox (manual only)",
     )
     parser.add_argument(
         "--m-per-px",
@@ -1211,6 +1346,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     machine_bbox = _parse_bbox(args.machine_bbox) if args.machine_bbox else None
+    machine_cable_point = _parse_point(args.machine_cable_point) if args.machine_cable_point else None
     handle_bbox = _parse_bbox(args.handle_bbox) if args.handle_bbox else None
 
     outputs = run_stroke_signal_tracking(
@@ -1219,6 +1355,7 @@ def main() -> None:
         angles_csv=Path(args.angles_csv) if args.angles_csv is not None else None,
         reference_frame_idx=int(args.reference_frame_idx),
         machine_bbox=machine_bbox,
+        machine_cable_point=machine_cable_point,
         handle_bbox=handle_bbox,
         handle_source=str(args.handle_source),
         handle_pose_npz=Path(args.pose_npz) if args.pose_npz is not None else None,

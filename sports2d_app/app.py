@@ -66,8 +66,9 @@ class ExportSummary:
 @dataclass(frozen=True)
 class StrokeTrackingOptions:
     enabled: bool
-    handle_source: str = "manual"
+    handle_source: str = "pose"
     machine_bbox: Optional[Tuple[float, float, float, float]] = None
+    machine_cable_point: Optional[Tuple[float, float]] = None
     handle_bbox: Optional[Tuple[float, float, float, float]] = None
     handle_pose_npz: Optional[Path] = None
     m_per_px: Optional[float] = None
@@ -250,6 +251,14 @@ def _parse_bbox(text: str) -> Tuple[float, float, float, float]:
     if w <= 1 or h <= 1:
         raise ValueError("BBox width/height must be > 1")
     return float(x), float(y), float(w), float(h)
+
+
+def _parse_point(text: str) -> Tuple[float, float]:
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 2:
+        raise ValueError("Point must have 2 comma-separated values: x,y")
+    x, y = [float(p) for p in parts]
+    return float(x), float(y)
 
 
 def _select_log_excerpt(lines: List[str]) -> List[str]:
@@ -629,6 +638,7 @@ def _run_pipeline(
                 angles_csv=mb_outputs.angles_csv,
                 reference_frame_idx=0,
                 machine_bbox=stroke_tracking.machine_bbox,
+                machine_cable_point=stroke_tracking.machine_cable_point,
                 handle_bbox=stroke_tracking.handle_bbox,
                 handle_source=stroke_tracking.handle_source,
                 handle_pose_npz=(
@@ -773,18 +783,6 @@ def main() -> None:
         mode_choice = st.selectbox("Mode", ["lightweight", "balanced", "performance"], index=1)
         det_frequency = st.slider("Detection frequency (frames)", 1, 30, 4, 1)
 
-        #to convert 30fps video to realtime and keep frames use
-        #ffmpeg -y -i /Users/giacomo/dev/rowing-video-analysis/source-videos/rp3-slow.MOV \
-        #     -vf "setpts=N/(240*TB)" -an -c:v libx264 -crf 23 -preset medium \
-        #    /Users/giacomo/dev/rowing-video-analysis/source-videos/rp3-normal-240cfr.mp4
-        slowmo_factor = st.number_input(
-            "Slow-motion factor",
-            min_value=0.1,
-            max_value=32.0,
-            value=1.0,
-            step=0.5,
-            help="Use 8 for 240fps captured and exported at 30fps. Use 1 for normal-speed video.",
-        )
         device = st.selectbox("Device", ["auto", "cpu", "cuda", "mps"], index=0)
 
         st.divider()
@@ -799,6 +797,11 @@ def main() -> None:
             "Machine reference bbox (x,y,w,h)",
             value="",
             help="Required for stroke tracking.",
+        )
+        machine_cable_point_text = st.text_input(
+            "Machine cable entry point (x,y)",
+            value="",
+            help="Required for stroke tracking. This is where the cable enters the erg.",
         )
         handle_bbox_text = ""
         if handle_source_choice == "manual bbox":
@@ -844,6 +847,14 @@ def main() -> None:
             except ValueError as exc:
                 st.error(f"Invalid machine bbox: {exc}")
                 st.stop()
+            if not machine_cable_point_text.strip():
+                st.error("Machine cable entry point is required for stroke tracking.")
+                st.stop()
+            try:
+                machine_cable_point = _parse_point(machine_cable_point_text)
+            except ValueError as exc:
+                st.error(f"Invalid machine cable entry point: {exc}")
+                st.stop()
             handle_source = "pose" if handle_source_choice == "pose midpoint" else "manual"
             handle_bbox = None
             if handle_source == "manual":
@@ -859,6 +870,7 @@ def main() -> None:
                 enabled=True,
                 handle_source=handle_source,
                 machine_bbox=machine_bbox,
+                machine_cable_point=machine_cable_point,
                 handle_bbox=handle_bbox,
                 m_per_px=float(m_per_px) if m_per_px > 0 else None,
                 debug_video=bool(debug_video),
@@ -883,7 +895,7 @@ def main() -> None:
             distance_to_camera_m=float(distance_m) if distance_m > 0 else None,
             device=device,
             det_frequency=int(det_frequency),
-            slowmo_factor=float(slowmo_factor),
+            slowmo_factor=1.0,
             save_images=False,
             save_graphs=False,
         )

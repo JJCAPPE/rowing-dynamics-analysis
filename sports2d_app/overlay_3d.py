@@ -232,6 +232,7 @@ def generate_pose3d_overlay_video(
     flip_3d_depth: bool = False,
     inset_bg_alpha: float = 0.5,
     show_joint_angles: bool = True,
+    max_duration_s: float | None = None,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> None:
     video_path = Path(video_path)
@@ -274,6 +275,7 @@ def generate_pose3d_overlay_video(
 
     handle_boxes_xywh: np.ndarray | None = None
     machine_boxes_xywh: np.ndarray | None = None
+    machine_cable_centers_xy: np.ndarray | None = None
     stroke_phase: np.ndarray | None = None
     rel_axis_px: np.ndarray | None = None
     catch_set: set[int] = set()
@@ -285,6 +287,8 @@ def generate_pose3d_overlay_video(
                 handle_boxes_xywh = np.asarray(ds["handle_boxes_xywh"], dtype=np.float32)
             if "machine_boxes_xywh" in ds.files:
                 machine_boxes_xywh = np.asarray(ds["machine_boxes_xywh"], dtype=np.float32)
+            if "machine_cable_centers_xy" in ds.files:
+                machine_cable_centers_xy = np.asarray(ds["machine_cable_centers_xy"], dtype=np.float32)
             if "catch_idx" in ds.files:
                 catch_set = set(int(v) for v in np.asarray(ds["catch_idx"]).astype(int).tolist())
             if "finish_idx" in ds.files:
@@ -299,6 +303,7 @@ def generate_pose3d_overlay_video(
         except Exception:
             handle_boxes_xywh = None
             machine_boxes_xywh = None
+            machine_cable_centers_xy = None
             stroke_phase = None
             rel_axis_px = None
             catch_set = set()
@@ -328,10 +333,16 @@ def generate_pose3d_overlay_video(
     total_frames = int(min(meta.frame_count, len(J3d)))
     if total_frames <= 0:
         total_frames = int(len(J3d))
+    if max_duration_s is not None:
+        max_duration_s = float(max_duration_s)
+        if max_duration_s <= 0:
+            raise ValueError("max_duration_s must be > 0 when provided.")
+        max_frames = max(1, int(round(meta.fps * max_duration_s)))
+        total_frames = min(total_frames, max_frames)
 
     try:
         for idx, frame in iter_frames(video_path):
-            if idx >= len(J3d):
+            if idx >= len(J3d) or idx >= total_frames:
                 break
             inset = _render_3d_inset(
                 J3d[idx],
@@ -386,8 +397,16 @@ def generate_pose3d_overlay_video(
                 mm = machine_boxes_xywh[idx]
                 hcx = int(round(float(hm[0] + hm[2] * 0.5)))
                 hcy = int(round(float(hm[1] + hm[3] * 0.5)))
-                mcx = int(round(float(mm[0] + mm[2] * 0.5)))
-                mcy = int(round(float(mm[1] + mm[3] * 0.5)))
+                if (
+                    machine_cable_centers_xy is not None
+                    and idx < len(machine_cable_centers_xy)
+                    and np.isfinite(machine_cable_centers_xy[idx]).all()
+                ):
+                    mcx = int(round(float(machine_cable_centers_xy[idx, 0])))
+                    mcy = int(round(float(machine_cable_centers_xy[idx, 1])))
+                else:
+                    mcx = int(round(float(mm[0] + mm[2] * 0.5)))
+                    mcy = int(round(float(mm[1] + mm[3] * 0.5)))
                 cv2.line(frame, (mcx, mcy), (hcx, hcy), (255, 220, 0), 2, cv2.LINE_AA)
 
             if rel_axis_px is not None and idx < len(rel_axis_px):

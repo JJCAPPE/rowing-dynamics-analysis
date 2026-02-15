@@ -31,6 +31,7 @@ APP_ROOT = Path(__file__).resolve().parent
 RUNS_DIR = APP_ROOT / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 SOURCE_VIDEOS_DIR = Path("/Users/giacomo/dev/rowing-video-analysis/source-videos")
+ALT_SOURCE_VIDEOS_DIR = Path("/Volumes/T9")
 VIDEO_SUFFIXES = {
     ".mp4",
     ".mov",
@@ -77,8 +78,9 @@ class StrokeTrackingOptions:
     enabled: bool
     annotate: bool = True
     machine_bbox: Optional[Tuple[float, float, float, float]] = None
+    machine_cable_point: Optional[Tuple[float, float]] = None
     handle_bbox: Optional[Tuple[float, float, float, float]] = None
-    handle_source: str = "manual"
+    handle_source: str = "pose"
     handle_pose_npz: Optional[Path] = None
     m_per_px: Optional[float] = None
     ema_alpha: float = 0.4
@@ -88,6 +90,25 @@ class StrokeTrackingOptions:
     prominence_frac: float = 0.1
     smooth_window_s: float = 0.2
     debug_video: bool = True
+
+
+@dataclass(frozen=True)
+class DebugVideoOptions:
+    mode: str = "full"
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"full", "first10", "none"}:
+            raise ValueError(f"Unsupported debug video mode: {self.mode}")
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "none"
+
+    @property
+    def max_seconds(self) -> Optional[float]:
+        if self.mode == "first10":
+            return 10.0
+        return None
 
 
 def _sanitize_stem(name: str) -> str:
@@ -205,6 +226,7 @@ def _run_pipeline(
     run_dir: Path,
     options: Sports2DOptions,
     stroke_tracking: StrokeTrackingOptions,
+    debug_videos: DebugVideoOptions,
     person_index: int = 0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> Tuple[RunArtifacts, ExportSummary, Optional[Path]]:
@@ -295,6 +317,7 @@ def _run_pipeline(
                 angles_csv=mb_outputs.angles_csv,
                 reference_frame_idx=0,
                 machine_bbox=stroke_tracking.machine_bbox,
+                machine_cable_point=stroke_tracking.machine_cable_point,
                 handle_bbox=stroke_tracking.handle_bbox,
                 handle_source=stroke_tracking.handle_source,
                 handle_pose_npz=(
@@ -312,7 +335,12 @@ def _run_pipeline(
                 smooth_window_s=stroke_tracking.smooth_window_s,
                 create_plot=True,
                 plot_video_path=result.annotated_video,
-                debug_video=stroke_tracking.debug_video,
+                debug_video=(stroke_tracking.debug_video and debug_videos.enabled),
+                debug_video_max_seconds=(
+                    debug_videos.max_seconds
+                    if stroke_tracking.debug_video and debug_videos.enabled
+                    else None
+                ),
             )
         except Exception as exc:
             stroke_error = str(exc)
@@ -340,22 +368,27 @@ def _run_pipeline(
     if stroke_error is not None:
         angle_plot_errors.append(f"stroke tracking: {stroke_error}")
 
-    overlay_video = overlay_dir / "pose3d_overlay.mp4"
+    overlay_video: Optional[Path] = None
+    if debug_videos.enabled:
+        overlay_video = overlay_dir / "pose3d_overlay.mp4"
 
-    def _overlay_progress(label: str, prog: float) -> None:
-        step6(label, 0.3 + 0.7 * max(0.0, min(1.0, prog)))
+        def _overlay_progress(label: str, prog: float) -> None:
+            step6(label, 0.3 + 0.7 * max(0.0, min(1.0, prog)))
 
-    generate_pose3d_overlay_video(
-        video_path=result.annotated_video,
-        pose3d_npz=mb_outputs.pose3d_npz,
-        out_video_path=overlay_video,
-        stroke_signal_npz=(
-            stroke_outputs.stroke_npz
-            if stroke_outputs is not None and stroke_outputs.stroke_npz.exists()
-            else None
-        ),
-        progress_callback=_overlay_progress,
-    )
+        generate_pose3d_overlay_video(
+            video_path=result.annotated_video,
+            pose3d_npz=mb_outputs.pose3d_npz,
+            out_video_path=overlay_video,
+            stroke_signal_npz=(
+                stroke_outputs.stroke_npz
+                if stroke_outputs is not None and stroke_outputs.stroke_npz.exists()
+                else None
+            ),
+            max_duration_s=debug_videos.max_seconds,
+            progress_callback=_overlay_progress,
+        )
+    else:
+        step6("Overlay video skipped (debug videos disabled)", 1.0)
     step6("Completed", 1.0)
 
     step7 = progress.span(
@@ -364,7 +397,9 @@ def _run_pipeline(
     )
     step7("Creating ZIP archive", 0.2)
     zip_path = run_dir / "results.zip"
-    zip_inputs = [result.output_dir, exports_dir, motionbert_dir, overlay_dir]
+    zip_inputs = [result.output_dir, exports_dir, motionbert_dir]
+    if overlay_video is not None and overlay_video.exists():
+        zip_inputs.append(overlay_dir)
     if stroke_outputs is not None:
         zip_inputs.append(stroke_dir)
     _zip_outputs(zip_path, zip_inputs)
@@ -540,6 +575,30 @@ def _choose_source_video(directory: Path = SOURCE_VIDEOS_DIR) -> Path:
     return selected_path
 
 
+def _choose_source_video_with_location() -> Path:
+    source_locations = [SOURCE_VIDEOS_DIR, ALT_SOURCE_VIDEOS_DIR]
+    source_labels = [str(path) for path in source_locations]
+
+    while True:
+        selected_label = _choose_option(
+            "Source videos directory",
+            source_labels,
+            default_index=0,
+        )
+        selected_dir = source_locations[source_labels.index(selected_label)]
+        try:
+            return _choose_source_video(selected_dir)
+        except Exception as exc:
+            print(f"Unable to load videos from {selected_dir}: {exc}")
+            retry = _choose_option(
+                "Choose a different source directory",
+                ["yes", "no"],
+                default_index=0,
+            )
+            if retry != "yes":
+                raise
+
+
 def _prompt_int(prompt: str, default: int, minimum: int = 0) -> int:
     while True:
         raw = input(f"{prompt} [{default}]: ").strip()
@@ -609,6 +668,21 @@ def _prompt_bbox(prompt: str) -> Tuple[float, float, float, float]:
         return float(x), float(y), float(w), float(h)
 
 
+def _prompt_point(prompt: str) -> Tuple[float, float]:
+    while True:
+        raw = input(f"{prompt} [x,y]: ").strip()
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) != 2:
+            print("Enter exactly two comma-separated values.")
+            continue
+        try:
+            x, y = [float(v) for v in parts]
+        except ValueError:
+            print("Invalid numeric values. Try again.")
+            continue
+        return float(x), float(y)
+
+
 def _open_path(path: Path) -> None:
     if not path.exists():
         return
@@ -632,10 +706,10 @@ def _open_path(path: Path) -> None:
         print(f"Failed to open {path}: {exc}")
 
 
-def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOptions]:
+def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOptions, DebugVideoOptions]:
     print("Sports2D CLI Pipeline")
     print("=====================\n")
-    video_path = _choose_source_video()
+    video_path = _choose_source_video_with_location()
 
     mode_choice = _choose_option(
         "Sports2D mode",
@@ -668,7 +742,21 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
     first_person_height = _prompt_float("First person height (m)", default=1.95, minimum=1.0)
     distance_m = _prompt_optional_float("Distance to camera (m)", default=5.0)
     det_frequency = _prompt_int("Detection frequency (frames)", default=4, minimum=1)
-    slowmo_factor = _prompt_float("Slow-motion factor", default=1.0, minimum=0.1)
+    debug_choice = _choose_option(
+        "Debug video output policy",
+        [
+            "full length",
+            "first 10 seconds only",
+            "disabled (no debug videos)",
+        ],
+        default_index=0,
+    )
+    debug_mode_map = {
+        "full length": "full",
+        "first 10 seconds only": "first10",
+        "disabled (no debug videos)": "none",
+    }
+    debug_videos = DebugVideoOptions(mode=debug_mode_map[debug_choice])
 
     enable_stroke = (
         _choose_option(
@@ -683,7 +771,7 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
         handle_source_choice = _choose_option(
             "Handle source",
             ["manual bbox", "pose midpoint"],
-            default_index=0,
+            default_index=1,
         )
         handle_source = "pose" if handle_source_choice == "pose midpoint" else "manual"
         if handle_source == "manual":
@@ -694,6 +782,11 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
             )
             annotate = bbox_mode == "annotate interactively"
             machine_bbox = None if annotate else _prompt_bbox("Machine reference bbox")
+            machine_cable_point = (
+                None
+                if annotate
+                else _prompt_point("Machine cable entry point (where cable enters erg)")
+            )
             handle_bbox = None if annotate else _prompt_bbox("Handle bbox")
         else:
             machine_mode = _choose_option(
@@ -703,23 +796,32 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
             )
             annotate = machine_mode == "annotate interactively"
             machine_bbox = None if annotate else _prompt_bbox("Machine reference bbox")
+            machine_cable_point = (
+                None
+                if annotate
+                else _prompt_point("Machine cable entry point (where cable enters erg)")
+            )
             handle_bbox = None
         m_per_px = _prompt_optional_float(
             "Stroke meters-per-pixel scale",
             default=None,
         )
-        save_debug = (
-            _choose_option(
-                "Save stroke tracking debug video",
-                ["yes", "no"],
-                default_index=0,
+        if debug_videos.enabled:
+            save_debug = (
+                _choose_option(
+                    "Save stroke tracking debug video",
+                    ["yes", "no"],
+                    default_index=0,
+                )
+                == "yes"
             )
-            == "yes"
-        )
+        else:
+            save_debug = False
         stroke_tracking = StrokeTrackingOptions(
             enabled=True,
             annotate=annotate,
             machine_bbox=machine_bbox,
+            machine_cable_point=machine_cable_point,
             handle_bbox=handle_bbox,
             handle_source=handle_source,
             m_per_px=m_per_px,
@@ -735,16 +837,16 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
         distance_to_camera_m=float(distance_m) if distance_m is not None else None,
         device=device,
         det_frequency=int(det_frequency),
-        slowmo_factor=float(slowmo_factor),
+        slowmo_factor=1.0,
         save_images=False,
         save_graphs=False,
     )
-    return video_path, person_index, options, stroke_tracking
+    return video_path, person_index, options, stroke_tracking, debug_videos
 
 
 def main() -> int:
     try:
-        source_video, person_index, options, stroke_tracking = _collect_options()
+        source_video, person_index, options, stroke_tracking, debug_videos = _collect_options()
     except KeyboardInterrupt:
         print("\nCancelled.")
         return 130
@@ -778,6 +880,7 @@ def main() -> int:
             run_dir=run_dir,
             options=options,
             stroke_tracking=stroke_tracking,
+            debug_videos=debug_videos,
             person_index=person_index,
             progress_callback=_on_progress,
         )
