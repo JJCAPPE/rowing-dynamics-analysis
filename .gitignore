@@ -24,6 +24,7 @@ pose-extraction-test/source-videos/
 *.mov
 *.MOV
 *.png
+*.jpg
 pose-extraction-test/models/*
 .cursor/debug.log
 pose-extraction-test/yolov8n.pt
@@ -31,15 +32,15 @@ sports2d_app/runs/
 *.csv
 
 # tex
-.log
-.fls
-.aux
-.synctex.gz
-.fdb_latexmk
-.latexmkrc
-.latexmk
-.latexmk.log
-.latexmk.log.*
-.latexmk.log.*.*
-.latexmk.log.*.*.*
-.latexmk.log.*.*.*.*
+*.log
+*.fls
+*.aux
+*.synctex.gz
+*.fdb_latexmk
+*.latexmkrc
+*.latexmk
+*.latexmk.log
+*.latexmk.log.*
+*.latexmk.log.*.*
+*.latexmk.log.*.*.*
+*.latexmk.log.*.*.*.*
