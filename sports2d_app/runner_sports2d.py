@@ -277,7 +277,9 @@ def build_sports2d_config(
 
 
 class _Sports2DProgressParser:
-    _FRAME_PROGRESS_RE = re.compile(r"(?P<pct>\d{1,3})%\|")
+    _FRAME_PROGRESS_RE = re.compile(
+        r"(?P<pct>\d{1,3})%\|.*?\|\s*(?P<frame>[\d,]+)\s*/\s*(?P<total>[\d,]+)"
+    )
     _STAGE_MARKERS: Tuple[Tuple[re.Pattern[str], float, str], ...] = (
         (re.compile(r"Estimating pose", re.IGNORECASE), 0.05, "Sports2D: estimating pose"),
         (
@@ -326,6 +328,11 @@ class _Sports2DProgressParser:
         self._callback = callback
         self._progress = 0.0
         self._last_label = ""
+        self._last_frame_pct: Optional[int] = None
+
+    @staticmethod
+    def _parse_int(value: str) -> int:
+        return int(value.replace(",", ""))
 
     def _emit(self, label: str, progress: float) -> None:
         if self._callback is None:
@@ -346,8 +353,26 @@ class _Sports2DProgressParser:
 
         if match := self._FRAME_PROGRESS_RE.search(line):
             pct = max(0, min(100, int(match.group("pct"))))
-            progress = 0.12 + 0.50 * (pct / 100.0)
-            self._emit(f"Sports2D: processing frames ({pct}%)", progress)
+            frame = max(0, self._parse_int(match.group("frame")))
+            total = max(0, self._parse_int(match.group("total")))
+            if total > 0:
+                frame = min(frame, total)
+                frame_ratio = frame / float(total)
+            else:
+                frame_ratio = pct / 100.0
+
+            # Avoid redrawing every single frame while still showing
+            # exact frame/total updates at each percentage point.
+            if pct == self._last_frame_pct and frame != total:
+                return
+            self._last_frame_pct = pct
+
+            progress = 0.12 + 0.50 * frame_ratio
+            if total > 0:
+                label = f"Sports2D: processing frame {frame}/{total} ({pct}%)"
+            else:
+                label = f"Sports2D: processing frames ({pct}%)"
+            self._emit(label, progress)
             return
 
         for pattern, progress, label in self._STAGE_MARKERS:

@@ -871,6 +871,7 @@ def main() -> int:
     print("\nRunning pipeline...\n")
 
     progress_state = {"line_len": 0}
+    progress_stream = sys.__stdout__ if sys.__stdout__ is not None else sys.stdout
 
     def _on_progress(label: str, progress: float) -> None:
         pct = int(round(progress * 100))
@@ -879,7 +880,7 @@ def main() -> int:
         bar = "#" * filled + "-" * (width - filled)
         line = f"[{bar}] {pct:3d}% {label}"
         pad = " " * max(0, progress_state["line_len"] - len(line))
-        print(f"\r{line}{pad}", end="", flush=True)
+        print(f"\r{line}{pad}", end="", file=progress_stream, flush=True)
         progress_state["line_len"] = len(line)
 
     try:
