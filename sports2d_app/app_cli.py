@@ -31,7 +31,7 @@ APP_ROOT = Path(__file__).resolve().parent
 RUNS_DIR = APP_ROOT / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 SOURCE_VIDEOS_DIR = Path("/Users/giacomo/dev/rowing-video-analysis/source-videos")
-ALT_SOURCE_VIDEOS_DIR = Path("/Volumes/T9")
+ALT_SOURCE_VIDEOS_DIR = Path("/Volumes/T9/rowing-research")
 VIDEO_SUFFIXES = {
     ".mp4",
     ".mov",
@@ -714,21 +714,29 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
     mode_choice = _choose_option(
         "Sports2D mode",
         ["lightweight", "balanced", "performance"],
-        default_index=1,
+        default_index=2,
     )
     pose_model = _choose_option(
         "Pose model",
         ["Whole_body", "Whole_body_wrist", "Body_with_feet", "Body"],
-        default_index=0,
+        default_index=1,
     )
     nb_persons_raw = _choose_option(
         "Max persons to detect",
         ["1", "2", "3", "all"],
         default_index=0,
     )
-    device = _choose_option("Device", ["auto", "cpu", "cuda", "mps"], default_index=0)
+    device = _choose_option(
+        "Device", 
+        ["auto", "cpu", "cuda", "mps"], 
+        default_index=0,
+    )
 
-    person_index = _prompt_int("Person index (0-based)", default=0, minimum=0)
+    person_index = _prompt_int(
+        "Person index (0-based)", 
+        default=0, 
+        minimum=0,
+    )
     if nb_persons_raw.isdigit():
         nb_persons_int = int(nb_persons_raw)
         if person_index >= nb_persons_int:
@@ -740,8 +748,8 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
         nb_persons = nb_persons_raw
 
     first_person_height = _prompt_float("First person height (m)", default=1.95, minimum=1.0)
-    distance_m = _prompt_optional_float("Distance to camera (m)", default=5.0)
-    det_frequency = _prompt_int("Detection frequency (frames)", default=4, minimum=1)
+    distance_m = _prompt_optional_float("Distance to camera (m)", default=4.0)
+    det_frequency = 1
     debug_choice = _choose_option(
         "Debug video output policy",
         [
@@ -749,7 +757,7 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
             "first 10 seconds only",
             "disabled (no debug videos)",
         ],
-        default_index=0,
+        default_index=1,
     )
     debug_mode_map = {
         "full length": "full",
@@ -811,7 +819,7 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
                 _choose_option(
                     "Save stroke tracking debug video",
                     ["yes", "no"],
-                    default_index=0,
+                    default_index=1,
                 )
                 == "yes"
             )
