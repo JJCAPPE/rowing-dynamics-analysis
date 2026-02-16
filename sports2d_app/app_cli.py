@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 import os
 import re
 import shutil
@@ -120,9 +122,142 @@ def _sanitize_stem(name: str) -> str:
 def _copy_input_video(src_path: Path, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     dst = dest_dir / f"input{src_path.suffix or '.mp4'}"
+    rotation = _detect_video_rotation_degrees(src_path)
+    if rotation in {90, -90, 180, -180}:
+        print(
+            "Detected video rotation metadata "
+            f"({rotation}°); normalizing orientation for processing."
+        )
+        if _transcode_with_baked_rotation(src_path, dst):
+            return dst
+        print(
+            "Warning: failed to normalize orientation. "
+            "Falling back to raw file copy."
+        )
     if src_path.resolve() != dst.resolve():
         shutil.copy2(str(src_path), str(dst))
     return dst
+
+
+def _round_to_right_angle(value: float) -> Optional[int]:
+    if not math.isfinite(value):
+        return None
+    rounded = int(round(value / 90.0) * 90)
+    if abs(value - rounded) > 2.0:
+        return None
+    normalized = rounded % 360
+    if normalized > 180:
+        normalized -= 360
+    if normalized in {180, -180}:
+        return 180
+    if normalized in {90, -90, 0}:
+        return normalized
+    return None
+
+
+def _detect_video_rotation_degrees(video_path: Path) -> int:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return 0
+    cmd = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream_side_data=rotation:stream_tags=rotate",
+        "-of",
+        "json",
+        str(video_path),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return 0
+
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except Exception:
+        return 0
+
+    streams = payload.get("streams")
+    if not isinstance(streams, list) or not streams:
+        return 0
+    stream0 = streams[0]
+    if not isinstance(stream0, dict):
+        return 0
+
+    side_data = stream0.get("side_data_list")
+    if isinstance(side_data, list):
+        for entry in side_data:
+            if not isinstance(entry, dict):
+                continue
+            if "rotation" in entry:
+                try:
+                    val = float(entry["rotation"])
+                except Exception:
+                    continue
+                parsed = _round_to_right_angle(val)
+                if parsed is not None:
+                    return parsed
+
+    tags = stream0.get("tags")
+    if isinstance(tags, dict) and "rotate" in tags:
+        try:
+            val = float(tags["rotate"])
+        except Exception:
+            return 0
+        parsed = _round_to_right_angle(val)
+        if parsed is not None:
+            return parsed
+
+    return 0
+
+
+def _transcode_with_baked_rotation(src_path: Path, dst_path: Path) -> bool:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return False
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(src_path),
+        "-map_metadata",
+        "-1",
+        "-metadata:s:v:0",
+        "rotate=0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        str(dst_path),
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+        return True
+    except Exception:
+        return False
 
 
 def _person_tag(person_index: int) -> str:
