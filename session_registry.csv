@@ -1,1 +1,3 @@
-video_run_id,video_run_dir,rp3_clean_csv,athlete_id,session_id,active_side,notes
+video_run_id;video_run_dir;rp3_clean_csv;athlete_id;session_id;active_side;recording_distance
+giacomo0;/Volumes/T9/giacomo-10m.mov;giacomo-10m-202602122020-rp3-row-clean.csv;giacomo-cappelletto;20260212-0;Left;4
+mason0;/Volumes/T9/mason-10m.mov;mason-10m-202602122008-rp3-row-clean.csv;mason-laundry;20260212-1;Left;4
