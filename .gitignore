@@ -30,6 +30,7 @@ pose-extraction-test/models/*
 pose-extraction-test/yolov8n.pt
 sports2d_app/runs/
 *.csv
+!session_registry.csv
 
 # tex
 *.log
