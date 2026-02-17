@@ -1,5 +1,13 @@
 # Force Curve Inference Process (Biomechanics-First)
 
+## 0) Scope Decisions (Current Iteration)
+This plan is intentionally scoped to the current phase of work.
+
+1. Data volume expansion is deferred and handled separately.
+2. Unilateral biomechanics is the default path (camera-near side only).
+3. Anthropometric features are excluded from the initial model.
+4. Alignment is done in normalized progress space; no px-to-cm calibration is required in this iteration.
+
 ## 1) Goal
 Predict per-stroke force curves from video-only biomechanics at inference time.
 
@@ -39,11 +47,11 @@ Relevant code paths:
 
 ## 3) Core Representation Decisions
 
-1. Use drive length/progress as the master domain, not wall-clock time.
+1. Use normalized drive progress as the master domain, not wall-clock time.
 2. Use interpolation (not nearest-neighbor matching) to map pose features to force bins.
-3. Use single-side biomechanics (camera-near side) as the canonical limb chain to reduce occlusion/perspective error.
+3. Use single-side biomechanics (camera-near side) as the canonical limb chain.
 4. Keep handle kinematics as support features, not primary explanatory variables.
-5. Use derivatives with respect to drive progress (`d/ds`), not time (`d/dt`), for force-shape learning.
+5. Compute derivatives via time-domain differentiation plus chain rule into progress domain.
 
 ## 4) Data Contract for Each Stroke
 Each supervised sample is one stroke with:
@@ -52,57 +60,57 @@ Each supervised sample is one stroke with:
 - Kinematic curves over normalized drive progress `s in [0,1]`:
   - knee angle, hip angle, elbow angle, trunk angle.
   - first derivatives `dtheta/ds`.
-  - second derivatives `d2theta/ds2`.
+  - optional second derivatives `d2theta/ds2` (ablation-gated).
 - Coordination curves/scalars:
   - phase timing lags (legs->swing, swing->arms).
   - angle ratio features (leg extension vs trunk swing vs arm draw).
 - Optional support features:
   - handle velocity/acceleration projected on drive axis.
-- Anthropometric context:
-  - normalized segment lengths (thigh, shank, upper arm, forearm, trunk).
 
 ### Targets `Y(s)`
 - Force curve bins aligned to same `s` grid:
   - either direct `F(s_k)` bins.
-  - or low-dimensional curve representation (for example PCA coefficients) with reconstructable `F(s)`.
+  - or low-dimensional curve representation with reconstructable `F(s)`.
 
 ### Metadata
 - athlete ID, session ID, stroke index, stroke rate, stroke length, video/source quality flags.
 
-## 5) Session and Stroke Pairing Process
+## 5) Session Pairing and Synchronization Protocol (Priority)
 Before modeling, each video session must be paired to the correct RP3 workout export.
 
 1. Pair by recording context:
    - date/time, athlete identity, and piece/workout identity.
-2. Resolve absolute stroke ordering:
-   - determine which video stroke corresponds to RP3 `stroke_number` start.
-3. Validate one-to-one mapping over a calibration window:
-   - compare stroke rate trends and drive/recovery timing patterns from video (`stroke_signal.csv`) vs RP3 (`stroke_rate`, `drive_time`, `recover_time`).
-4. Lock mapping and store a pairing manifest:
-   - this manifest is part of the dataset provenance and reproducibility.
+2. Use stroke progression signal for boundary anchoring:
+   - chain-insert-to-handle progression from `stroke_signal.csv` is the primary video-side stroke structure signal.
+3. Coarse synchronization:
+   - align video and RP3 stroke streams using stroke-rate/inter-stroke interval cross-correlation.
+4. Fine synchronization:
+   - align catch/finish sequences to maximize boundary agreement over a calibration window.
+5. Acceptance tests:
+   - sustained stroke-rate mismatch above threshold (for example ~1 spm) fails pairing.
+   - low inter-stroke timing agreement fails pairing.
+6. Lock mapping in a pairing manifest:
+   - session ID, athlete ID, offset, drift estimate, accepted stroke index ranges, QC metrics.
 
 If pairing drift exists, reject the segment rather than weakly aligning noisy labels.
 
 ## 6) Single-Side Biomechanics Standardization
-Given your choice to use only the camera-near side:
+Given the unilateral choice:
 
 1. Assign `active_side` per session (`left` or `right`).
 2. Build canonical feature names:
    - `knee_active_deg`, `hip_active_deg`, `elbow_active_deg`.
-   - map from left/right source columns based on `active_side`.
-3. Mirror-normalize conventions:
-   - ensure increasing/decreasing trajectories have consistent biomechanical meaning regardless of camera side.
-4. Keep trunk and spine signals as shared central features.
+3. Map from left/right source columns based on `active_side`.
+4. Mirror-normalize sign conventions so feature semantics are consistent across camera sides.
+5. Keep trunk and spine signals as shared central features.
 
-This keeps symmetry assumptions while avoiding bilateral contamination from occluded far-side joints.
-
-## 7) Drive-Domain Alignment (Critical Step)
+## 7) Drive-Domain Alignment
 
 ### 7.1 Stroke segmentation on video side
-Use `stroke_signal.csv` events and phase fields:
+Use `stroke_signal.csv` with catch/finish flags and drive indicator:
 - drive starts at catch.
 - drive ends at finish.
-- only drive portion is used for force-curve supervision.
+- only drive portion is supervised against RP3 force curves.
 
 ### 7.2 Stroke segmentation on RP3 side
 Each RP3 row is one stroke with force values already sampled along drive length (2.2 cm bins).
@@ -110,42 +118,43 @@ Each RP3 row is one stroke with force values already sampled along drive length 
 ### 7.3 Common axis construction
 For each paired stroke:
 1. Let RP3 force distances be `d_k` (cm bins).
-2. Let video stroke have drive progress surrogate from:
-   - `stroke_phase` mapped to drive segment, and/or
-   - `relative_axis_px` transformed to monotonic drive displacement.
-3. Convert video stroke to normalized progress `s_video in [0,1]`.
-4. Convert RP3 bins to `s_force = d_k / stroke_length_cm`.
-5. Interpolate every input feature from `s_video` onto `s_force`.
+2. Convert force bins to normalized progress `s_force = d_k / stroke_length_cm`.
+3. Build video normalized progress `s_video` from drive progression (`stroke_phase` drive segment as primary).
+4. Interpolate video features from `s_video` to `s_force`.
 
-Result: no frequency mismatch problem remains (120 Hz vs 90 Hz becomes irrelevant after domain alignment).
+Note: in this iteration, normalized progress is sufficient; absolute px-to-cm calibration is not required.
 
 ## 8) Smoothing and Derivative Policy
 
 1. Base angles:
-   - keep current Sports2D/MotionBERT smoothing unless quality checks show high jitter.
-2. Derivative computation:
-   - apply light smoothing before differentiation (small window).
-   - compute derivatives in the progress domain.
-3. Avoid heavy post-smoothing:
-   - preserve genuine high-frequency biomechanical timing cues.
-4. Quality guardrails:
-   - reject strokes with non-physiological derivative spikes caused by tracking failures.
+   - keep current Sports2D/MotionBERT smoothing unless quality checks show jitter.
+2. Time-domain derivatives first:
+   - compute `dtheta/dt` on lightly smoothed angle trajectories.
+3. Progress-domain derivatives via chain rule:
+   - compute `ds/dt` from drive progression.
+   - compute `dtheta/ds = (dtheta/dt) / (ds/dt + eps)`.
+4. Second derivatives:
+   - include `d2theta/ds2` only if ablation shows clear gain.
+5. Explicit smoothing kernel:
+   - use a fixed kernel choice (for example Savitzky-Golay, small odd window, low polynomial order), document parameters, and keep them constant during comparison experiments.
+6. Quality guardrails:
+   - reject strokes with denominator instability (`ds/dt` near zero in drive) or non-physiological derivative spikes.
 
 ## 9) Feature Families to Analyze
 
 ### Primary (biomechanics explanatory)
 - Active-side knee/hip/elbow curves.
 - Trunk and spine curves.
-- Their first and second progress derivatives.
+- First progress derivatives.
+- Optional second derivatives (ablation-gated).
 - Inter-joint sequencing (onset times, phase lags).
 
 ### Secondary (support)
 - Handle-axis velocity/acceleration.
 - Stroke-level context: stroke rate, drive ratio.
 
-### Anthropometric normalization
-- Normalize kinematic magnitudes/timing to athlete body proportions.
-- Use limb-length ratios rather than absolute pixel lengths when possible.
+### Explicitly deferred
+- Anthropometric normalization and segment-length features.
 
 ## 10) Target Representation Strategy
 Use two target representations in parallel during research:
@@ -155,61 +164,72 @@ Use two target representations in parallel during research:
    - use masked loss for bins beyond actual stroke length.
 
 2. **Low-dimensional curve shape**
-   - perform PCA on normalized force curves.
-   - model predicts PCA coefficients.
-   - reconstruct full curve for interpretation and evaluation.
+   - start with standard PCA on normalized force curves.
+   - optionally evaluate functional PCA as a follow-up if boundary/smoothness handling becomes limiting.
 
-This gives interpretability and robustness in low-data regimes.
+## 11) Modeling Path (with Stage 0 Sanity Baselines)
 
-## 11) Modeling Path (Temporal + Interpretable)
+### Stage 0: Sanity Baselines (mandatory before kinematic models)
+1. Force reproducibility floor:
+   - quantify within-condition variability of force curves (same athlete, similar stroke rate/length bins).
+   - report median pairwise curve distance and coefficient of variation of key metrics.
+2. Metadata-only baseline:
+   - regress force-curve PCA coefficients using only scalar metadata (`stroke_rate`, `stroke_length`; optionally `drive_time`).
+   - reconstruct predicted curves and report the same metrics as all later models.
+3. Baseline gate:
+   - any biomechanics model must beat Stage 0 on both curve error and rowing-relevant metrics.
 
-### Stage A: Baseline interpretable models
-- Inputs: stroke-level summary features + phase landmarks.
+### Stage A: Interpretable kinematic baselines
+- Inputs: stroke-level summary kinematic features + phase landmarks.
 - Targets: force-curve PCA coefficients.
-- Models: regularized linear models, tree ensembles.
+- Models: regularized linear models and tree ensembles.
 
 Purpose:
-- establish whether biomechanics signal is sufficient.
-- identify dominant explanatory features.
+- verify added value beyond metadata-only baselines.
+- identify dominant explanatory biomechanics features.
 
 ### Stage B: Sequence models
 - Inputs: aligned per-stroke feature sequences on `s` grid.
 - Targets: full force curve.
 - Models: temporal convolutional network or transformer encoder.
 
-Loss design:
-- masked pointwise force loss.
-- peak force and peak location auxiliary losses.
-- smoothness/shape-consistency penalty.
-- optional derivative-of-force loss.
+Loss strategy:
+- start with masked pointwise force loss.
+- add shape regularizers or derivative losses only if errors show pathological behavior and improvements are verified on held-out data.
 
-## 12) Evaluation Protocol (Must Match End Goal)
-Goal is generalization to unseen athletes.
+## 12) Evaluation Protocol
 
-1. Split by athlete ID only:
-   - leave-one-athlete-out or grouped folds.
-2. Report curve-level metrics:
+### Current phase (limited athletes)
+- use session-held-out or time-block-held-out splits within athlete.
+- label results as provisional and non-generalization claims.
+
+### Generalization phase (once data volume supports it)
+- split by athlete ID only (leave-one-athlete-out or grouped folds).
+
+### Common reporting
+1. Curve-level metrics:
    - RMSE/MAE over force bins.
-   - correlation with measured curve.
-3. Report rowing-relevant metrics:
+   - curve correlation.
+2. Rowing-relevant metrics:
    - peak force error.
    - peak position (% drive) error.
-   - impulse (area under curve) error.
-   - phase-specific errors (early drive, mid-drive, late drive).
-4. Report reliability under perturbation:
-   - dropped keypoints, mild noise, small timing offsets.
+   - impulse error.
+   - phase-specific errors (early/mid/late drive).
+3. Pairing/alignment integrity:
+   - stroke-rate consistency between video and RP3.
+   - inter-stroke timing agreement statistics.
 
 ## 13) Inference Process for a New Athlete (Video Only)
 
-1. Run the existing video pipeline (`sports2d_app`) to produce:
+1. Run `sports2d_app` pipeline to produce:
    - `angles_h36m.csv`
    - `stroke_signal.csv`
    - merged stroke-angle table.
-2. Detect/select active side and apply canonical mapping.
+2. Determine active side and apply canonical unilateral mapping.
 3. Segment strokes and isolate drive portions.
 4. Build normalized progress grid per stroke.
-5. Compute feature sequences (`theta`, `dtheta/ds`, `d2theta/ds2`, coordination, anthropometrics).
-6. Apply the trained model to predict force curve per stroke.
+5. Compute feature sequences (`theta`, `dtheta/ds`, optional `d2theta/ds2`, coordination).
+6. Apply trained model to predict force curve per stroke.
 7. Output:
    - predicted `force_at_<distance>cm` style table.
    - derived metrics: predicted peak force, peak position, impulse.
@@ -224,16 +244,17 @@ No RP3 input is used in this inference stage.
 - Tracking completeness (minimal missing joint proportion).
 - Physical plausibility checks on angles and derivatives.
 - Reasonable stroke duration and progression monotonicity.
+- Post-pairing stroke-rate consistency between video and RP3.
 
 ### Failure handling
 - If QC fails, mark stroke as low confidence and skip or down-weight.
-- Never silently force predictions from clearly invalid kinematics.
+- Never silently force predictions from invalid kinematics/alignment.
 
 ## 15) What We Are Specifically Testing Scientifically
 This process evaluates the broader research hypothesis:
 
-- Whether observable biomechanics from monocular video can explain and predict force-curve shape.
+- Whether observable unilateral biomechanics from monocular video can explain and predict force-curve shape.
 - Which kinematic phases (leg drive, trunk swing, arm draw) contribute most to force timing and magnitude.
-- How much athlete-specific morphology alters mapping from movement to force.
+- How much predictive value kinematics adds beyond simple metadata baselines.
 
-The process is intentionally biomechanics-first and interpretable, while still enabling temporal ML models that can learn nonlinear stroke dynamics.
+The process remains biomechanics-first and interpretable while enabling temporal models for nonlinear stroke dynamics.
