@@ -10,13 +10,26 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+import cv2
 import numpy as np
 import pandas as pd
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUNS_ROOT = REPO_ROOT / "sports2d_app" / "runs"
-DEFAULT_OUTPUT_ROOT = REPO_ROOT / "inference" / "outputs"
+VIDEO_SUFFIXES = {
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".m4v",
+    ".webm",
+    ".mpg",
+    ".mpeg",
+    ".mts",
+    ".m2ts",
+    ".wmv",
+}
 
 
 @dataclass(frozen=True)
@@ -132,6 +145,71 @@ def _pick_run_with_prompt(options: Sequence[Path]) -> Path:
             if 0 <= pick < len(options):
                 return options[pick]
         print("Invalid selection. Enter a listed number.")
+
+
+def _pick_yes_no_with_curses(prompt: str, default_no: bool = True) -> bool:
+    labels = ["No", "Yes"]
+    idx = 0 if default_no else 1
+
+    def _inner(stdscr: Any) -> bool:
+        nonlocal idx
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        stdscr.keypad(True)
+
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            width = max(1, width - 1)
+            stdscr.addnstr(0, 0, prompt, width, curses.A_BOLD)
+            stdscr.addnstr(1, 0, "LEFT/RIGHT or UP/DOWN, ENTER select, q cancel", width, curses.A_DIM)
+
+            for i, label in enumerate(labels):
+                x = 2 + i * 12
+                attr = curses.A_REVERSE if i == idx else curses.A_NORMAL
+                stdscr.addnstr(3, x, f"[ {label} ]", max(1, width - x), attr)
+
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("q"), 27):
+                raise KeyboardInterrupt("Selection cancelled.")
+            if key in (curses.KEY_LEFT, curses.KEY_UP, ord("h"), ord("k")):
+                idx = max(0, idx - 1)
+                continue
+            if key in (curses.KEY_RIGHT, curses.KEY_DOWN, ord("l"), ord("j")):
+                idx = min(len(labels) - 1, idx + 1)
+                continue
+            if key in (10, 13, curses.KEY_ENTER):
+                return idx == 1
+
+    return curses.wrapper(_inner)
+
+
+def _pick_yes_no_with_prompt(prompt: str, default_no: bool = True) -> bool:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return not default_no
+
+    suffix = "[y/N]" if default_no else "[Y/n]"
+    while True:
+        raw = input(f"{prompt} {suffix}: ").strip().lower()
+        if raw == "":
+            return not default_no
+        if raw in {"y", "yes"}:
+            return True
+        if raw in {"n", "no"}:
+            return False
+        print("Please enter y or n.")
+
+
+def _select_yes_no(prompt: str, *, default_no: bool = True) -> bool:
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            return _pick_yes_no_with_curses(prompt, default_no=default_no)
+        except Exception:
+            pass
+    return _pick_yes_no_with_prompt(prompt, default_no=default_no)
 
 
 def _select_run(runs_root: Path) -> Path:
@@ -437,6 +515,75 @@ def _events_to_dataframe(events: Iterable[DriveEvent]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _find_input_video(run_dir: Path) -> Path:
+    input_dir = run_dir / "input"
+    if not input_dir.exists() or not input_dir.is_dir():
+        raise FileNotFoundError(f"Input video directory not found: {input_dir}")
+
+    candidates = [
+        path
+        for path in sorted(input_dir.iterdir())
+        if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES
+    ]
+    if not candidates:
+        raise FileNotFoundError(f"No input video found in: {input_dir}")
+    return candidates[0]
+
+
+def _write_drive_overlay_video(
+    *,
+    input_video: Path,
+    is_drive_flags: np.ndarray,
+    out_video: Path,
+    alpha: float = 0.10,
+) -> tuple[int, int]:
+    cap = cv2.VideoCapture(str(input_video))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open input video: {input_video}")
+
+    fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    out_video.parent.mkdir(parents=True, exist_ok=True)
+
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
+    writer = cv2.VideoWriter(str(out_video), fourcc, fps, (width, height))
+    if not writer.isOpened():
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(out_video), fourcc, fps, (width, height))
+    if not writer.isOpened():
+        cap.release()
+        raise RuntimeError(f"Failed to create output video: {out_video}")
+
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    drive_color = np.asarray([80, 255, 80], dtype=np.uint8)  # BGR light green
+    recover_color = np.asarray([80, 80, 255], dtype=np.uint8)  # BGR light red
+
+    frame_idx = 0
+    drive_frames = 0
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+
+            is_drive = bool(is_drive_flags[frame_idx]) if frame_idx < is_drive_flags.size else False
+            if is_drive:
+                drive_frames += 1
+            color = drive_color if is_drive else recover_color
+
+            overlay = np.empty_like(frame, dtype=np.uint8)
+            overlay[:, :] = color
+            blended = cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0.0)
+            writer.write(blended)
+            frame_idx += 1
+    finally:
+        cap.release()
+        writer.release()
+
+    return frame_idx, drive_frames
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -457,10 +604,10 @@ def _parse_args() -> argparse.Namespace:
         help="Optional run directory to process directly (skip interactive selection).",
     )
     parser.add_argument(
-        "--output-root",
+        "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_ROOT,
-        help=f"Output root (default: {DEFAULT_OUTPUT_ROOT})",
+        default=None,
+        help="Output directory (default: <run-dir>/inference).",
     )
     parser.add_argument(
         "--smooth-window-s",
@@ -498,17 +645,50 @@ def _parse_args() -> argparse.Namespace:
         default=0.05,
         help="Flat-slope tolerance as fraction of slope std (default: 0.05).",
     )
+    parser.add_argument(
+        "--overlay-opacity",
+        type=float,
+        default=0.10,
+        help="Opacity for full-frame drive overlay video (default: 0.10).",
+    )
+    parser.add_argument(
+        "--overlay-video",
+        action="store_true",
+        help="Force writing the drive-phase overlay video.",
+    )
+    parser.add_argument(
+        "--no-overlay-video",
+        action="store_true",
+        help="Skip writing the drive-phase overlay video.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
 
+    if args.overlay_video and args.no_overlay_video:
+        print("Input error: use only one of --overlay-video or --no-overlay-video.")
+        return 1
+
+    selected_run_via_selector = args.run_dir is None
     try:
         run_dir = _resolve_run_dir(args.run_dir, args.runs_root)
     except Exception as exc:
         print(f"Run selection failed: {exc}")
         return 1
+
+    if args.overlay_video:
+        write_overlay_video = True
+    elif args.no_overlay_video:
+        write_overlay_video = False
+    elif selected_run_via_selector:
+        write_overlay_video = _select_yes_no(
+            "Write drive-phase overlay video?",
+            default_no=True,
+        )
+    else:
+        write_overlay_video = False
 
     stroke_csv = run_dir / "stroke" / "stroke_signal.csv"
     try:
@@ -526,7 +706,11 @@ def main() -> int:
         print(f"Failed to process {stroke_csv}: {exc}")
         return 2
 
-    output_dir = args.output_root.expanduser().resolve() / run_dir.name
+    output_dir = (
+        args.output_dir.expanduser().resolve()
+        if args.output_dir is not None
+        else (run_dir / "inference").resolve()
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     events_df = _events_to_dataframe(detection.events)
@@ -535,9 +719,24 @@ def main() -> int:
     events_csv = output_dir / "drive_events.csv"
     frame_csv = output_dir / "stroke_signal_with_drive_events.csv"
     summary_json = output_dir / "drive_events_summary.json"
+    overlay_video = output_dir / "drive_phase_overlay.mp4"
 
     events_df.to_csv(events_csv, index=False)
     frame_df.to_csv(frame_csv, index=False)
+
+    overlay_frames_written = 0
+    overlay_drive_frames = 0
+    input_video_path: str | None = None
+    if write_overlay_video:
+        input_video = _find_input_video(run_dir)
+        input_video_path = str(input_video)
+        is_drive_flags = frame_df["is_drive_recomputed"].to_numpy(dtype=np.uint8)
+        overlay_frames_written, overlay_drive_frames = _write_drive_overlay_video(
+            input_video=input_video,
+            is_drive_flags=is_drive_flags,
+            out_video=overlay_video,
+            alpha=float(args.overlay_opacity),
+        )
 
     inferred_time = _infer_time_s(df)
     if inferred_time.size:
@@ -569,7 +768,11 @@ def main() -> int:
         "outputs": {
             "drive_events_csv": str(events_csv),
             "stroke_signal_with_drive_events_csv": str(frame_csv),
+            "drive_phase_overlay_video": str(overlay_video) if write_overlay_video else None,
         },
+        "input_video": input_video_path,
+        "overlay_frames_written": int(overlay_frames_written),
+        "overlay_drive_frames": int(overlay_drive_frames),
     }
 
     if detection.events:
@@ -595,6 +798,8 @@ def main() -> int:
     print(f"Outputs:")
     print(f"  {events_csv}")
     print(f"  {frame_csv}")
+    if write_overlay_video:
+        print(f"  {overlay_video}")
     print(f"  {summary_json}")
     return 0
 
