@@ -1,18 +1,19 @@
-# rowing-pose (pose-extraction-test)
+# pose-extraction-test (rowing-pose)
 
-This folder contains an **offline, modular pipeline** to process a rowing video into:
+Annotation-first experimental pipeline for rowing video analysis.
 
-- boat-relative stabilized frames
-- smooth athlete crops
-- **2D keypoints** (MMPose)
-- optional **3D lift** (MotionBERT)
-- per-frame **angles/metrics**
+It supports:
 
-It follows the design/outputs described in `planning.MD`.
+- reference-point stabilization
+- optional rigger-based stabilization
+- crop/person tracking
+- 2D pose (MMPose)
+- optional MotionBERT 3D lift
+- angle/metric export and debug overlays
 
 ## Install
 
-From this folder:
+From `pose-extraction-test/`:
 
 ```bash
 python -m venv .venv
@@ -21,50 +22,59 @@ pip install -U pip
 pip install -e ".[dev]"
 ```
 
-> Notes:
->
-> - `mmpose/mmcv/mmdet` can be heavy and may require platform-specific wheels.
-> - MotionBERT is not on PyPI; the pipeline supports using a local MotionBERT checkout (see CLI flags).
-> - Optional strict ID tracking uses extra deps: `pip install -e ".[tracking]"`.
+Optional strict-ID tracking extras:
+
+```bash
+pip install -e ".[tracking]"
+```
 
 ## CLI
 
-### Annotate (creates `run.json`)
+### 1) Create or update annotations (`run.json`)
 
 ```bash
-python -m rowing_pose.cli annotate --video trimmed.mov --out out/
+python -m rowing_pose.cli annotate --video /path/to/video.mp4 --out out_run/
 ```
 
-The annotator asks for a **rigger bbox** (tight box around oarlock hardware) and an
-**athlete bbox**. The rigger box is used for stabilization and unambiguous tracking.
-
-### Run pipeline
+### 2) Run pipeline
 
 ```bash
-python -m rowing_pose.cli run --video trimmed.mov --out out/
+python -m rowing_pose.cli run --video /path/to/video.mp4 --out out_run/
 ```
 
-### Debug renders from saved artifacts
+Useful flags:
+
+- `--skip-2d`: reuse an existing `pose2d.npz`
+- `--skip-3d`: skip MotionBERT lift
+- `--pose-tracking-smooth-alpha <float>`: additional 2D keypoint EMA smoothing
+- `--motionbert-root`, `--motionbert-config`, `--motionbert-ckpt`: custom MotionBERT paths
+
+### 3) Regenerate debug videos from saved artifacts
 
 ```bash
-python -m rowing_pose.cli debug --run out/run.json
+python -m rowing_pose.cli debug --run out_run/run.json
 ```
 
 ## Outputs (in `--out`)
 
 - `run.json`
-- `rigger_track.npz` (if rigger bbox provided)
 - `stabilization.npz`
 - `crop_boxes.npy`
-- `person_track.npz` (optional, if strict ID tracking enabled)
 - `pose2d.npz`
-- `pose3d.npz` (optional)
 - `angles.csv`
 - `metrics.json`
-- `debug/` videos:
-  - `rigger_track.mp4` (if rigger bbox provided)
-  - `stabilized.mp4`
-  - `crop_boxes.mp4`
-  - `person_track.mp4` (optional, if strict ID tracking enabled)
-  - `pose2d_overlay.mp4`
-  - `angles_overlay.mp4` (keypoints + computed angles overlaid on the original frames)
+- `pose3d.npz` (if 3D enabled)
+- `rigger_track.npz` (if rigger bbox is used)
+- `person_track.npz` (if strict ID tracking is enabled)
+- `debug/stabilized.mp4`
+- `debug/crop_boxes.mp4`
+- `debug/pose2d_overlay.mp4`
+- `debug/angles_overlay.mp4`
+- `debug/rigger_track.mp4` (if rigger bbox is used)
+- `debug/person_track.mp4` (if strict ID tracking is enabled)
+
+## Notes
+
+- MotionBERT code is expected under `pose-extraction-test/third_party/MotionBERT`.
+- Default model assets are cached under `pose-extraction-test/models/`.
+- See `planning.MD` for pipeline design context.

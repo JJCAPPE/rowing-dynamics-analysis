@@ -1,58 +1,66 @@
 # Sports2D App
 
-Standalone Streamlit UI that runs **Sports2D only** (no manual annotation) and always produces a MotionBERT 3D overlay for **Person 0**. All Sports2D outputs are preserved.
+Primary video processing app for this repository.
+
+It runs a 7-stage pipeline:
+
+1. Sports2D pose/tracking
+2. Export TRC/MOT to CSV/NPZ
+3. MotionBERT input prep
+4. MotionBERT 3D lift
+5. Optional handle-machine stroke tracking
+6. 3D overlay + angle plots
+7. ZIP packaging
+
+Both interfaces below write results to `sports2d_app/runs/<video_stem>_<timestamp>/`.
 
 ## Setup
-From the repo root:
+
+From repository root:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+pip install -U pip
 pip install -r sports2d_app/requirements.txt
 ```
 
-Sports2D uses a local clone at:
+Notes:
 
-```
-sports2d_app/third_party/Sports2D
-```
+- Sports2D code is expected at `sports2d_app/third_party/Sports2D`.
+- MotionBERT code is expected at `sports2d_app/third_party/MotionBERT`.
+- MotionBERT checkpoints are downloaded on demand into `sports2d_app/models/motionbert/`.
 
-MotionBERT uses the local copy at:
-
-```
-sports2d_app/third_party/MotionBERT
-```
-
-If Sports2D fails with a Pose2Sim import error, ensure Pose2Sim is upgraded:
-
-```bash
-pip install --upgrade "Pose2Sim>=0.10.40"
-```
-
-## Run
+## Run (Streamlit UI)
 
 ```bash
 .venv/bin/python -m streamlit run sports2d_app/app.py
 ```
 
-CLI version (no Streamlit UI):
+The UI lets you choose model mode, detected person count/index, and optional stroke tracking settings.
+
+## Run (Terminal wizard)
 
 ```bash
 .venv/bin/python sports2d_app/app_cli.py
 ```
 
-`app_cli.py` now includes an integrated stroke-tracking stage (machine + handle), and
-produces:
-- stroke signals aligned to frame/time
-- a merged angles plot with a bottom handle-domain subplot
-- overlay video with 3D + handle/machine tracking
-The machine ROI bbox is tracked for stability, while a separate cable-entry point defines
-the machine-side anchor used for relative handle displacement.
-The default handle source is the pose midpoint between left/right wrists (from Sports2D
-exports), with optional manual handle bbox tracking.
+`app_cli.py` is interactive (no required CLI flags) and prompts for:
 
-## Stroke Phase / Handle-Machine Tracking (Standalone)
-If you want to run stroke tracking separately from the full CLI pipeline:
+- source video
+- Sports2D mode/model/device
+- person index
+- debug video policy
+- optional handle/machine stroke tracking options
+
+By default, the wizard lists videos from:
+
+- `/Users/giacomo/dev/rowing-video-analysis/source-videos`
+- `/Volumes/T9/rowing-research`
+
+## Standalone Stroke Tracking
+
+If you want to run stroke tracking independently:
 
 ```bash
 .venv/bin/python sports2d_app/stroke_signal.py \
@@ -65,27 +73,23 @@ If you want to run stroke tracking separately from the full CLI pipeline:
   --debug-video
 ```
 
-If you do not use `--annotate`, provide both:
+If not using `--annotate`, provide machine geometry explicitly:
+
 - `--machine-bbox x,y,w,h`
 - `--machine-cable-point x,y`
 
-What it outputs:
-- `stroke_signal.csv`: per-frame handle center, machine bbox center, machine cable anchor center (`machine_cable_cx_px`, `machine_cable_cy_px`), relative distance, velocity, stroke phase, catch/finish flags
-- `stroke_signal.npz`: same data + tracked boxes, plus cable anchor arrays (`machine_cable_centers_xy`, `machine_cable_ref_xy`, `machine_cable_offset_px`)
-- `angles_h36m_with_stroke.csv` (if `--angles-csv` is provided)
-- `angles_h36m_with_stroke_plot.png` (combined angles + stroke signal plot)
-- `stroke_tracking_debug.mp4` (if `--debug-video` is enabled)
+## Output Layout
 
-## Outputs
-Each run writes to:
+For each run directory:
 
-```
-sports2d_app/runs/<video_stem>_<timestamp>/
-```
+- `input/`: copied input video used by pipeline.
+- `sports2d/`: raw Sports2D outputs (`logs`, TRC, MOT, annotated video).
+- `exports/`: parsed points/angles CSV + NPZ exports.
+- `motionbert/`: `pose3d.npz`, `angles_h36m.csv`, `metrics.json`.
+- `stroke/` (if enabled): `stroke_signal.csv`, `stroke_signal.npz`, merged angle/stroke CSV and plot, optional `stroke_tracking_debug.mp4`.
+- `overlay/`: `pose3d_overlay.mp4` (when debug videos are enabled).
+- `results.zip`: packaged outputs.
 
-Contents:
-- `sports2d/` (raw Sports2D folder, including annotated video, TRC, MOT)
-- `exports/` (CSV + NPZ exports of all points/angles)
-- `motionbert/` (`pose3d.npz`, `angles_h36m.csv`, `metrics.json`)
-- `overlay/pose3d_overlay.mp4`
-- `results.zip` (all outputs above)
+## Next Step
+
+After generating a run, use `inference/inference_cli.py` (documented in `../inference/README.md`) to infer drive events and optionally match RP3 clean CSV data.

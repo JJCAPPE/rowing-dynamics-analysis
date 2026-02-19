@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import curses
+import math
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -14,6 +15,7 @@ import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUNS_ROOT = REPO_ROOT / "sports2d_app" / "runs"
+DEFAULT_RP3_CLEAN_DIR = REPO_ROOT / "rp3-extraction" / "workouts" / "clean"
 VIDEO_SUFFIXES = {
     ".mp4",
     ".mov",
@@ -150,12 +152,210 @@ def _safe_numeric(series: pd.Series) -> np.ndarray:
     return pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64)
 
 
-def _panel_rect(width: int, height: int) -> tuple[int, int, int, int]:
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        v = float(value)
+        return v if np.isfinite(v) else None
+    text = str(value).strip()
+    if text == "":
+        return None
+    try:
+        v = float(text)
+    except ValueError:
+        return None
+    return v if np.isfinite(v) else None
+
+
+def _fmt_seconds(seconds: float | None, decimals: int = 2) -> str:
+    if seconds is None or math.isnan(seconds):
+        return "-"
+    minutes = int(seconds // 60)
+    rem = seconds - minutes * 60
+    if decimals == 0:
+        return f"{minutes:02d}:{int(round(rem)):02d}"
+    width = 3 + decimals
+    return f"{minutes:02d}:{rem:0{width}.{decimals}f}"
+
+
+def _fmt_number(value: float | None, suffix: str = "", precision: int = 1) -> str:
+    if value is None or math.isnan(value):
+        return "-"
+    return f"{value:.{precision}f}{suffix}"
+
+
+def _curve_panel_rect(width: int, height: int) -> tuple[int, int, int, int]:
     w = int(width * 0.42)
-    h = int(height * 0.38)
+    h = int(height * 0.34)
     x0 = max(0, width - w - 18)
     y0 = 18
     return x0, y0, w, h
+
+
+def _metrics_panel_rect(width: int, height: int, curve_rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    x0, y0, w, h_curve = curve_rect
+    gap = 10
+    y1 = y0 + h_curve + gap
+    h = max(120, min(int(height * 0.55), height - y1 - 18))
+    return x0, y1, w, h
+
+
+def _resolve_rp3_clean_csv(
+    *,
+    seg_df: pd.DataFrame,
+    rp3_clean_csv: Path | None,
+    rp3_clean_dir: Path,
+) -> Path:
+    if rp3_clean_csv is not None:
+        p = rp3_clean_csv.expanduser().resolve()
+        if not p.exists() or not p.is_file():
+            raise FileNotFoundError(f"RP3 clean CSV not found: {p}")
+        return p
+
+    if "rp3_clean_csv" not in seg_df.columns:
+        raise ValueError(
+            "rp3_pose_force_matched_segments.csv has no rp3_clean_csv column. "
+            "Provide --rp3-clean-csv."
+        )
+
+    vals = [str(v).strip() for v in seg_df["rp3_clean_csv"].dropna().unique().tolist() if str(v).strip()]
+    if not vals:
+        raise ValueError("No rp3_clean_csv value found in segments CSV. Provide --rp3-clean-csv.")
+
+    candidate = vals[0]
+    p = Path(candidate)
+    if p.is_absolute() and p.exists() and p.is_file():
+        return p.resolve()
+    p2 = (rp3_clean_dir.expanduser().resolve() / candidate).resolve()
+    if p2.exists() and p2.is_file():
+        return p2
+    raise FileNotFoundError(
+        f"Could not resolve RP3 clean CSV from segments value '{candidate}'. "
+        "Use --rp3-clean-csv."
+    )
+
+
+def _build_stroke_metrics(
+    *,
+    rp3_row: pd.Series | None,
+    avg_force_pos_cm: float | None,
+    stroke_label: str,
+) -> dict[str, str]:
+    if rp3_row is None:
+        return {
+            "stroke_no": stroke_label,
+            "time": "-",
+            "distance": "-",
+            "stroke_rate": "-",
+            "split": "-",
+            "power": "-",
+            "stroke_length": "-",
+            "energy_per_stroke": "-",
+            "peak_force": "-",
+            "peak_force_pos": "-",
+            "avg_force_pos": _fmt_number(avg_force_pos_cm, " cm", precision=1),
+            "avg_force_pos_rel": "-",
+            "rel_peak_pos": "-",
+            "drive_time": "-",
+            "recover_time": "-",
+            "avg_calc_power": "-",
+        }
+
+    distance = _to_float(rp3_row.get("distance"))
+    stroke_rate = _to_float(rp3_row.get("stroke_rate"))
+    split_s = _to_float(rp3_row.get("estimated_500m_time"))
+    power = _to_float(rp3_row.get("power"))
+    stroke_length_cm = _to_float(rp3_row.get("stroke_length"))
+    energy = _to_float(rp3_row.get("energy_per_stroke"))
+    peak_force = _to_float(rp3_row.get("peak_force"))
+    peak_pos = _to_float(rp3_row.get("peak_force_pos"))
+    rel_peak = _to_float(rp3_row.get("rel_peak_force_pos"))
+    drive = _to_float(rp3_row.get("drive_time"))
+    recover = _to_float(rp3_row.get("recover_time"))
+    avg_calc_power = _to_float(rp3_row.get("avg_calculated_power"))
+
+    avg_force_pos_rel = None
+    if avg_force_pos_cm is not None and stroke_length_cm is not None and stroke_length_cm > 0:
+        avg_force_pos_rel = (avg_force_pos_cm / stroke_length_cm) * 100.0
+
+    return {
+        "stroke_no": stroke_label,
+        "time": _fmt_seconds(_to_float(rp3_row.get("time")), decimals=2),
+        "distance": _fmt_number(distance, " m", precision=1),
+        "stroke_rate": _fmt_number(stroke_rate, " s/m", precision=1),
+        "split": f"{_fmt_seconds(split_s, decimals=2)}/500m" if split_s is not None else "-",
+        "power": _fmt_number(power, " W", precision=0),
+        "stroke_length": _fmt_number((stroke_length_cm / 100.0) if stroke_length_cm is not None else None, " m", precision=2),
+        "energy_per_stroke": _fmt_number(energy, " J", precision=1),
+        "peak_force": _fmt_number(peak_force, " N", precision=0),
+        "peak_force_pos": _fmt_number(peak_pos, " cm", precision=1),
+        "avg_force_pos": _fmt_number(avg_force_pos_cm, " cm", precision=1),
+        "avg_force_pos_rel": _fmt_number(avg_force_pos_rel, " %", precision=1),
+        "rel_peak_pos": _fmt_number((rel_peak * 100.0) if rel_peak is not None else None, " %", precision=1),
+        "drive_time": _fmt_number(drive, " s", precision=2),
+        "recover_time": _fmt_number(recover, " s", precision=2),
+        "avg_calc_power": _fmt_number(avg_calc_power, " W", precision=0),
+    }
+
+
+def _draw_metrics_panel(
+    frame: np.ndarray,
+    metrics: dict[str, str],
+    rect: tuple[int, int, int, int],
+    *,
+    panel_alpha: float,
+) -> None:
+    x0, y0, w, h = rect
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x0, y0), (x0 + w, y0 + h), (8, 8, 8), thickness=-1)
+    blend_alpha = float(np.clip(panel_alpha, 0.0, 1.0))
+    frame[:] = cv2.addWeighted(overlay, blend_alpha, frame, 1.0 - blend_alpha, 0.0)
+    cv2.rectangle(frame, (x0, y0), (x0 + w, y0 + h), (160, 160, 160), 1)
+
+    cv2.putText(frame, "RP3 Metrics", (x0 + 10, y0 + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1, cv2.LINE_AA)
+
+    left_specs = [
+        ("stroke_no", "Stroke"),
+        ("time", "Time"),
+        ("distance", "Distance"),
+        ("stroke_rate", "Stroke rate"),
+        ("split", "Split"),
+        ("power", "Power"),
+        ("stroke_length", "Stroke length"),
+    ]
+    right_specs = [
+        ("energy_per_stroke", "Energy/stroke"),
+        ("peak_force", "Peak force"),
+        ("peak_force_pos", "Peak force pos"),
+        ("avg_force_pos", "Avg force pos"),
+        ("avg_force_pos_rel", "Avg force pos rel"),
+        ("rel_peak_pos", "Rel. peak pos"),
+        ("drive_time", "Drive time"),
+        ("recover_time", "Recover time"),
+        ("avg_calc_power", "Avg calc power"),
+    ]
+
+    rows = max(len(left_specs), len(right_specs))
+    y_start = y0 + 42
+    line_h = max(15, min(24, int((h - 52) / max(1, rows))))
+    left_x = x0 + 10
+    right_x = x0 + (w // 2) + 6
+    text_color = (220, 220, 220)
+
+    for i in range(rows):
+        y = y_start + i * line_h
+        if y > y0 + h - 6:
+            break
+        if i < len(left_specs):
+            key, label = left_specs[i]
+            text = f"{label}: {metrics.get(key, '-')}"
+            cv2.putText(frame, text, (left_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, text_color, 1, cv2.LINE_AA)
+        if i < len(right_specs):
+            key, label = right_specs[i]
+            text = f"{label}: {metrics.get(key, '-')}"
+            cv2.putText(frame, text, (right_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, text_color, 1, cv2.LINE_AA)
 
 
 def _curve_points(
@@ -183,6 +383,8 @@ def build_overlay_video(
     input_video: Path,
     stroke_csv: Path,
     segments_csv: Path,
+    rp3_clean_csv: Path | None,
+    rp3_clean_dir: Path,
     output_video: Path,
     panel_alpha: float,
 ) -> tuple[int, int]:
@@ -198,29 +400,81 @@ def build_overlay_video(
     if missing_frame_cols:
         raise ValueError(f"stroke_signal_with_drive_events.csv missing columns: {missing_frame_cols}")
 
-    required_seg_cols = {"video_stroke_idx", "s_force", "force_n"}
+    required_seg_cols = {"video_stroke_idx", "s_force", "force_n", "rp3_row_idx"}
     missing_seg_cols = [c for c in required_seg_cols if c not in seg_df.columns]
     if missing_seg_cols:
         raise ValueError(f"rp3_pose_force_matched_segments.csv missing columns: {missing_seg_cols}")
 
+    rp3_csv_path = _resolve_rp3_clean_csv(
+        seg_df=seg_df,
+        rp3_clean_csv=rp3_clean_csv,
+        rp3_clean_dir=rp3_clean_dir,
+    )
+    rp3_df = pd.read_csv(rp3_csv_path)
+    if rp3_df.empty:
+        raise ValueError(f"Empty RP3 CSV: {rp3_csv_path}")
+    rp3_df = rp3_df.reset_index(drop=True)
+    rp3_df["rp3_row_idx"] = np.arange(len(rp3_df), dtype=np.int32)
+
     seg_df["video_stroke_idx"] = pd.to_numeric(seg_df["video_stroke_idx"], errors="coerce").astype("Int64")
+    seg_df["rp3_row_idx"] = pd.to_numeric(seg_df["rp3_row_idx"], errors="coerce").astype("Int64")
     seg_df["s_force"] = _safe_numeric(seg_df["s_force"])
     seg_df["force_n"] = _safe_numeric(seg_df["force_n"])
-    seg_df = seg_df.dropna(subset=["video_stroke_idx", "s_force", "force_n"]).copy()
+    seg_df = seg_df.dropna(subset=["video_stroke_idx", "rp3_row_idx", "s_force", "force_n"]).copy()
     seg_df["video_stroke_idx"] = seg_df["video_stroke_idx"].astype(int)
+    seg_df["rp3_row_idx"] = seg_df["rp3_row_idx"].astype(int)
+    if "distance_cm" in seg_df.columns:
+        seg_df["distance_cm"] = _safe_numeric(seg_df["distance_cm"])
 
-    curves: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-    for stroke_idx, grp in seg_df.groupby("video_stroke_idx"):
+    stroke_ids = sorted(int(v) for v in seg_df["video_stroke_idx"].dropna().unique().tolist())
+    total_strokes = len(stroke_ids)
+    curves: dict[int, dict[str, Any]] = {}
+    for ord_idx, stroke_idx in enumerate(stroke_ids):
+        grp = seg_df[seg_df["video_stroke_idx"] == stroke_idx].copy()
         g = grp.sort_values("s_force")
         s = g["s_force"].to_numpy(dtype=np.float64)
         f = g["force_n"].to_numpy(dtype=np.float64)
         if len(s) < 2:
             continue
-        curves[int(stroke_idx)] = (s, f)
+        if "distance_cm" in g.columns:
+            d = g["distance_cm"].to_numpy(dtype=np.float64)
+        else:
+            d = s * 100.0
+
+        rp3_row_idx = int(g["rp3_row_idx"].iloc[0])
+        rp3_row = rp3_df.iloc[rp3_row_idx] if 0 <= rp3_row_idx < len(rp3_df) else None
+        total_force = float(np.sum(f))
+        avg_force_pos = float(np.sum(d * f) / total_force) if total_force > 1e-9 else None
+
+        stroke_no = _to_float(rp3_row.get("stroke_number")) if rp3_row is not None else None
+        if stroke_no is None:
+            stroke_label = f"{stroke_idx} ({ord_idx + 1}/{total_strokes})"
+        else:
+            stroke_label = f"{int(round(stroke_no))} ({ord_idx + 1}/{total_strokes})"
+
+        metrics = _build_stroke_metrics(
+            rp3_row=rp3_row,
+            avg_force_pos_cm=avg_force_pos,
+            stroke_label=stroke_label,
+        )
+        peak_pos_cm = _to_float(rp3_row.get("peak_force_pos")) if rp3_row is not None else None
+        stroke_length_cm = _to_float(rp3_row.get("stroke_length")) if rp3_row is not None else None
+        if stroke_length_cm is None or stroke_length_cm <= 0:
+            stroke_length_cm = float(np.nanmax(d)) if np.isfinite(d).any() else None
+
+        curves[int(stroke_idx)] = {
+            "s": s,
+            "f": f,
+            "d": d,
+            "metrics": metrics,
+            "peak_pos_cm": peak_pos_cm,
+            "avg_force_pos_cm": avg_force_pos,
+            "stroke_length_cm": stroke_length_cm,
+        }
     if not curves:
         raise ValueError("No valid per-stroke force curves found in segment CSV.")
 
-    global_max_force = max(float(np.nanmax(f)) for _, f in curves.values())
+    global_max_force = max(float(np.nanmax(data["f"])) for data in curves.values())
     global_max_force = max(10.0, global_max_force * 1.05)
 
     stroke_idx_arr = _safe_numeric(frame_df["stroke_idx_recomputed"])
@@ -244,7 +498,9 @@ def build_overlay_video(
         cap.release()
         raise RuntimeError(f"Failed to create writer for: {output_video}")
 
-    x0, y0, w, h = _panel_rect(width, height)
+    curve_rect = _curve_panel_rect(width, height)
+    metrics_rect = _metrics_panel_rect(width, height, curve_rect)
+    x0, y0, w, h = curve_rect
     panel_alpha = float(np.clip(panel_alpha, 0.0, 1.0))
 
     processed = 0
@@ -281,10 +537,57 @@ def build_overlay_video(
                 stroke_idx = -1
 
             if stroke_idx in curves:
-                s_vals, f_vals = curves[stroke_idx]
+                stroke_data = curves[stroke_idx]
+                s_vals = stroke_data["s"]
+                f_vals = stroke_data["f"]
                 pts = _curve_points(s_vals, f_vals, x0=x0, y0=y0, w=w, h=h, y_max=global_max_force)
                 if len(pts) >= 2:
                     cv2.polylines(frame, [pts], False, (40, 205, 245), 2, cv2.LINE_AA)
+
+                stroke_len = stroke_data["stroke_length_cm"]
+                peak_pos_cm = stroke_data["peak_pos_cm"]
+                avg_pos_cm = stroke_data["avg_force_pos_cm"]
+                if stroke_len is not None and stroke_len > 1e-9:
+                    if peak_pos_cm is not None and np.isfinite(peak_pos_cm):
+                        s_peak = float(np.clip(float(peak_pos_cm) / float(stroke_len), 0.0, 1.0))
+                        peak_pts = _curve_points(
+                            np.asarray([s_peak, s_peak], dtype=np.float64),
+                            np.asarray([0.0, global_max_force], dtype=np.float64),
+                            x0=x0,
+                            y0=y0,
+                            w=w,
+                            h=h,
+                            y_max=global_max_force,
+                        )
+                        if len(peak_pts) == 2:
+                            cv2.line(
+                                frame,
+                                (int(peak_pts[0, 0, 0]), int(peak_pts[0, 0, 1])),
+                                (int(peak_pts[1, 0, 0]), int(peak_pts[1, 0, 1])),
+                                (0, 255, 255),
+                                1,
+                                cv2.LINE_AA,
+                            )
+                    if avg_pos_cm is not None and np.isfinite(avg_pos_cm):
+                        s_avg = float(np.clip(float(avg_pos_cm) / float(stroke_len), 0.0, 1.0))
+                        avg_pts = _curve_points(
+                            np.asarray([s_avg, s_avg], dtype=np.float64),
+                            np.asarray([0.0, global_max_force], dtype=np.float64),
+                            x0=x0,
+                            y0=y0,
+                            w=w,
+                            h=h,
+                            y_max=global_max_force,
+                        )
+                        if len(avg_pts) == 2:
+                            cv2.line(
+                                frame,
+                                (int(avg_pts[0, 0, 0]), int(avg_pts[0, 0, 1])),
+                                (int(avg_pts[1, 0, 0]), int(avg_pts[1, 0, 1])),
+                                (95, 95, 95),
+                                1,
+                                cv2.LINE_AA,
+                            )
 
                 if drive_flag and np.isfinite(phase_val):
                     s_prog = float(np.clip(float(phase_val) * 2.0, 0.0, 1.0))
@@ -323,6 +626,13 @@ def build_overlay_video(
                 else:
                     txt = f"stroke {stroke_idx}  recovery"
                     cv2.putText(frame, txt, (x0 + 10, y0 + h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (210, 210, 210), 1, cv2.LINE_AA)
+
+                _draw_metrics_panel(
+                    frame,
+                    stroke_data["metrics"],
+                    metrics_rect,
+                    panel_alpha=panel_alpha,
+                )
             else:
                 cv2.putText(
                     frame,
@@ -333,6 +643,12 @@ def build_overlay_video(
                     (180, 180, 180),
                     1,
                     cv2.LINE_AA,
+                )
+                _draw_metrics_panel(
+                    frame,
+                    _build_stroke_metrics(rp3_row=None, avg_force_pos_cm=None, stroke_label=f"{stroke_idx}"),
+                    metrics_rect,
+                    panel_alpha=panel_alpha,
                 )
 
             writer.write(frame)
@@ -357,6 +673,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-video", type=Path, default=None)
     parser.add_argument("--stroke-csv", type=Path, default=None, help="Default: <run>/inference/stroke_signal_with_drive_events.csv")
     parser.add_argument("--segments-csv", type=Path, default=None, help="Default: <run>/inference/rp3_pose_force_matched_segments.csv")
+    parser.add_argument("--rp3-clean-csv", type=Path, default=None, help="Optional RP3 clean CSV (auto-resolved from segments by default).")
+    parser.add_argument("--rp3-clean-dir", type=Path, default=DEFAULT_RP3_CLEAN_DIR, help=f"RP3 clean directory for resolving CSV names (default: {DEFAULT_RP3_CLEAN_DIR}).")
     parser.add_argument("--output-video", type=Path, default=None, help="Default: <run>/inference/force_curve_overlay.mp4")
     parser.add_argument("--panel-alpha", type=float, default=0.35, help="Overlay panel opacity (default: 0.35).")
     return parser.parse_args()
@@ -395,6 +713,8 @@ def main() -> int:
             input_video=input_video,
             stroke_csv=stroke_csv,
             segments_csv=segments_csv,
+            rp3_clean_csv=args.rp3_clean_csv,
+            rp3_clean_dir=args.rp3_clean_dir,
             output_video=output_video,
             panel_alpha=float(args.panel_alpha),
         )

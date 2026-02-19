@@ -1,6 +1,13 @@
 # Streamlit UI (pose-extraction-test)
 
-This folder contains a **Streamlit wrapper UI** for the existing `rowing_pose` pipeline.
+Browser UI for the `rowing_pose` pipeline in `pose-extraction-test/`.
+
+It covers:
+
+- video selection/upload
+- annotation steps (anchor, rigger bbox, athlete bbox, scale points)
+- one-click pipeline run
+- 3D overlay and artifact downloads
 
 ## Install
 
@@ -11,6 +18,18 @@ source .venv/bin/activate
 pip install -r ui_streamlit/requirements-ui.txt
 ```
 
+For full 2D+3D execution, also install the pipeline package dependencies:
+
+```bash
+pip install -e .
+```
+
+Optional strict-ID tracking extras:
+
+```bash
+pip install -e ".[tracking]"
+```
+
 ## Run
 
 From `pose-extraction-test/`:
@@ -19,42 +38,31 @@ From `pose-extraction-test/`:
 .venv/bin/python -m streamlit run ui_streamlit/app.py
 ```
 
-## Streamlit Cloud
-
-- App file: `pose-extraction-test/ui_streamlit/app.py`
-- Dependencies: root `requirements.txt` installs the UI stack for deployment.
-- Full pipeline (2D/3D) requires extra ML deps (torch, mmpose, mmcv, mmdet, pyyaml, easydict).
-  The UI will disable those stages if missing.
-- Optional strict ID tracking uses extra deps: `pip install -e ".[tracking]"`.
-
-## Annotation notes
-
-The UI now collects:
-
-- **Anchor point** (reference)
-- **Rigger bbox** (tight box around oarlock hardware, used for stabilization)
-- **Athlete bbox** (initial crop)
-- **Scale points** + known distance
-
-## MotionBERT checkpoint (one-time)
-
-The 3D overlay requires MotionBERT weights. The app will look for (and reuse):
-
-- `pose-extraction-test/third_party/MotionBERT/checkpoint/pose3d/FT_MB_lite_MB_ft_h36m_global_lite/best_epoch.bin`
-
-If it’s missing, the UI will offer a **one-time download** and save it locally under `third_party/MotionBERT/checkpoint/`.
-
 ## Outputs
 
-The UI writes results to:
+Each run writes to an `out_<video_stem>/` folder in `pose-extraction-test/`.
+If that folder already exists, the UI appends a timestamp suffix.
 
-- `pose-extraction-test/out_<video_name>/`
+Typical contents:
 
-Including:
+- `run.json`
+- `stabilization.npz`
+- `pose2d.npz`
+- `pose3d.npz` (when 3D is enabled)
+- `angles.csv`
+- `metrics.json`
+- `debug/source_video.<ext>`
+- `debug/angles_overlay.mp4`
+- `debug/pose3d_overlay.mp4` (when 3D is enabled)
 
-- the same artifacts the CLI produces (`run.json`, `pose2d.npz`, `pose3d.npz`, `angles.csv`, etc.)
-- plus `debug/source_video.<ext>`
-- plus `debug/pose3d_overlay.mp4` (final UI-rendered 3D overlay)
-- plus `debug/rigger_track.mp4` (if rigger bbox provided)
-- plus `debug/person_track.mp4` (if strict ID tracking enabled)
+## MotionBERT assets
 
+The UI checks for MotionBERT config in:
+
+- `pose-extraction-test/third_party/MotionBERT/`
+
+Default checkpoints are cached in:
+
+- `pose-extraction-test/models/motionbert/`
+
+If missing, the UI can download required model weights automatically.

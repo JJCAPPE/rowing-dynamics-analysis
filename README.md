@@ -1,46 +1,72 @@
-# rowing-dynamics-analysis
+# rowing-video-analysis
 
-Research codebase for inferring rowing biomechanics and downstream performance-relevant
-quantities directly from standard (unconstrained) video footage, without requiring instrumented
-boats or wearable sensors at inference time.
+Video-first rowing biomechanics research pipeline.
 
-## Objective
+The current working path is:
 
-Given single- or multi-view video sequences `V(t)` of a rowing athlete, the project targets:
+1. Extract pose and stroke signals from video (`sports2d_app/`).
+2. Infer catch/finish drive events and optionally align to RP3 clean exports (`inference/`).
+3. Build matched pose/force rows for force-curve modeling.
 
-- A temporally consistent 3D human kinematic state `S^(t)`
-- Interpretable biomechanical features `F^(t)` (e.g., joint angles, segment kinematics)
-- Performance targets `Y^(t)` (e.g., force curve, power) inferred via sequence models
+## Repository Modules
 
-## Core Pipeline (High-Level)
+- `sports2d_app/`: main Sports2D + MotionBERT pipeline (Streamlit app and terminal wizard).
+- `inference/`: drive-event detection, RP3 stroke matching, and matched segment export.
+- `rp3-extraction/`: RP3 CSV cleanup/expansion utilities.
+- `pose-extraction-test/`: annotation-first experimental pipeline kept for side-by-side testing.
 
-1. Video input (single- or multi-view; non-lab conditions)
-2. Preprocessing (stabilization, normalization, view/time alignment)
-3. 2D pose estimation to obtain keypoints over time
-4. 2D-to-3D lifting to recover a temporally consistent 3D skeleton
-5. Kinematic and stroke-structure analysis (biomechanics-first features)
-6. Sequence-based inference from motion features to performance quantities
-7. Evaluation against ground truth (numerical error) and biomechanical plausibility (structural validity)
+## Environment Setup
 
-## Design Requirements
+From repository root:
 
-- Unconstrained input: standard video with variable lighting, background clutter, camera motion,
-  compression artifacts, and occlusion.
-- No instrumentation at inference: force sensors, ergometer telemetry, or boat telemetry are not
-  assumed at inference time. These signals may be used only for supervised training/validation.
-- Interpretability-first: intermediate representations should be physically interpretable
-  (biomechanics-derived features), not purely end-to-end black-box predictions.
-- Generalization: models should generalize across athletes, sessions, and filming conditions.
-- Dual evaluation: accuracy is assessed numerically (error vs. ground truth) and structurally
-  (kinematics obey rowing biomechanics and realistic timing).
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r sports2d_app/requirements.txt
+```
 
-## Current Modules
+## Typical Workflow
 
-- `pose-extraction-test/`: offline pipeline for stabilization, crop tracking, 2D pose, optional 3D
-  lift, and angle overlays.
-- `sports2d_app/`: Sports2D-based app for video processing and 2D pose/keypoint extraction.
+### 1) Run Sports2D pipeline
+
+```bash
+.venv/bin/python sports2d_app/app_cli.py
+```
+
+This creates a run folder under `sports2d_app/runs/<video_stem>_<timestamp>/`.
+
+### 2) Infer drive events from stroke signal
+
+```bash
+.venv/bin/python inference/inference_cli.py \
+  --run-dir sports2d_app/runs/<run_name> \
+  --no-match-rp3 \
+  --overlay-video
+```
+
+### 3) Optional RP3 matching + force/pose segment export
+
+```bash
+.venv/bin/python inference/inference_cli.py \
+  --run-dir sports2d_app/runs/<run_name> \
+  --match-rp3 \
+  --rp3-clean-csv rp3-extraction/workouts/clean/<workout>-clean.csv \
+  --anchor-rp3-stroke-number <stroke_number> \
+  --active-side right
+```
+
+## Key Run Artifacts
+
+Within `sports2d_app/runs/<run_name>/`:
+
+- `stroke/stroke_signal.csv`: handle/machine stroke signal with catch/finish flags.
+- `motionbert/angles_h36m.csv`: per-frame joint angles.
+- `inference/drive_events.csv`: per-stroke catch/finish timing inferred from stroke signal.
+- `inference/rp3_match_manifest.csv`: video stroke to RP3 row mapping (if RP3 matching enabled).
+- `inference/rp3_pose_force_matched_segments.csv`: canonical pose features aligned to RP3 force bins.
 
 ## Notes
 
-Generated outputs (videos, `.npz/.npy`, etc.) and local assets (venv, source videos) are intentionally
-not committed.
+- If `--run-dir` or RP3 arguments are omitted in a TTY session, inference scripts can prompt interactively.
+- Generated artifacts (videos, NPZ/CSV outputs) are intentionally not committed.
