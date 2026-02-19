@@ -5,6 +5,7 @@ import argparse
 import curses
 import json
 import math
+import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -14,9 +15,17 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from match_rp3_cli import (
+    MatchConfig as Rp3MatchConfig,
+    _build_match_manifest as _build_rp3_match_manifest,
+    _discover_rp3_clean as _discover_rp3_clean_csvs,
+    _load_rp3 as _load_rp3_clean_csv,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUNS_ROOT = REPO_ROOT / "sports2d_app" / "runs"
+DEFAULT_RP3_CLEAN_DIR = REPO_ROOT / "rp3-extraction" / "workouts" / "clean"
 VIDEO_SUFFIXES = {
     ".mp4",
     ".mov",
@@ -30,6 +39,7 @@ VIDEO_SUFFIXES = {
     ".m2ts",
     ".wmv",
 }
+FORCE_COL_RE = re.compile(r"^force_at_([0-9]+(?:\.[0-9]+)?)cm$")
 
 
 @dataclass(frozen=True)
@@ -147,6 +157,75 @@ def _pick_run_with_prompt(options: Sequence[Path]) -> Path:
         print("Invalid selection. Enter a listed number.")
 
 
+def _pick_file_with_curses(options: Sequence[Path], title: str) -> Path:
+    def _inner(stdscr: Any) -> Path:
+        idx = 0
+        top = 0
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        stdscr.keypad(True)
+
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            width = max(1, width - 1)
+            stdscr.addnstr(0, 0, title, width, curses.A_BOLD)
+            stdscr.addnstr(1, 0, "UP/DOWN move, ENTER select, q quit", width, curses.A_DIM)
+
+            visible = max(1, height - 3)
+            if idx < top:
+                top = idx
+            elif idx >= top + visible:
+                top = idx - visible + 1
+
+            for row in range(visible):
+                i = top + row
+                if i >= len(options):
+                    break
+                label = options[i].name
+                attr = curses.A_REVERSE if i == idx else curses.A_NORMAL
+                stdscr.addnstr(row + 2, 0, label, width, attr)
+
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("q"), 27):
+                raise KeyboardInterrupt("Selection cancelled.")
+            if key in (curses.KEY_UP, ord("k")):
+                idx = max(0, idx - 1)
+                continue
+            if key in (curses.KEY_DOWN, ord("j")):
+                idx = min(len(options) - 1, idx + 1)
+                continue
+            if key in (10, 13, curses.KEY_ENTER):
+                return options[idx]
+
+    return curses.wrapper(_inner)
+
+
+def _pick_file_with_prompt(options: Sequence[Path], title: str) -> Path:
+    if not options:
+        raise ValueError("No options available.")
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return options[0]
+
+    print(f"\n{title}")
+    for i, option in enumerate(options, start=1):
+        print(f"  {i:2d}. {option.name}")
+
+    while True:
+        raw = input("Select number [1]: ").strip()
+        if raw == "":
+            return options[0]
+        if raw.isdigit():
+            pick = int(raw) - 1
+            if 0 <= pick < len(options):
+                return options[pick]
+        print("Invalid selection.")
+
+
 def _pick_yes_no_with_curses(prompt: str, default_no: bool = True) -> bool:
     labels = ["No", "Yes"]
     idx = 0 if default_no else 1
@@ -212,6 +291,36 @@ def _select_yes_no(prompt: str, *, default_no: bool = True) -> bool:
     return _pick_yes_no_with_prompt(prompt, default_no=default_no)
 
 
+def _prompt_int(prompt: str, default: int) -> int:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return int(default)
+    while True:
+        raw = input(f"{prompt} [{default}]: ").strip()
+        if raw == "":
+            return int(default)
+        if raw.lstrip("-").isdigit():
+            return int(raw)
+        print("Please enter an integer.")
+
+
+def _prompt_choice(prompt: str, options: Sequence[str], default: str) -> str:
+    options_norm = [str(x).strip().lower() for x in options]
+    default_norm = str(default).strip().lower()
+    if default_norm not in options_norm:
+        raise ValueError("default must be one of options")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return default_norm
+
+    opt_txt = "/".join(options_norm)
+    while True:
+        raw = input(f"{prompt} [{default_norm}] ({opt_txt}): ").strip().lower()
+        if raw == "":
+            return default_norm
+        if raw in options_norm:
+            return raw
+        print(f"Please enter one of: {opt_txt}")
+
+
 def _select_run(runs_root: Path) -> Path:
     options = _discover_run_dirs(runs_root)
     if not options:
@@ -239,6 +348,31 @@ def _resolve_run_dir(run_dir: Path | None, runs_root: Path) -> Path:
     if not stroke_csv.exists():
         raise FileNotFoundError(f"Missing stroke signal CSV at: {stroke_csv}")
     return run_dir
+
+
+def _resolve_rp3_clean_csv(
+    rp3_clean_csv: Path | None,
+    rp3_clean_dir: Path,
+    *,
+    interactive: bool,
+) -> Path:
+    if rp3_clean_csv is not None:
+        csv_path = rp3_clean_csv.expanduser().resolve()
+        if not csv_path.exists() or not csv_path.is_file():
+            raise FileNotFoundError(f"RP3 clean CSV not found: {csv_path}")
+        return csv_path
+
+    options = _discover_rp3_clean_csvs(rp3_clean_dir.expanduser().resolve())
+    if not options:
+        raise FileNotFoundError(f"No RP3 clean CSV files found in {rp3_clean_dir}")
+    if interactive:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                return _pick_file_with_curses(options, "Select RP3 clean CSV")
+            except Exception:
+                pass
+        return _pick_file_with_prompt(options, "Select RP3 clean CSV")
+    raise ValueError("RP3 clean CSV required. Provide --rp3-clean-csv or run interactively.")
 
 
 def _moving_average(signal: np.ndarray, window: int) -> np.ndarray:
@@ -584,6 +718,200 @@ def _write_drive_overlay_video(
     return frame_idx, drive_frames
 
 
+def _find_force_columns(rp3_df: pd.DataFrame) -> list[tuple[str, float]]:
+    found: list[tuple[str, float]] = []
+    for col in rp3_df.columns:
+        m = FORCE_COL_RE.match(str(col))
+        if m is None:
+            continue
+        found.append((str(col), float(m.group(1))))
+    found.sort(key=lambda x: x[1])
+    return found
+
+
+def _interp_feature_on_progress(
+    s_video: np.ndarray,
+    feature_values: np.ndarray,
+    s_targets: np.ndarray,
+) -> np.ndarray:
+    s_video = np.asarray(s_video, dtype=np.float64)
+    y = np.asarray(feature_values, dtype=np.float64)
+    s_targets = np.asarray(s_targets, dtype=np.float64)
+
+    mask = np.isfinite(s_video) & np.isfinite(y)
+    if mask.sum() < 2:
+        return np.full_like(s_targets, np.nan, dtype=np.float64)
+
+    s = s_video[mask]
+    y = y[mask]
+    order = np.argsort(s)
+    s = s[order]
+    y = y[order]
+
+    s = np.clip(s, 0.0, 1.0)
+    s = np.maximum.accumulate(s)
+
+    unique_s, unique_idx = np.unique(s, return_index=True)
+    y_unique = y[unique_idx]
+    if unique_s.size == 0:
+        return np.full_like(s_targets, np.nan, dtype=np.float64)
+    if unique_s.size == 1:
+        return np.full_like(s_targets, float(y_unique[0]), dtype=np.float64)
+
+    clipped_targets = np.clip(s_targets, unique_s[0], unique_s[-1])
+    return np.interp(clipped_targets, unique_s, y_unique)
+
+
+def _build_force_pose_segments(
+    *,
+    run_dir: Path,
+    frame_df: pd.DataFrame,
+    events_df: pd.DataFrame,
+    manifest_df: pd.DataFrame,
+    rp3_df: pd.DataFrame,
+    active_side: str,
+    rp3_clean_csv: Path,
+) -> pd.DataFrame:
+    angles_csv = run_dir / "motionbert" / "angles_h36m.csv"
+    if not angles_csv.exists():
+        raise FileNotFoundError(f"angles_h36m.csv not found at: {angles_csv}")
+    angles_df = pd.read_csv(angles_csv)
+    if "frame_idx" not in angles_df.columns:
+        raise ValueError("angles_h36m.csv missing frame_idx column.")
+
+    merged = frame_df.merge(angles_df, on="frame_idx", how="left", suffixes=("", "_angle"))
+    force_cols = _find_force_columns(rp3_df)
+    if not force_cols:
+        raise ValueError("No force_at_*cm columns found in RP3 CSV.")
+
+    if active_side not in {"left", "right"}:
+        raise ValueError("active_side must be 'left' or 'right'.")
+    side_map = {
+        "knee_active_deg": f"{active_side}_knee_deg",
+        "hip_active_deg": f"{active_side}_hip_deg",
+        "elbow_active_deg": f"{active_side}_elbow_deg",
+        "trunk_vs_horizontal_deg": "trunk_vs_horizontal_deg",
+        "spine_flexion_deg": "spine_flexion_deg",
+    }
+    missing = [src for src in side_map.values() if src not in merged.columns]
+    if missing:
+        raise ValueError(f"Missing angle columns for active side mapping: {missing}")
+
+    events_by_stroke: dict[int, pd.Series] = {}
+    for _, row in events_df.iterrows():
+        events_by_stroke[int(row["stroke_idx"])] = row
+
+    rows: list[dict[str, Any]] = []
+    for _, mrow in manifest_df.iterrows():
+        v_stroke = int(mrow["video_stroke_idx"])
+        rp3_idx = int(mrow["rp3_row_idx"])
+        if v_stroke not in events_by_stroke:
+            continue
+        if not (0 <= rp3_idx < len(rp3_df)):
+            continue
+
+        ev = events_by_stroke[v_stroke]
+        c_frame = int(ev["catch_frame_idx"])
+        f_frame = int(ev["finish_frame_idx"])
+        drive = merged[(merged["frame_idx"] >= c_frame) & (merged["frame_idx"] <= f_frame)].copy()
+        if len(drive) < 2:
+            continue
+
+        dist_col = "relative_axis_px_smooth" if "relative_axis_px_smooth" in drive.columns else "relative_axis_px"
+        dist = pd.to_numeric(drive[dist_col], errors="coerce").to_numpy(dtype=np.float64)
+        if np.isfinite(dist).sum() < 2:
+            continue
+        dist = _interp_nans(dist)
+
+        x0 = float(ev["catch_distance_px"]) if "catch_distance_px" in ev.index else float(np.nanmin(dist))
+        x1 = float(ev["finish_distance_px"]) if "finish_distance_px" in ev.index else float(np.nanmax(dist))
+        if not np.isfinite(x0) or not np.isfinite(x1) or x1 <= x0 + 1e-6:
+            x0 = float(np.nanmin(dist))
+            x1 = float(np.nanmax(dist))
+        if not np.isfinite(x0) or not np.isfinite(x1) or x1 <= x0 + 1e-6:
+            continue
+
+        s_video = (dist - x0) / (x1 - x0)
+        s_video = np.clip(s_video, 0.0, 1.0)
+        s_video = np.maximum.accumulate(s_video)
+        if s_video[-1] > 1e-9:
+            s_video = s_video / s_video[-1]
+
+        rp3_row = rp3_df.iloc[rp3_idx]
+        stroke_len = float(rp3_row["stroke_length"]) if np.isfinite(rp3_row["stroke_length"]) else float("nan")
+        if not np.isfinite(stroke_len) or stroke_len <= 0:
+            continue
+
+        distances: list[float] = []
+        forces: list[float] = []
+        force_cols_used: list[str] = []
+        for col, d_cm in force_cols:
+            raw = rp3_row.get(col)
+            f = pd.to_numeric(pd.Series([raw]), errors="coerce").iloc[0]
+            if not np.isfinite(f):
+                continue
+            if d_cm > stroke_len + 1e-6:
+                continue
+            distances.append(float(d_cm))
+            forces.append(float(f))
+            force_cols_used.append(col)
+
+        if not distances:
+            continue
+        s_targets = np.asarray(distances, dtype=np.float64) / stroke_len
+        s_targets = np.clip(s_targets, 0.0, 1.0)
+
+        interp_features: dict[str, np.ndarray] = {}
+        for out_col, src_col in side_map.items():
+            values = pd.to_numeric(drive[src_col], errors="coerce").to_numpy(dtype=np.float64)
+            interp_features[out_col] = _interp_feature_on_progress(s_video, values, s_targets)
+
+        deriv_features: dict[str, np.ndarray] = {}
+        for out_col in ["knee_active_deg", "hip_active_deg", "elbow_active_deg", "trunk_vs_horizontal_deg"]:
+            vals = interp_features[out_col]
+            if vals.size < 2:
+                deriv_features[f"{out_col.replace('_deg', '')}_ddeg_ds"] = np.full_like(vals, np.nan)
+                continue
+            deriv_features[f"{out_col.replace('_deg', '')}_ddeg_ds"] = np.gradient(vals, s_targets)
+
+        for i in range(len(distances)):
+            row = {
+                "run_name": run_dir.name,
+                "rp3_clean_csv": rp3_clean_csv.name,
+                "active_side": active_side,
+                "video_stroke_idx": v_stroke,
+                "rp3_row_idx": rp3_idx,
+                "rp3_stroke_number": int(rp3_row["stroke_number"]),
+                "video_catch_time_s": float(mrow["video_catch_time_s"]),
+                "video_finish_time_s": float(mrow["video_finish_time_s"]),
+                "video_drive_s": float(mrow["video_drive_s"]),
+                "video_recover_s": float(mrow["video_recover_s"]),
+                "video_cycle_s": float(mrow["video_cycle_s"]),
+                "rp3_drive_s": float(mrow["rp3_drive_s"]),
+                "rp3_recover_s": float(mrow["rp3_recover_s"]),
+                "rp3_cycle_s": float(mrow["rp3_cycle_s"]),
+                "cum_catch_err_s": float(mrow["cum_catch_err_s"]),
+                "interval_err_s": float(mrow["interval_err_s"]),
+                "rp3_rows_skipped_since_prev": int(mrow["rp3_rows_skipped_since_prev"]),
+                "drive_bin_idx": i,
+                "force_col": force_cols_used[i],
+                "distance_cm": float(distances[i]),
+                "stroke_length_cm": float(stroke_len),
+                "s_force": float(s_targets[i]),
+                "force_n": float(forces[i]),
+            }
+            for key, arr in interp_features.items():
+                row[key] = float(arr[i]) if np.isfinite(arr[i]) else float("nan")
+            for key, arr in deriv_features.items():
+                row[key] = float(arr[i]) if np.isfinite(arr[i]) else float("nan")
+            rows.append(row)
+
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out = out.sort_values(["video_stroke_idx", "distance_cm"]).reset_index(drop=True)
+    return out
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -661,6 +989,62 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip writing the drive-phase overlay video.",
     )
+    parser.add_argument(
+        "--match-rp3",
+        action="store_true",
+        help="Build RP3 stroke matches and export per-2.2cm force/pose segment CSV.",
+    )
+    parser.add_argument(
+        "--no-match-rp3",
+        action="store_true",
+        help="Skip RP3 matching and segment CSV export.",
+    )
+    parser.add_argument(
+        "--rp3-clean-dir",
+        type=Path,
+        default=DEFAULT_RP3_CLEAN_DIR,
+        help=f"RP3 clean CSV directory (default: {DEFAULT_RP3_CLEAN_DIR}).",
+    )
+    parser.add_argument(
+        "--rp3-clean-csv",
+        type=Path,
+        default=None,
+        help="Optional RP3 clean CSV to use directly.",
+    )
+    parser.add_argument(
+        "--anchor-video-stroke-idx",
+        type=int,
+        default=0,
+        help="Video stroke index to anchor matching from (default: 0).",
+    )
+    parser.add_argument(
+        "--anchor-rp3-row-idx",
+        type=int,
+        default=None,
+        help="RP3 row index anchor for the anchor video stroke.",
+    )
+    parser.add_argument(
+        "--anchor-rp3-stroke-number",
+        type=int,
+        default=None,
+        help="RP3 stroke_number anchor for the anchor video stroke (recommended).",
+    )
+    parser.add_argument(
+        "--active-side",
+        type=str,
+        default=None,
+        choices=["left", "right"],
+        help="Active side to export canonical one-side features from.",
+    )
+    parser.add_argument("--max-jump-rows", type=int, default=6, help="Max RP3 row jump between matched strokes.")
+    parser.add_argument("--max-interval-error-s", type=float, default=1.2)
+    parser.add_argument("--max-cumulative-error-base-s", type=float, default=0.8)
+    parser.add_argument("--max-cumulative-error-per-s", type=float, default=0.08)
+    parser.add_argument("--w-drive", type=float, default=0.4)
+    parser.add_argument("--w-recover", type=float, default=0.4)
+    parser.add_argument("--w-interval", type=float, default=1.0)
+    parser.add_argument("--w-cumulative", type=float, default=1.0)
+    parser.add_argument("--w-skip", type=float, default=0.08)
     return parser.parse_args()
 
 
@@ -670,7 +1054,14 @@ def main() -> int:
     if args.overlay_video and args.no_overlay_video:
         print("Input error: use only one of --overlay-video or --no-overlay-video.")
         return 1
+    if args.match_rp3 and args.no_match_rp3:
+        print("Input error: use only one of --match-rp3 or --no-match-rp3.")
+        return 1
+    if args.anchor_rp3_row_idx is not None and args.anchor_rp3_stroke_number is not None:
+        print("Input error: use only one of --anchor-rp3-row-idx or --anchor-rp3-stroke-number.")
+        return 1
 
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
     selected_run_via_selector = args.run_dir is None
     try:
         run_dir = _resolve_run_dir(args.run_dir, args.runs_root)
@@ -689,6 +1080,31 @@ def main() -> int:
         )
     else:
         write_overlay_video = False
+
+    if args.match_rp3:
+        run_rp3_matching = True
+    elif args.no_match_rp3:
+        run_rp3_matching = False
+    elif args.rp3_clean_csv is not None or args.anchor_rp3_row_idx is not None or args.anchor_rp3_stroke_number is not None:
+        run_rp3_matching = True
+    elif selected_run_via_selector:
+        run_rp3_matching = _select_yes_no(
+            "Build RP3 matched force/pose segment CSV?",
+            default_no=True,
+        )
+    else:
+        run_rp3_matching = False
+
+    if args.active_side is not None:
+        active_side = str(args.active_side)
+    elif run_rp3_matching and selected_run_via_selector:
+        active_side = _prompt_choice(
+            "Active side for unilateral features",
+            options=["right", "left"],
+            default="right",
+        )
+    else:
+        active_side = "right"
 
     stroke_csv = run_dir / "stroke" / "stroke_signal.csv"
     try:
@@ -720,6 +1136,9 @@ def main() -> int:
     frame_csv = output_dir / "stroke_signal_with_drive_events.csv"
     summary_json = output_dir / "drive_events_summary.json"
     overlay_video = output_dir / "drive_phase_overlay.mp4"
+    rp3_manifest_csv = output_dir / "rp3_match_manifest.csv"
+    rp3_summary_json = output_dir / "rp3_match_summary.json"
+    rp3_segments_csv = output_dir / "rp3_pose_force_matched_segments.csv"
 
     events_df.to_csv(events_csv, index=False)
     frame_df.to_csv(frame_csv, index=False)
@@ -737,6 +1156,106 @@ def main() -> int:
             out_video=overlay_video,
             alpha=float(args.overlay_opacity),
         )
+
+    rp3_summary: dict[str, Any] | None = None
+    rp3_clean_csv_path: Path | None = None
+    if run_rp3_matching:
+        if events_df.empty:
+            print("RP3 match failed: no detected drive events available for matching.")
+            return 3
+        try:
+            rp3_clean_csv_path = _resolve_rp3_clean_csv(
+                rp3_clean_csv=args.rp3_clean_csv,
+                rp3_clean_dir=args.rp3_clean_dir,
+                interactive=interactive,
+            )
+            rp3_df = _load_rp3_clean_csv(rp3_clean_csv_path)
+
+            if args.anchor_rp3_row_idx is not None:
+                anchor_rp3_idx = int(args.anchor_rp3_row_idx)
+                if not (0 <= anchor_rp3_idx < len(rp3_df)):
+                    raise ValueError(f"anchor_rp3_row_idx out of range: {anchor_rp3_idx}")
+            elif args.anchor_rp3_stroke_number is not None:
+                stroke_no = int(args.anchor_rp3_stroke_number)
+                hit = rp3_df.index[rp3_df["stroke_number"].astype(int) == stroke_no].to_numpy()
+                if hit.size == 0:
+                    raise ValueError(f"anchor_rp3_stroke_number {stroke_no} not found in RP3 CSV.")
+                anchor_rp3_idx = int(hit[0])
+            elif interactive:
+                min_stroke = int(rp3_df["stroke_number"].min())
+                stroke_no = _prompt_int(
+                    "Anchor RP3 stroke_number for first matched video stroke",
+                    default=min_stroke,
+                )
+                hit = rp3_df.index[rp3_df["stroke_number"].astype(int) == stroke_no].to_numpy()
+                if hit.size == 0:
+                    raise ValueError(f"anchor_rp3_stroke_number {stroke_no} not found in RP3 CSV.")
+                anchor_rp3_idx = int(hit[0])
+            else:
+                raise ValueError(
+                    "Missing anchor. Provide --anchor-rp3-stroke-number (recommended) or --anchor-rp3-row-idx."
+                )
+
+            match_cfg = Rp3MatchConfig(
+                max_jump_rows=int(args.max_jump_rows),
+                max_interval_error_s=float(args.max_interval_error_s),
+                max_cumulative_error_base_s=float(args.max_cumulative_error_base_s),
+                max_cumulative_error_per_s=float(args.max_cumulative_error_per_s),
+                w_drive=float(args.w_drive),
+                w_recover=float(args.w_recover),
+                w_interval=float(args.w_interval),
+                w_cumulative=float(args.w_cumulative),
+                w_skip=float(args.w_skip),
+            )
+
+            match_result = _build_rp3_match_manifest(
+                video_df=events_df,
+                rp3_df=rp3_df,
+                anchor_video_idx=int(args.anchor_video_stroke_idx),
+                anchor_rp3_idx=int(anchor_rp3_idx),
+                cfg=match_cfg,
+            )
+            manifest_df = match_result.manifest
+            manifest_df.to_csv(rp3_manifest_csv, index=False)
+
+            segments_df = _build_force_pose_segments(
+                run_dir=run_dir,
+                frame_df=frame_df,
+                events_df=events_df,
+                manifest_df=manifest_df,
+                rp3_df=rp3_df,
+                active_side=active_side,
+                rp3_clean_csv=rp3_clean_csv_path,
+            )
+            segments_df.to_csv(rp3_segments_csv, index=False)
+
+            rp3_summary = {
+                "run_dir": str(run_dir),
+                "rp3_clean_csv": str(rp3_clean_csv_path),
+                "active_side": active_side,
+                "anchor_video_stroke_idx": int(args.anchor_video_stroke_idx),
+                "anchor_video_stroke_label": int(manifest_df.iloc[0]["video_stroke_idx"]),
+                "anchor_rp3_row_idx": int(manifest_df.iloc[0]["rp3_row_idx"]),
+                "anchor_rp3_stroke_number": int(manifest_df.iloc[0]["rp3_stroke_number"]),
+                "matched_video_strokes": int(len(manifest_df)),
+                "total_skipped_rp3_rows": int(manifest_df["rp3_rows_skipped_since_prev"].sum()),
+                "total_score": float(match_result.total_score),
+                "mean_abs_cum_catch_err_s": float(manifest_df["cum_catch_err_s"].abs().mean()),
+                "mean_abs_interval_err_s": float(manifest_df["interval_err_s"].abs().mean()),
+                "mean_abs_drive_err_s": float(manifest_df["drive_err_s"].abs().mean()),
+                "mean_abs_recover_err_s": float(manifest_df["recover_err_s"].abs().mean()),
+                "segment_rows": int(len(segments_df)),
+                "outputs": {
+                    "rp3_match_manifest_csv": str(rp3_manifest_csv),
+                    "rp3_pose_force_segments_csv": str(rp3_segments_csv),
+                },
+            }
+            with rp3_summary_json.open("w", encoding="utf-8") as f:
+                json.dump(rp3_summary, f, indent=2, sort_keys=True)
+                f.write("\n")
+        except Exception as exc:
+            print(f"RP3 match failed: {exc}")
+            return 3
 
     inferred_time = _infer_time_s(df)
     if inferred_time.size:
@@ -769,10 +1288,15 @@ def main() -> int:
             "drive_events_csv": str(events_csv),
             "stroke_signal_with_drive_events_csv": str(frame_csv),
             "drive_phase_overlay_video": str(overlay_video) if write_overlay_video else None,
+            "rp3_match_manifest_csv": str(rp3_manifest_csv) if rp3_summary is not None else None,
+            "rp3_pose_force_segments_csv": str(rp3_segments_csv) if rp3_summary is not None else None,
+            "rp3_match_summary_json": str(rp3_summary_json) if rp3_summary is not None else None,
         },
         "input_video": input_video_path,
         "overlay_frames_written": int(overlay_frames_written),
         "overlay_drive_frames": int(overlay_drive_frames),
+        "active_side": active_side if rp3_summary is not None else None,
+        "rp3_clean_csv": str(rp3_clean_csv_path) if rp3_clean_csv_path is not None else None,
     }
 
     if detection.events:
@@ -800,6 +1324,10 @@ def main() -> int:
     print(f"  {frame_csv}")
     if write_overlay_video:
         print(f"  {overlay_video}")
+    if rp3_summary is not None:
+        print(f"  {rp3_manifest_csv}")
+        print(f"  {rp3_segments_csv}")
+        print(f"  {rp3_summary_json}")
     print(f"  {summary_json}")
     return 0
 
