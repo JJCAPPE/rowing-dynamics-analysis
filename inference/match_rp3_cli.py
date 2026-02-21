@@ -250,6 +250,23 @@ def _prompt_int(prompt: str, default: int) -> int:
         print("Please enter an integer.")
 
 
+def _stroke_number_candidates(rp3_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    values = pd.to_numeric(rp3_df["stroke_number"], errors="coerce").to_numpy(dtype=np.float64)
+    finite_idx = np.flatnonzero(np.isfinite(values))
+    if finite_idx.size == 0:
+        raise ValueError("RP3 CSV has no valid stroke_number values.")
+    finite_strokes = np.rint(values[finite_idx]).astype(np.int64)
+    return finite_idx, finite_strokes
+
+
+def _find_rp3_row_by_stroke_number(rp3_df: pd.DataFrame, stroke_no: int) -> int | None:
+    finite_idx, finite_strokes = _stroke_number_candidates(rp3_df)
+    hit_idx = finite_idx[finite_strokes == int(stroke_no)]
+    if hit_idx.size == 0:
+        return None
+    return int(hit_idx[0])
+
+
 def _resolve_anchor_rp3_idx(
     rp3_df: pd.DataFrame,
     *,
@@ -268,24 +285,26 @@ def _resolve_anchor_rp3_idx(
 
     if anchor_rp3_stroke_number is not None:
         stroke_no = int(anchor_rp3_stroke_number)
-        rows = rp3_df.index[rp3_df["stroke_number"].astype(int) == stroke_no].to_numpy()
-        if rows.size == 0:
+        row_idx = _find_rp3_row_by_stroke_number(rp3_df, stroke_no)
+        if row_idx is None:
             raise ValueError(f"stroke_number {stroke_no} not found in RP3 CSV.")
-        return int(rows[0])
+        return int(row_idx)
 
     if not interactive:
         raise ValueError(
             "Missing anchor. Use --anchor-rp3-stroke-number (recommended) or --anchor-rp3-row-idx."
         )
 
-    min_stroke = int(rp3_df["stroke_number"].min())
-    max_stroke = int(rp3_df["stroke_number"].max())
+    _, finite_strokes = _stroke_number_candidates(rp3_df)
+    default_stroke = int(finite_strokes[0])
+    min_stroke = int(finite_strokes.min())
+    max_stroke = int(finite_strokes.max())
     print(f"\nRP3 stroke_number range: {min_stroke}..{max_stroke}")
-    stroke_no = _prompt_int("Enter anchor RP3 stroke_number for the first matched video stroke", min_stroke)
-    rows = rp3_df.index[rp3_df["stroke_number"].astype(int) == stroke_no].to_numpy()
-    if rows.size == 0:
+    stroke_no = _prompt_int("Enter anchor RP3 stroke_number for the first matched video stroke", default_stroke)
+    row_idx = _find_rp3_row_by_stroke_number(rp3_df, stroke_no)
+    if row_idx is None:
         raise ValueError(f"stroke_number {stroke_no} not found in RP3 CSV.")
-    return int(rows[0])
+    return int(row_idx)
 
 
 def _build_match_manifest(

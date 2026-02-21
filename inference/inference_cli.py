@@ -21,6 +21,7 @@ from match_rp3_cli import (
     MatchConfig as Rp3MatchConfig,
     _build_match_manifest as _build_rp3_match_manifest,
     _load_rp3 as _load_rp3_clean_csv,
+    _resolve_anchor_rp3_idx as _resolve_rp3_anchor_idx,
 )
 
 
@@ -1344,31 +1345,12 @@ def main() -> int:
             )
             rp3_clean_csv_path = _clean_rp3_dirty_csv(rp3_dirty_csv_path)
             rp3_df = _load_rp3_clean_csv(rp3_clean_csv_path)
-
-            if args.anchor_rp3_row_idx is not None:
-                anchor_rp3_idx = int(args.anchor_rp3_row_idx)
-                if not (0 <= anchor_rp3_idx < len(rp3_df)):
-                    raise ValueError(f"anchor_rp3_row_idx out of range: {anchor_rp3_idx}")
-            elif args.anchor_rp3_stroke_number is not None:
-                stroke_no = int(args.anchor_rp3_stroke_number)
-                hit = rp3_df.index[rp3_df["stroke_number"].astype(int) == stroke_no].to_numpy()
-                if hit.size == 0:
-                    raise ValueError(f"anchor_rp3_stroke_number {stroke_no} not found in RP3 CSV.")
-                anchor_rp3_idx = int(hit[0])
-            elif interactive:
-                min_stroke = int(rp3_df["stroke_number"].min())
-                stroke_no = _prompt_int(
-                    "Anchor RP3 stroke_number for first matched video stroke",
-                    default=min_stroke,
-                )
-                hit = rp3_df.index[rp3_df["stroke_number"].astype(int) == stroke_no].to_numpy()
-                if hit.size == 0:
-                    raise ValueError(f"anchor_rp3_stroke_number {stroke_no} not found in RP3 CSV.")
-                anchor_rp3_idx = int(hit[0])
-            else:
-                raise ValueError(
-                    "Missing anchor. Provide --anchor-rp3-stroke-number (recommended) or --anchor-rp3-row-idx."
-                )
+            anchor_rp3_idx = _resolve_rp3_anchor_idx(
+                rp3_df,
+                anchor_rp3_row_idx=args.anchor_rp3_row_idx,
+                anchor_rp3_stroke_number=args.anchor_rp3_stroke_number,
+                interactive=interactive,
+            )
 
             match_cfg = Rp3MatchConfig(
                 max_jump_rows=int(args.max_jump_rows),
