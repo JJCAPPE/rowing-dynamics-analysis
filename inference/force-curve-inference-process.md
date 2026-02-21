@@ -33,10 +33,11 @@ Relevant code paths:
 - `sports2d_app/stroke_signal.py`
 - `sports2d_app/rowing_pose/kinematics.py`
 
-### Force curves (`rp3-extraction`)
-Current RP3 cleanup already yields stroke-level force bins:
-- `rp3-extraction/workouts/clean/*-clean.csv`
-- force columns created by `expand_rp3_curve_data.py`:
+### Force curves (run-local `rp3/`)
+Current workflow stores RP3 data per run:
+- dirty RP3 exports are placed in `runs/<run_name>/rp3/*.csv`
+- clean files are generated as `runs/<run_name>/rp3/*-clean.csv` by `inference_cli.py`
+- force columns are created by `expand_rp3_curve_data.py`:
   - `force_at_2.2cm`, `force_at_4.4cm`, ..., up to configured max length.
 - stroke metadata columns include:
   - `stroke_number`, `time`, `stroke_length`, `peak_force`, `peak_force_pos`, `rel_peak_force_pos`, `drive_time`, `recover_time`, etc.

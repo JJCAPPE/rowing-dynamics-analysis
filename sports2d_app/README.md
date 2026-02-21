@@ -12,7 +12,7 @@ It runs a 7-stage pipeline:
 6. 3D overlay + angle plots
 7. ZIP packaging
 
-Both interfaces below write results to `sports2d_app/runs/<video_stem>_<timestamp>/`.
+Both interfaces below write results to `runs/<video_stem>_<timestamp>/`.
 
 ## Setup
 
@@ -83,6 +83,7 @@ If not using `--annotate`, provide machine geometry explicitly:
 For each run directory:
 
 - `input/`: copied input video used by pipeline.
+- `rp3/`: drop folder for run-specific dirty RP3 CSVs (clean `*-clean.csv` files are generated here by inference).
 - `sports2d/`: raw Sports2D outputs (`logs`, TRC, MOT, annotated video).
 - `exports/`: parsed points/angles CSV + NPZ exports.
 - `motionbert/`: `pose3d.npz`, `angles_h36m.csv`, `metrics.json`.
@@ -92,4 +93,4 @@ For each run directory:
 
 ## Next Step
 
-After generating a run, use `inference/inference_cli.py` (documented in `../inference/README.md`) to infer drive events and optionally match RP3 clean CSV data.
+After generating a run, drop dirty RP3 CSVs into that run's `rp3/` folder and use `inference/inference_cli.py` (documented in `../inference/README.md`) to infer drive events and match RP3 data.
