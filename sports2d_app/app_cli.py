@@ -30,7 +30,8 @@ from stroke_signal import StrokeTrackingOutputs, run_stroke_signal_tracking
 
 
 APP_ROOT = Path(__file__).resolve().parent
-RUNS_DIR = APP_ROOT / "runs"
+REPO_ROOT = APP_ROOT.parent
+RUNS_DIR = REPO_ROOT / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 SOURCE_VIDEOS_DIR = Path("/Users/giacomo/dev/rowing-video-analysis/source-videos")
 ALT_SOURCE_VIDEOS_DIR = Path("/Volumes/T9/rowing-research")
@@ -1000,6 +1001,8 @@ def main() -> int:
     video_stem = _sanitize_stem(source_video.stem)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = RUNS_DIR / f"{video_stem}_{timestamp}"
+    rp3_dir = run_dir / "rp3"
+    rp3_dir.mkdir(parents=True, exist_ok=True)
     input_dir = run_dir / "input"
     input_video = _copy_input_video(source_video, input_dir)
 
@@ -1038,6 +1041,7 @@ def main() -> int:
     print()
     print("\nDone.\n")
     print(f"Run directory: {artifacts.run_dir}")
+    print(f"RP3 folder (drop dirty RP3 CSV here): {rp3_dir}")
     print(f"Sports2D annotated video: {artifacts.sports2d_annotated_video}")
     if artifacts.stroke_signal_csv is not None and artifacts.stroke_signal_csv.exists():
         print(f"Stroke signal CSV: {artifacts.stroke_signal_csv}")

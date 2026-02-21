@@ -33,7 +33,8 @@ from stroke_signal import StrokeTrackingOutputs, run_stroke_signal_tracking
 
 
 APP_ROOT = Path(__file__).resolve().parent
-RUNS_DIR = APP_ROOT / "runs"
+REPO_ROOT = APP_ROOT.parent
+RUNS_DIR = REPO_ROOT / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -879,6 +880,8 @@ def main() -> None:
         video_stem = _sanitize_stem(src_path.stem if src_path else "video")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = RUNS_DIR / f"{video_stem}_{timestamp}"
+        rp3_dir = run_dir / "rp3"
+        rp3_dir.mkdir(parents=True, exist_ok=True)
         input_dir = run_dir / "input"
 
         if mode == "Upload":
@@ -1020,7 +1023,7 @@ def main() -> None:
                     mime="application/zip",
                 )
 
-        st.caption(f"Run folder: {artifacts.run_dir}")
+        st.caption(f"Run folder: {artifacts.run_dir} | RP3 folder: {rp3_dir}")
 
 
 if __name__ == "__main__":
