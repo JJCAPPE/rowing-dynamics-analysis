@@ -15,8 +15,7 @@ import pandas as pd
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RUNS_ROOT = REPO_ROOT / "sports2d_app" / "runs"
-DEFAULT_RP3_CLEAN_DIR = REPO_ROOT / "rp3-extraction" / "workouts" / "clean"
+DEFAULT_RUNS_ROOT = REPO_ROOT / "runs"
 
 
 @dataclass(frozen=True)
@@ -129,10 +128,26 @@ def _discover_runs(runs_root: Path) -> list[Path]:
     return runs
 
 
-def _discover_rp3_clean(clean_dir: Path) -> list[Path]:
-    if not clean_dir.exists():
-        raise FileNotFoundError(f"RP3 clean directory not found: {clean_dir}")
-    files = sorted([p.resolve() for p in clean_dir.glob("*.csv") if p.is_file()])
+def _ensure_path_in_dir(path: Path, parent_dir: Path, *, label: str) -> None:
+    parent_dir = parent_dir.expanduser().resolve()
+    path = path.expanduser().resolve()
+    try:
+        path.relative_to(parent_dir)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be inside {parent_dir}: {path}") from exc
+
+
+def _discover_run_rp3_clean(run_dir: Path) -> list[Path]:
+    rp3_dir = (run_dir / "rp3").resolve()
+    if not rp3_dir.exists() or not rp3_dir.is_dir():
+        raise FileNotFoundError(f"Run RP3 directory not found: {rp3_dir}")
+    files = sorted(
+        [
+            p.resolve()
+            for p in rp3_dir.glob("*-clean.csv")
+            if p.is_file() and not p.name.startswith(".")
+        ]
+    )
     return files
 
 
@@ -150,16 +165,35 @@ def _resolve_run_dir(run_dir: Path | None, runs_root: Path) -> Path:
     return _pick_path(options, "Select run (needs inference/drive_events.csv)")
 
 
-def _resolve_rp3_csv(rp3_clean_csv: Path | None, clean_dir: Path) -> Path:
+def _resolve_rp3_csv(
+    *,
+    run_dir: Path,
+    rp3_clean_csv: Path | None,
+    interactive: bool,
+) -> Path:
+    rp3_dir = (run_dir / "rp3").resolve()
     if rp3_clean_csv is not None:
         csv_path = rp3_clean_csv.expanduser().resolve()
         if not csv_path.exists() or not csv_path.is_file():
             raise FileNotFoundError(f"RP3 clean CSV not found: {csv_path}")
+        _ensure_path_in_dir(csv_path, rp3_dir, label="--rp3-clean-csv")
+        if not csv_path.name.lower().endswith("-clean.csv"):
+            raise ValueError(f"--rp3-clean-csv must reference a *-clean.csv file: {csv_path.name}")
         return csv_path
-    options = _discover_rp3_clean(clean_dir)
+
+    options = _discover_run_rp3_clean(run_dir)
     if not options:
-        raise FileNotFoundError(f"No RP3 clean CSV files found in {clean_dir}")
-    return _pick_path(options, "Select RP3 clean CSV")
+        raise FileNotFoundError(
+            f"No RP3 clean CSV files found in {rp3_dir}. "
+            "Run inference_cli.py first to generate one from dirty RP3 data."
+        )
+    if len(options) == 1:
+        return options[0]
+    if interactive:
+        return _pick_path(options, "Select RP3 clean CSV")
+    raise ValueError(
+        f"Multiple RP3 clean CSV files found in {rp3_dir}. Specify one with --rp3-clean-csv."
+    )
 
 
 def _load_video_events(run_dir: Path) -> pd.DataFrame:
@@ -419,7 +453,6 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
     parser.add_argument("--run-dir", type=Path, default=None, help="Run dir with inference/drive_events.csv")
-    parser.add_argument("--rp3-clean-dir", type=Path, default=DEFAULT_RP3_CLEAN_DIR)
     parser.add_argument("--rp3-clean-csv", type=Path, default=None)
     parser.add_argument("--anchor-video-stroke-idx", type=int, default=0)
     parser.add_argument("--anchor-rp3-row-idx", type=int, default=None)
@@ -442,7 +475,11 @@ def main() -> int:
 
     try:
         run_dir = _resolve_run_dir(args.run_dir, args.runs_root)
-        rp3_clean_csv = _resolve_rp3_csv(args.rp3_clean_csv, args.rp3_clean_dir)
+        rp3_clean_csv = _resolve_rp3_csv(
+            run_dir=run_dir,
+            rp3_clean_csv=args.rp3_clean_csv,
+            interactive=interactive,
+        )
         video_df = _load_video_events(run_dir)
         rp3_df = _load_rp3(rp3_clean_csv)
         anchor_rp3_idx = _resolve_anchor_rp3_idx(

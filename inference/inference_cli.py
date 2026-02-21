@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import curses
+import importlib.util
 import json
 import math
 import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Iterable, Sequence
 
 import cv2
@@ -18,14 +20,14 @@ import pandas as pd
 from match_rp3_cli import (
     MatchConfig as Rp3MatchConfig,
     _build_match_manifest as _build_rp3_match_manifest,
-    _discover_rp3_clean as _discover_rp3_clean_csvs,
     _load_rp3 as _load_rp3_clean_csv,
 )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RUNS_ROOT = REPO_ROOT / "sports2d_app" / "runs"
-DEFAULT_RP3_CLEAN_DIR = REPO_ROOT / "rp3-extraction" / "workouts" / "clean"
+DEFAULT_RUNS_ROOT = REPO_ROOT / "runs"
+RP3_CLEAN_MAX_STROKE_LENGTH_CM = 170.0
+RP3_CLEAN_STEP_CM = 2.2
 VIDEO_SUFFIXES = {
     ".mp4",
     ".mov",
@@ -40,6 +42,9 @@ VIDEO_SUFFIXES = {
     ".wmv",
 }
 FORCE_COL_RE = re.compile(r"^force_at_([0-9]+(?:\.[0-9]+)?)cm$")
+PDF_AREA_EPS = 1e-9
+PDF_AREA_TOL = 1e-6
+_RP3_EXPAND_MODULE: ModuleType | None = None
 
 
 @dataclass(frozen=True)
@@ -350,29 +355,106 @@ def _resolve_run_dir(run_dir: Path | None, runs_root: Path) -> Path:
     return run_dir
 
 
-def _resolve_rp3_clean_csv(
-    rp3_clean_csv: Path | None,
-    rp3_clean_dir: Path,
+def _ensure_path_in_dir(path: Path, parent_dir: Path, *, label: str) -> None:
+    parent_dir = parent_dir.expanduser().resolve()
+    path = path.expanduser().resolve()
+    try:
+        path.relative_to(parent_dir)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be inside {parent_dir}: {path}") from exc
+
+
+def _discover_run_rp3_dirty_csvs(run_dir: Path) -> list[Path]:
+    rp3_dir = (run_dir / "rp3").resolve()
+    if not rp3_dir.exists() or not rp3_dir.is_dir():
+        return []
+    options = [
+        p.resolve()
+        for p in sorted(rp3_dir.glob("*.csv"))
+        if p.is_file() and not p.name.startswith(".") and not p.name.lower().endswith("-clean.csv")
+    ]
+    return options
+
+
+def _resolve_rp3_dirty_csv(
     *,
+    run_dir: Path,
+    rp3_dirty_csv: Path | None,
     interactive: bool,
 ) -> Path:
-    if rp3_clean_csv is not None:
-        csv_path = rp3_clean_csv.expanduser().resolve()
+    rp3_dir = (run_dir / "rp3").resolve()
+    if not rp3_dir.exists() or not rp3_dir.is_dir():
+        raise FileNotFoundError(f"Run RP3 directory not found: {rp3_dir}")
+
+    if rp3_dirty_csv is not None:
+        csv_path = rp3_dirty_csv.expanduser().resolve()
         if not csv_path.exists() or not csv_path.is_file():
-            raise FileNotFoundError(f"RP3 clean CSV not found: {csv_path}")
+            raise FileNotFoundError(f"RP3 dirty CSV not found: {csv_path}")
+        _ensure_path_in_dir(csv_path, rp3_dir, label="--rp3-dirty-csv")
+        if csv_path.name.lower().endswith("-clean.csv"):
+            raise ValueError(f"Expected dirty RP3 CSV, got clean CSV: {csv_path.name}")
         return csv_path
 
-    options = _discover_rp3_clean_csvs(rp3_clean_dir.expanduser().resolve())
+    options = _discover_run_rp3_dirty_csvs(run_dir)
     if not options:
-        raise FileNotFoundError(f"No RP3 clean CSV files found in {rp3_clean_dir}")
+        raise FileNotFoundError(
+            f"No RP3 dirty CSV files found in {rp3_dir}. Add one or run with --no-match-rp3."
+        )
+    if len(options) == 1:
+        return options[0]
+
     if interactive:
         if sys.stdin.isatty() and sys.stdout.isatty():
             try:
-                return _pick_file_with_curses(options, "Select RP3 clean CSV")
+                return _pick_file_with_curses(options, "Select RP3 dirty CSV")
             except Exception:
                 pass
-        return _pick_file_with_prompt(options, "Select RP3 clean CSV")
-    raise ValueError("RP3 clean CSV required. Provide --rp3-clean-csv or run interactively.")
+        return _pick_file_with_prompt(options, "Select RP3 dirty CSV")
+
+    raise ValueError(
+        f"Multiple RP3 dirty CSV files found in {rp3_dir}. "
+        "Specify one with --rp3-dirty-csv."
+    )
+
+
+def _load_rp3_expand_module() -> ModuleType:
+    global _RP3_EXPAND_MODULE
+    if _RP3_EXPAND_MODULE is not None:
+        return _RP3_EXPAND_MODULE
+
+    module_path = REPO_ROOT / "rp3-extraction" / "expand_rp3_curve_data.py"
+    if not module_path.exists():
+        raise FileNotFoundError(f"RP3 cleaning script not found: {module_path}")
+
+    spec = importlib.util.spec_from_file_location("rp3_expand_routine", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load module spec from {module_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _RP3_EXPAND_MODULE = module
+    return module
+
+
+def _clean_rp3_dirty_csv(dirty_csv: Path) -> Path:
+    if dirty_csv.name.lower().endswith("-clean.csv"):
+        raise ValueError(f"Expected dirty RP3 CSV, got clean CSV: {dirty_csv}")
+
+    clean_csv = dirty_csv.with_name(f"{dirty_csv.stem}-clean.csv")
+    module = _load_rp3_expand_module()
+    process_file = getattr(module, "process_file", None)
+    if process_file is None:
+        raise AttributeError("expand_rp3_curve_data.py is missing process_file().")
+
+    process_file(
+        input_csv=dirty_csv,
+        output_csv=clean_csv,
+        max_stroke_length_cm=RP3_CLEAN_MAX_STROKE_LENGTH_CM,
+        step_cm=RP3_CLEAN_STEP_CM,
+        drop_curve_data=False,
+        truncate=False,
+    )
+    return clean_csv.resolve()
 
 
 def _moving_average(signal: np.ndarray, window: int) -> np.ndarray:
@@ -771,7 +853,7 @@ def _build_force_pose_segments(
     rp3_df: pd.DataFrame,
     active_side: str,
     rp3_clean_csv: Path,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     angles_csv = run_dir / "motionbert" / "angles_h36m.csv"
     if not angles_csv.exists():
         raise FileNotFoundError(f"angles_h36m.csv not found at: {angles_csv}")
@@ -802,12 +884,29 @@ def _build_force_pose_segments(
         events_by_stroke[int(row["stroke_idx"])] = row
 
     rows: list[dict[str, Any]] = []
-    for _, mrow in manifest_df.iterrows():
+    status_rows: list[dict[str, Any]] = []
+    for match_seq_idx, (_, mrow) in enumerate(manifest_df.iterrows()):
         v_stroke = int(mrow["video_stroke_idx"])
         rp3_idx = int(mrow["rp3_row_idx"])
+        rp3_stroke_number = int(mrow["rp3_stroke_number"])
+        status_row: dict[str, Any] = {
+            "match_seq_idx": int(match_seq_idx),
+            "video_stroke_idx": int(v_stroke),
+            "rp3_row_idx": int(rp3_idx),
+            "rp3_stroke_number": int(rp3_stroke_number),
+            "segment_exported": False,
+            "segment_rows_written": 0,
+            "drop_reason": "",
+            "raw_area_trapz": float("nan"),
+            "normalized_area_trapz": float("nan"),
+        }
         if v_stroke not in events_by_stroke:
+            status_row["drop_reason"] = "missing_events"
+            status_rows.append(status_row)
             continue
         if not (0 <= rp3_idx < len(rp3_df)):
+            status_row["drop_reason"] = "rp3_row_out_of_range"
+            status_rows.append(status_row)
             continue
 
         ev = events_by_stroke[v_stroke]
@@ -815,11 +914,15 @@ def _build_force_pose_segments(
         f_frame = int(ev["finish_frame_idx"])
         drive = merged[(merged["frame_idx"] >= c_frame) & (merged["frame_idx"] <= f_frame)].copy()
         if len(drive) < 2:
+            status_row["drop_reason"] = "invalid_drive_window"
+            status_rows.append(status_row)
             continue
 
         dist_col = "relative_axis_px_smooth" if "relative_axis_px_smooth" in drive.columns else "relative_axis_px"
         dist = pd.to_numeric(drive[dist_col], errors="coerce").to_numpy(dtype=np.float64)
         if np.isfinite(dist).sum() < 2:
+            status_row["drop_reason"] = "invalid_distance_signal"
+            status_rows.append(status_row)
             continue
         dist = _interp_nans(dist)
 
@@ -829,6 +932,8 @@ def _build_force_pose_segments(
             x0 = float(np.nanmin(dist))
             x1 = float(np.nanmax(dist))
         if not np.isfinite(x0) or not np.isfinite(x1) or x1 <= x0 + 1e-6:
+            status_row["drop_reason"] = "invalid_drive_range"
+            status_rows.append(status_row)
             continue
 
         s_video = (dist - x0) / (x1 - x0)
@@ -840,10 +945,12 @@ def _build_force_pose_segments(
         rp3_row = rp3_df.iloc[rp3_idx]
         stroke_len = float(rp3_row["stroke_length"]) if np.isfinite(rp3_row["stroke_length"]) else float("nan")
         if not np.isfinite(stroke_len) or stroke_len <= 0:
+            status_row["drop_reason"] = "invalid_stroke_length"
+            status_rows.append(status_row)
             continue
 
         distances: list[float] = []
-        forces: list[float] = []
+        force_raw: list[float] = []
         force_cols_used: list[str] = []
         for col, d_cm in force_cols:
             raw = rp3_row.get(col)
@@ -853,13 +960,30 @@ def _build_force_pose_segments(
             if d_cm > stroke_len + 1e-6:
                 continue
             distances.append(float(d_cm))
-            forces.append(float(f))
+            force_raw.append(float(f))
             force_cols_used.append(col)
 
         if not distances:
+            status_row["drop_reason"] = "no_valid_force_bins"
+            status_rows.append(status_row)
             continue
         s_targets = np.asarray(distances, dtype=np.float64) / stroke_len
         s_targets = np.clip(s_targets, 0.0, 1.0)
+        force_raw_arr = np.asarray(force_raw, dtype=np.float64)
+
+        raw_area = float(np.trapz(force_raw_arr, s_targets))
+        status_row["raw_area_trapz"] = raw_area
+        if not np.isfinite(raw_area) or raw_area <= PDF_AREA_EPS:
+            status_row["drop_reason"] = "zero_or_invalid_pdf_area"
+            status_rows.append(status_row)
+            continue
+        force_pdf_arr = force_raw_arr / raw_area
+        normalized_area = float(np.trapz(force_pdf_arr, s_targets))
+        status_row["normalized_area_trapz"] = normalized_area
+        if not np.isfinite(normalized_area):
+            status_row["drop_reason"] = "invalid_normalized_pdf_area"
+            status_rows.append(status_row)
+            continue
 
         interp_features: dict[str, np.ndarray] = {}
         for out_col, src_col in side_map.items():
@@ -879,6 +1003,7 @@ def _build_force_pose_segments(
                 "run_name": run_dir.name,
                 "rp3_clean_csv": rp3_clean_csv.name,
                 "active_side": active_side,
+                "match_seq_idx": int(match_seq_idx),
                 "video_stroke_idx": v_stroke,
                 "rp3_row_idx": rp3_idx,
                 "rp3_stroke_number": int(rp3_row["stroke_number"]),
@@ -898,7 +1023,8 @@ def _build_force_pose_segments(
                 "distance_cm": float(distances[i]),
                 "stroke_length_cm": float(stroke_len),
                 "s_force": float(s_targets[i]),
-                "force_n": float(forces[i]),
+                "force_raw": float(force_raw_arr[i]),
+                "force_n": float(force_pdf_arr[i]),
             }
             for key, arr in interp_features.items():
                 row[key] = float(arr[i]) if np.isfinite(arr[i]) else float("nan")
@@ -906,10 +1032,65 @@ def _build_force_pose_segments(
                 row[key] = float(arr[i]) if np.isfinite(arr[i]) else float("nan")
             rows.append(row)
 
+        status_row["segment_exported"] = True
+        status_row["segment_rows_written"] = int(len(distances))
+        status_rows.append(status_row)
+
     out = pd.DataFrame(rows)
     if not out.empty:
-        out = out.sort_values(["video_stroke_idx", "distance_cm"]).reset_index(drop=True)
-    return out
+        out = out.sort_values(["match_seq_idx", "distance_cm"]).reset_index(drop=True)
+    status = pd.DataFrame(status_rows)
+    if not status.empty:
+        status = status.sort_values(["match_seq_idx"]).reset_index(drop=True)
+    return out, status
+
+
+def _validate_force_segment_exports(
+    *,
+    manifest_df: pd.DataFrame,
+    segments_df: pd.DataFrame,
+    status_df: pd.DataFrame,
+) -> None:
+    if len(status_df) != len(manifest_df):
+        raise RuntimeError(
+            f"Segment export status row mismatch: status_rows={len(status_df)} manifest_rows={len(manifest_df)}"
+        )
+
+    if "match_seq_idx" not in status_df.columns:
+        raise RuntimeError("Segment export status is missing match_seq_idx.")
+    seq = status_df["match_seq_idx"].to_numpy(dtype=np.int64)
+    expected = np.arange(len(manifest_df), dtype=np.int64)
+    if not np.array_equal(np.sort(seq), expected):
+        raise RuntimeError("match_seq_idx must be unique and contiguous from 0..N-1 in export status.")
+
+    exported_status = status_df[status_df["segment_exported"].astype(bool)]
+    if not exported_status.empty:
+        normalized = pd.to_numeric(exported_status["normalized_area_trapz"], errors="coerce")
+        bad = (~np.isfinite(normalized.to_numpy(dtype=np.float64))) | (
+            np.abs(normalized.to_numpy(dtype=np.float64) - 1.0) > PDF_AREA_TOL
+        )
+        if bool(np.any(bad)):
+            raise RuntimeError("Exported stroke PDF normalization failed area-to-one invariant.")
+
+    if segments_df.empty:
+        return
+    if "match_seq_idx" not in segments_df.columns:
+        raise RuntimeError("Segments CSV missing match_seq_idx.")
+
+    seg_keys = set(pd.to_numeric(segments_df["match_seq_idx"], errors="coerce").dropna().astype(int).tolist())
+    exported_keys = set(pd.to_numeric(exported_status["match_seq_idx"], errors="coerce").dropna().astype(int).tolist())
+    if not seg_keys.issubset(exported_keys):
+        raise RuntimeError("Segments contain stroke keys that are not marked exported in status table.")
+
+    seg_counts = segments_df.groupby("match_seq_idx").size().to_dict()
+    for _, row in exported_status.iterrows():
+        k = int(row["match_seq_idx"])
+        expected_count = int(row["segment_rows_written"])
+        actual_count = int(seg_counts.get(k, 0))
+        if actual_count != expected_count:
+            raise RuntimeError(
+                f"Segment row-count mismatch for match_seq_idx={k}: status={expected_count} actual={actual_count}"
+            )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -1000,16 +1181,10 @@ def _parse_args() -> argparse.Namespace:
         help="Skip RP3 matching and segment CSV export.",
     )
     parser.add_argument(
-        "--rp3-clean-dir",
-        type=Path,
-        default=DEFAULT_RP3_CLEAN_DIR,
-        help=f"RP3 clean CSV directory (default: {DEFAULT_RP3_CLEAN_DIR}).",
-    )
-    parser.add_argument(
-        "--rp3-clean-csv",
+        "--rp3-dirty-csv",
         type=Path,
         default=None,
-        help="Optional RP3 clean CSV to use directly.",
+        help="Optional RP3 dirty CSV in <run>/rp3 to clean and use for matching.",
     )
     parser.add_argument(
         "--anchor-video-stroke-idx",
@@ -1068,6 +1243,7 @@ def main() -> int:
     except Exception as exc:
         print(f"Run selection failed: {exc}")
         return 1
+    has_dirty_rp3 = bool(_discover_run_rp3_dirty_csvs(run_dir))
 
     if args.overlay_video:
         write_overlay_video = True
@@ -1085,15 +1261,10 @@ def main() -> int:
         run_rp3_matching = True
     elif args.no_match_rp3:
         run_rp3_matching = False
-    elif args.rp3_clean_csv is not None or args.anchor_rp3_row_idx is not None or args.anchor_rp3_stroke_number is not None:
+    elif args.rp3_dirty_csv is not None or args.anchor_rp3_row_idx is not None or args.anchor_rp3_stroke_number is not None:
         run_rp3_matching = True
-    elif selected_run_via_selector:
-        run_rp3_matching = _select_yes_no(
-            "Build RP3 matched force/pose segment CSV?",
-            default_no=True,
-        )
     else:
-        run_rp3_matching = False
+        run_rp3_matching = has_dirty_rp3
 
     if args.active_side is not None:
         active_side = str(args.active_side)
@@ -1139,6 +1310,7 @@ def main() -> int:
     rp3_manifest_csv = output_dir / "rp3_match_manifest.csv"
     rp3_summary_json = output_dir / "rp3_match_summary.json"
     rp3_segments_csv = output_dir / "rp3_pose_force_matched_segments.csv"
+    rp3_segment_status_csv = output_dir / "rp3_pose_force_export_status.csv"
 
     events_df.to_csv(events_csv, index=False)
     frame_df.to_csv(frame_csv, index=False)
@@ -1158,17 +1330,19 @@ def main() -> int:
         )
 
     rp3_summary: dict[str, Any] | None = None
+    rp3_dirty_csv_path: Path | None = None
     rp3_clean_csv_path: Path | None = None
     if run_rp3_matching:
         if events_df.empty:
             print("RP3 match failed: no detected drive events available for matching.")
             return 3
         try:
-            rp3_clean_csv_path = _resolve_rp3_clean_csv(
-                rp3_clean_csv=args.rp3_clean_csv,
-                rp3_clean_dir=args.rp3_clean_dir,
+            rp3_dirty_csv_path = _resolve_rp3_dirty_csv(
+                run_dir=run_dir,
+                rp3_dirty_csv=args.rp3_dirty_csv,
                 interactive=interactive,
             )
+            rp3_clean_csv_path = _clean_rp3_dirty_csv(rp3_dirty_csv_path)
             rp3_df = _load_rp3_clean_csv(rp3_clean_csv_path)
 
             if args.anchor_rp3_row_idx is not None:
@@ -1218,7 +1392,7 @@ def main() -> int:
             manifest_df = match_result.manifest
             manifest_df.to_csv(rp3_manifest_csv, index=False)
 
-            segments_df = _build_force_pose_segments(
+            segments_df, segment_status_df = _build_force_pose_segments(
                 run_dir=run_dir,
                 frame_df=frame_df,
                 events_df=events_df,
@@ -1227,10 +1401,30 @@ def main() -> int:
                 active_side=active_side,
                 rp3_clean_csv=rp3_clean_csv_path,
             )
+            _validate_force_segment_exports(
+                manifest_df=manifest_df,
+                segments_df=segments_df,
+                status_df=segment_status_df,
+            )
             segments_df.to_csv(rp3_segments_csv, index=False)
+            segment_status_df.to_csv(rp3_segment_status_csv, index=False)
+
+            exported_strokes = int(segment_status_df["segment_exported"].astype(bool).sum())
+            dropped_strokes = int(len(segment_status_df) - exported_strokes)
+            drop_counts_series = (
+                segment_status_df.loc[
+                    (~segment_status_df["segment_exported"].astype(bool))
+                    & (segment_status_df["drop_reason"].astype(str).str.len() > 0),
+                    "drop_reason",
+                ]
+                .value_counts()
+                .sort_index()
+            )
+            drop_counts = {str(k): int(v) for k, v in drop_counts_series.items()}
 
             rp3_summary = {
                 "run_dir": str(run_dir),
+                "rp3_dirty_csv": str(rp3_dirty_csv_path),
                 "rp3_clean_csv": str(rp3_clean_csv_path),
                 "active_side": active_side,
                 "anchor_video_stroke_idx": int(args.anchor_video_stroke_idx),
@@ -1245,9 +1439,14 @@ def main() -> int:
                 "mean_abs_drive_err_s": float(manifest_df["drive_err_s"].abs().mean()),
                 "mean_abs_recover_err_s": float(manifest_df["recover_err_s"].abs().mean()),
                 "segment_rows": int(len(segments_df)),
+                "segment_exported_strokes": exported_strokes,
+                "segment_dropped_strokes": dropped_strokes,
+                "segment_drop_reason_counts": drop_counts,
+                "segment_export_status_csv": str(rp3_segment_status_csv),
                 "outputs": {
                     "rp3_match_manifest_csv": str(rp3_manifest_csv),
                     "rp3_pose_force_segments_csv": str(rp3_segments_csv),
+                    "segment_export_status_csv": str(rp3_segment_status_csv),
                 },
             }
             with rp3_summary_json.open("w", encoding="utf-8") as f:
@@ -1290,12 +1489,14 @@ def main() -> int:
             "drive_phase_overlay_video": str(overlay_video) if write_overlay_video else None,
             "rp3_match_manifest_csv": str(rp3_manifest_csv) if rp3_summary is not None else None,
             "rp3_pose_force_segments_csv": str(rp3_segments_csv) if rp3_summary is not None else None,
+            "rp3_pose_force_export_status_csv": str(rp3_segment_status_csv) if rp3_summary is not None else None,
             "rp3_match_summary_json": str(rp3_summary_json) if rp3_summary is not None else None,
         },
         "input_video": input_video_path,
         "overlay_frames_written": int(overlay_frames_written),
         "overlay_drive_frames": int(overlay_drive_frames),
         "active_side": active_side if rp3_summary is not None else None,
+        "rp3_dirty_csv": str(rp3_dirty_csv_path) if rp3_dirty_csv_path is not None else None,
         "rp3_clean_csv": str(rp3_clean_csv_path) if rp3_clean_csv_path is not None else None,
     }
 
@@ -1327,6 +1528,7 @@ def main() -> int:
     if rp3_summary is not None:
         print(f"  {rp3_manifest_csv}")
         print(f"  {rp3_segments_csv}")
+        print(f"  {rp3_segment_status_csv}")
         print(f"  {rp3_summary_json}")
     print(f"  {summary_json}")
     return 0

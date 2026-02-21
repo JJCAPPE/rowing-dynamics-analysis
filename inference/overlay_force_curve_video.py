@@ -14,8 +14,7 @@ import pandas as pd
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RUNS_ROOT = REPO_ROOT / "sports2d_app" / "runs"
-DEFAULT_RP3_CLEAN_DIR = REPO_ROOT / "rp3-extraction" / "workouts" / "clean"
+DEFAULT_RUNS_ROOT = REPO_ROOT / "runs"
 VIDEO_SUFFIXES = {
     ".mp4",
     ".mov",
@@ -185,6 +184,15 @@ def _fmt_number(value: float | None, suffix: str = "", precision: int = 1) -> st
     return f"{value:.{precision}f}{suffix}"
 
 
+def _ensure_path_in_dir(path: Path, parent_dir: Path, *, label: str) -> None:
+    parent_dir = parent_dir.expanduser().resolve()
+    path = path.expanduser().resolve()
+    try:
+        path.relative_to(parent_dir)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be inside {parent_dir}: {path}") from exc
+
+
 def _curve_panel_rect(width: int, height: int) -> tuple[int, int, int, int]:
     w = int(width * 0.42)
     h = int(height * 0.34)
@@ -203,14 +211,16 @@ def _metrics_panel_rect(width: int, height: int, curve_rect: tuple[int, int, int
 
 def _resolve_rp3_clean_csv(
     *,
+    run_dir: Path,
     seg_df: pd.DataFrame,
     rp3_clean_csv: Path | None,
-    rp3_clean_dir: Path,
 ) -> Path:
+    rp3_dir = (run_dir / "rp3").resolve()
     if rp3_clean_csv is not None:
         p = rp3_clean_csv.expanduser().resolve()
         if not p.exists() or not p.is_file():
             raise FileNotFoundError(f"RP3 clean CSV not found: {p}")
+        _ensure_path_in_dir(p, rp3_dir, label="--rp3-clean-csv")
         return p
 
     if "rp3_clean_csv" not in seg_df.columns:
@@ -227,11 +237,17 @@ def _resolve_rp3_clean_csv(
     p = Path(candidate)
     if p.is_absolute() and p.exists() and p.is_file():
         return p.resolve()
-    p2 = (rp3_clean_dir.expanduser().resolve() / candidate).resolve()
+    p2 = (rp3_dir / p).resolve()
     if p2.exists() and p2.is_file():
+        _ensure_path_in_dir(p2, rp3_dir, label="segments rp3_clean_csv")
         return p2
+    p3 = (rp3_dir / p.name).resolve()
+    if p3.exists() and p3.is_file():
+        _ensure_path_in_dir(p3, rp3_dir, label="segments rp3_clean_csv")
+        return p3
     raise FileNotFoundError(
         f"Could not resolve RP3 clean CSV from segments value '{candidate}'. "
+        f"Expected it under {rp3_dir} or as an absolute existing path. "
         "Use --rp3-clean-csv."
     )
 
@@ -380,11 +396,11 @@ def _curve_points(
 
 def build_overlay_video(
     *,
+    run_dir: Path,
     input_video: Path,
     stroke_csv: Path,
     segments_csv: Path,
     rp3_clean_csv: Path | None,
-    rp3_clean_dir: Path,
     output_video: Path,
     panel_alpha: float,
 ) -> tuple[int, int]:
@@ -406,9 +422,9 @@ def build_overlay_video(
         raise ValueError(f"rp3_pose_force_matched_segments.csv missing columns: {missing_seg_cols}")
 
     rp3_csv_path = _resolve_rp3_clean_csv(
+        run_dir=run_dir,
         seg_df=seg_df,
         rp3_clean_csv=rp3_clean_csv,
-        rp3_clean_dir=rp3_clean_dir,
     )
     rp3_df = pd.read_csv(rp3_csv_path)
     if rp3_df.empty:
@@ -528,7 +544,7 @@ def build_overlay_video(
             cv2.line(frame, (x0 + 8, y0 + h - 8), (x0 + w - 8, y0 + h - 8), (130, 130, 130), 1)
             cv2.line(frame, (x0 + 8, y0 + h - 8), (x0 + 8, y0 + 8), (130, 130, 130), 1)
 
-            title = "Force Curve (drive-synced)"
+            title = "Force PDF (drive-synced)"
             cv2.putText(frame, title, (x0 + 10, y0 + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1, cv2.LINE_AA)
 
             if np.isfinite(stroke_idx_val):
@@ -620,7 +636,7 @@ def build_overlay_video(
                         cv2.circle(frame, (cx, cy), 4, (0, 255, 255), -1)
                         cv2.circle(frame, (cx, cy), 7, (0, 0, 0), 1)
 
-                    txt = f"stroke {stroke_idx}  drive {s_prog*100:.1f}%  F={y_prog:.0f}N"
+                    txt = f"stroke {stroke_idx}  drive {s_prog*100:.1f}%  density={y_prog:.3f}"
                     cv2.putText(frame, txt, (x0 + 10, y0 + h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (230, 230, 230), 1, cv2.LINE_AA)
                     overlay_frames += 1
                 else:
@@ -636,7 +652,7 @@ def build_overlay_video(
             else:
                 cv2.putText(
                     frame,
-                    "No matched force curve for this stroke",
+                    "No matched force PDF for this stroke",
                     (x0 + 10, y0 + h - 14),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.45,
@@ -674,7 +690,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stroke-csv", type=Path, default=None, help="Default: <run>/inference/stroke_signal_with_drive_events.csv")
     parser.add_argument("--segments-csv", type=Path, default=None, help="Default: <run>/inference/rp3_pose_force_matched_segments.csv")
     parser.add_argument("--rp3-clean-csv", type=Path, default=None, help="Optional RP3 clean CSV (auto-resolved from segments by default).")
-    parser.add_argument("--rp3-clean-dir", type=Path, default=DEFAULT_RP3_CLEAN_DIR, help=f"RP3 clean directory for resolving CSV names (default: {DEFAULT_RP3_CLEAN_DIR}).")
     parser.add_argument("--output-video", type=Path, default=None, help="Default: <run>/inference/force_curve_overlay.mp4")
     parser.add_argument("--panel-alpha", type=float, default=0.35, help="Overlay panel opacity (default: 0.35).")
     return parser.parse_args()
@@ -710,11 +725,11 @@ def main() -> int:
             )
 
         processed, overlay_frames = build_overlay_video(
+            run_dir=run_dir,
             input_video=input_video,
             stroke_csv=stroke_csv,
             segments_csv=segments_csv,
             rp3_clean_csv=args.rp3_clean_csv,
-            rp3_clean_dir=args.rp3_clean_dir,
             output_video=output_video,
             panel_alpha=float(args.panel_alpha),
         )
