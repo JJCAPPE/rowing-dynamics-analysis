@@ -19,7 +19,7 @@ from typing import Any
 
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
+from matplotlib.patches import ConnectionPatch, Patch
 from matplotlib.widgets import Slider, TextBox
 import numpy as np
 import pandas as pd
@@ -115,7 +115,10 @@ def _render_panel_handle(
     handle = pd.to_numeric(stroke_signal[col], errors="coerce").to_numpy(dtype=float)
 
     mask = (time_s >= t_min) & (time_s <= t_max)
-    ax.plot(time_s[mask], handle[mask], color="steelblue", linewidth=1.2, alpha=0.9)
+    ax.plot(
+        time_s[mask], handle[mask], color="steelblue", linewidth=1.2, alpha=0.9,
+        label="Handle distance (smoothed)",
+    )
 
     sig_max = float(np.nanmax(handle[mask])) if mask.any() else 1.0
 
@@ -125,16 +128,22 @@ def _render_panel_handle(
         finish_t = float(ev["finish_time_s"])
         next_catch_t = float(ev["next_catch_time_s"])
 
-        ax.axvspan(catch_t, finish_t, alpha=0.12, color="tab:green", zorder=0)
-        ax.axvspan(finish_t, next_catch_t, alpha=0.08, color="tab:red", zorder=0)
+        ax.axvspan(
+            catch_t, finish_t, alpha=0.12, color="tab:green", zorder=0,
+            label="Drive phase" if i == 0 else None,
+        )
+        ax.axvspan(
+            finish_t, next_catch_t, alpha=0.08, color="tab:red", zorder=0,
+            label="Recovery phase" if i == 0 else None,
+        )
 
         ax.axvline(
             catch_t, color="tab:green", linestyle="--", linewidth=1.0, alpha=0.8,
-            label="catch" if i == 0 else None,
+            label="Catch" if i == 0 else None,
         )
         ax.axvline(
             finish_t, color="tab:red", linestyle="--", linewidth=1.0, alpha=0.8,
-            label="finish" if i == 0 else None,
+            label="Finish" if i == 0 else None,
         )
 
         ax.text(
@@ -145,9 +154,10 @@ def _render_panel_handle(
 
     ax.set_xlim(t_min, t_max)
     ax.set_ylabel("Handle distance (px)")
-    ax.legend(loc="upper right", fontsize=8)
+    ax.legend(loc="upper right", fontsize=7, ncol=3)
     ax.grid(True, alpha=0.2)
     ax.margins(x=0)
+    ax.tick_params(axis="x", labelbottom=False)
 
 
 def _render_panel_durations(
@@ -156,7 +166,7 @@ def _render_panel_durations(
     drive_events: pd.DataFrame,
     page_strokes: list[int],
 ) -> None:
-    bar_h = 0.35
+    bar_h = 0.32
     page_manifest = manifest[manifest["video_stroke_idx"].isin(page_strokes)]
     page_events = drive_events[drive_events["stroke_idx"].isin(page_strokes)]
 
@@ -177,55 +187,99 @@ def _render_panel_durations(
         skipped = int(mrow["rp3_rows_skipped_since_prev"])
 
         y_video = i * 2.0
-        y_rp3 = i * 2.0 + 0.55
+        y_rp3 = i * 2.0 + 0.50
 
+        # Video bars (solid)
         ax.barh(y_video, video_drive, height=bar_h, left=video_catch_t,
                 color="tab:blue", alpha=0.7, edgecolor="white", linewidth=0.5)
         ax.barh(y_video, video_recover, height=bar_h, left=video_catch_t + video_drive,
                 color="tab:orange", alpha=0.5, edgecolor="white", linewidth=0.5)
 
+        # RP3 bars (hatched)
         ax.barh(y_rp3, rp3_drive, height=bar_h, left=video_catch_t,
                 color="tab:blue", alpha=0.4, edgecolor="white", linewidth=0.5, hatch="//")
         ax.barh(y_rp3, rp3_recover, height=bar_h, left=video_catch_t + rp3_drive,
                 color="tab:orange", alpha=0.3, edgecolor="white", linewidth=0.5, hatch="//")
 
+        # Duration text on drive bars
+        if video_drive > 0.3:
+            ax.text(video_catch_t + video_drive / 2.0, y_video,
+                    f"{video_drive:.2f}s", fontsize=6, ha="center", va="center",
+                    color="white", fontweight="bold")
+        if rp3_drive > 0.3:
+            ax.text(video_catch_t + rp3_drive / 2.0, y_rp3,
+                    f"{rp3_drive:.2f}s", fontsize=6, ha="center", va="center",
+                    color="white", fontweight="bold")
+
+        # Duration text on recovery bars
+        rec_x_video = video_catch_t + video_drive + video_recover / 2.0
+        rec_x_rp3 = video_catch_t + rp3_drive + rp3_recover / 2.0
+        if video_recover > 0.5:
+            ax.text(rec_x_video, y_video,
+                    f"{video_recover:.2f}s", fontsize=6, ha="center", va="center",
+                    color="#664400")
+        if rp3_recover > 0.5:
+            ax.text(rec_x_rp3, y_rp3,
+                    f"{rp3_recover:.2f}s", fontsize=6, ha="center", va="center",
+                    color="#664400")
+
+        # Stroke pairing + row labels
         mid_y = (y_video + y_rp3) / 2.0
         ax.text(
-            video_catch_t - 0.12, mid_y,
+            video_catch_t - 0.08, mid_y,
             f"v{stroke_idx}\u2194r{rp3_num}",
             fontsize=7, ha="right", va="center", fontweight="bold",
         )
+        ax.text(video_catch_t + 0.02, y_video - bar_h * 0.55, "Vid",
+                fontsize=5, ha="left", va="top", color="dimgray", fontstyle="italic")
+        ax.text(video_catch_t + 0.02, y_rp3 - bar_h * 0.55, "RP3",
+                fontsize=5, ha="left", va="top", color="dimgray", fontstyle="italic")
 
+        # Catch/finish vertical lines (match panel 1)
+        video_finish_t = video_catch_t + video_drive
+        ax.axvline(video_catch_t, color="tab:green", linestyle="--",
+                   linewidth=0.8, alpha=0.6)
+        ax.axvline(video_finish_t, color="tab:red", linestyle="--",
+                   linewidth=0.8, alpha=0.6)
+
+        # RP3 implied finish line (drive ends at a different point)
+        rp3_finish_t = video_catch_t + rp3_drive
+        if abs(rp3_finish_t - video_finish_t) > 0.02:
+            ax.axvline(rp3_finish_t, color="tab:red", linestyle=":",
+                       linewidth=0.7, alpha=0.4)
+
+        # Error annotation
         right_edge = video_catch_t + max(
             video_drive + video_recover, rp3_drive + rp3_recover
         )
         err_colour = "red" if abs(cum_err) > 0.1 else "gray"
         ax.text(
-            right_edge + 0.10, mid_y,
-            f"\u0394={cum_err:+.3f}s",
-            fontsize=7, ha="left", va="center", color=err_colour,
+            right_edge + 0.08, mid_y,
+            f"cum \u0394={cum_err:+.3f}s",
+            fontsize=6, ha="left", va="center", color=err_colour,
         )
 
         if skipped > 0:
             ax.text(
-                video_catch_t - 0.05, y_rp3 + bar_h + 0.05,
+                video_catch_t - 0.04, y_rp3 + bar_h * 0.5 + 0.25,
                 f"\u26A0 {skipped} skipped",
                 fontsize=6, ha="right", va="bottom", color="darkorange",
             )
 
     legend_elements = [
-        Patch(facecolor="tab:blue", alpha=0.7, label="Video drive"),
-        Patch(facecolor="tab:orange", alpha=0.5, label="Video recovery"),
-        Patch(facecolor="tab:blue", alpha=0.4, hatch="//", label="RP3 drive"),
-        Patch(facecolor="tab:orange", alpha=0.3, hatch="//", label="RP3 recovery"),
+        Patch(facecolor="tab:blue", alpha=0.7, label="Drive (video)"),
+        Patch(facecolor="tab:orange", alpha=0.5, label="Recovery (video)"),
+        Patch(facecolor="tab:blue", alpha=0.4, hatch="//", label="Drive (RP3)"),
+        Patch(facecolor="tab:orange", alpha=0.3, hatch="//", label="Recovery (RP3)"),
     ]
     ax.legend(handles=legend_elements, loc="upper right", fontsize=7, ncol=2)
 
     ax.set_yticks([])
-    ax.set_ylim(-0.8, len(page_strokes) * 2.0 + 0.3)
+    ax.set_ylim(-0.5, len(page_strokes) * 2.0 + 0.3)
     ax.invert_yaxis()
     ax.grid(True, axis="x", alpha=0.2)
-    ax.set_ylabel("Video \u2194 RP3")
+    ax.set_ylabel("Duration comparison")
+    ax.set_xlabel("Time (s)")
 
 
 def _render_panel_force(
@@ -263,14 +317,15 @@ def _render_panel_force(
         s = stroke_seg["s_force"].to_numpy(dtype=float)
         force = stroke_seg["force_raw"].to_numpy(dtype=float)
 
-        ax.plot(s, force, color="tab:blue", linewidth=1.2)
+        ax.plot(s, force, color="tab:blue", linewidth=1.2, label="Force (N)")
         ax.fill_between(s, 0, force, alpha=0.15, color="tab:blue")
 
         if "knee_active_deg" in stroke_seg.columns:
             ax_tw = ax.twinx()
             created_axes.append(ax_tw)
             knee = stroke_seg["knee_active_deg"].to_numpy(dtype=float)
-            ax_tw.plot(s, knee, color="tab:red", linewidth=0.8, alpha=0.7)
+            ax_tw.plot(s, knee, color="tab:red", linewidth=0.8, alpha=0.7,
+                       label="Knee angle (\u00b0)")
             ax_tw.tick_params(axis="y", labelsize=5, colors="tab:red")
             if col_idx == n - 1:
                 ax_tw.set_ylabel("Knee (\u00b0)", fontsize=6, color="tab:red")
@@ -284,8 +339,18 @@ def _render_panel_force(
         ax.tick_params(axis="both", labelsize=5)
         if col_idx == 0:
             ax.set_ylabel("Force (N)", fontsize=7)
-        ax.set_xlabel("s", fontsize=7)
+        ax.set_xlabel("Drive progress", fontsize=6)
         ax.grid(True, alpha=0.2)
+
+        if col_idx == 0:
+            lines_1, labels_1 = ax.get_legend_handles_labels()
+            lines_2, labels_2 = ([], [])
+            if "knee_active_deg" in stroke_seg.columns:
+                lines_2, labels_2 = ax_tw.get_legend_handles_labels()
+            ax.legend(
+                lines_1 + lines_2, labels_1 + labels_2,
+                loc="upper left", fontsize=5, framealpha=0.7,
+            )
 
     return created_axes
 
@@ -324,10 +389,14 @@ class DiagnosticsViewer:
         self.slider: Slider | None = None
         self.textbox: TextBox | None = None
         self._panel_axes: list[plt.Axes] = []
+        self._connection_patches: list[ConnectionPatch] = []
 
     # -- drawing -----------------------------------------------------------
 
     def _clear_panels(self) -> None:
+        for patch in self._connection_patches:
+            patch.remove()
+        self._connection_patches.clear()
         for ax in self._panel_axes:
             ax.remove()
         self._panel_axes.clear()
@@ -346,8 +415,13 @@ class DiagnosticsViewer:
         t_min = max(0.0, float(page_events["catch_time_s"].min()) - 0.5)
         t_max = float(page_events["next_catch_time_s"].max()) + 0.5
 
+        # Nested gridspec: top block (panels 1+2 tight), bottom (panel 3)
+        top_gs = self.main_gs[0].subgridspec(
+            2, 1, height_ratios=[3, 1.5], hspace=0.06,
+        )
+
         # Panel 1
-        ax1 = self.fig.add_subplot(self.main_gs[0])
+        ax1 = self.fig.add_subplot(top_gs[0])
         self._panel_axes.append(ax1)
         _render_panel_handle(
             ax1, self.stroke_signal, self.drive_events, page_strokes, t_min, t_max,
@@ -367,15 +441,32 @@ class DiagnosticsViewer:
         )
 
         # Panel 2
-        ax2 = self.fig.add_subplot(self.main_gs[1], sharex=ax1)
+        ax2 = self.fig.add_subplot(top_gs[1], sharex=ax1)
         self._panel_axes.append(ax2)
         _render_panel_durations(
             ax2, self.manifest, self.drive_events, page_strokes,
         )
 
+        # Connecting vertical lines between panels 1 and 2
+        page_manifest = self.manifest[
+            self.manifest["video_stroke_idx"].isin(page_strokes)
+        ]
+        for _, mrow in page_manifest.iterrows():
+            catch_t = float(mrow["video_catch_time_s"])
+            finish_t = float(mrow["video_finish_time_s"])
+
+            for t_val, color in [(catch_t, "tab:green"), (finish_t, "tab:red")]:
+                con = ConnectionPatch(
+                    xyA=(t_val, 0.0), coordsA=ax1.get_xaxis_transform(),
+                    xyB=(t_val, 1.0), coordsB=ax2.get_xaxis_transform(),
+                    color=color, linestyle="--", linewidth=0.6, alpha=0.35,
+                )
+                self.fig.add_artist(con)
+                self._connection_patches.append(con)
+
         # Panel 3
         force_axes = _render_panel_force(
-            self.main_gs[2], self.fig, self.manifest, self.segments, page_strokes,
+            self.main_gs[1], self.fig, self.manifest, self.segments, page_strokes,
         )
         self._panel_axes.extend(force_axes)
 
@@ -453,11 +544,11 @@ class DiagnosticsViewer:
         self.fig = plt.figure("Match Diagnostics", figsize=(18, 14))
 
         self.main_gs = self.fig.add_gridspec(
-            nrows=3, ncols=1,
+            nrows=2, ncols=1,
             left=0.06, right=0.94,
             top=0.93, bottom=0.12,
-            height_ratios=[3, 2, 2],
-            hspace=0.35,
+            height_ratios=[5, 2],
+            hspace=0.25,
         )
 
         slider_ax = self.fig.add_axes([0.08, 0.03, 0.65, 0.025])
