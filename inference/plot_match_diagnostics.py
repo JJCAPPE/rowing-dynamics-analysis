@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
-"""Diagnostic visualisation for RP3-to-video stroke match alignment.
+"""Interactive diagnostic viewer for RP3-to-video stroke match alignment.
 
-Produces a multi-panel PNG per page (default 10 strokes/page) showing:
+Opens an interactive matplotlib window with:
   Panel 1 – Handle tracking signal with catch/finish lines and drive/recovery shading
   Panel 2 – Video vs RP3 drive/recovery duration bars side-by-side
   Panel 3 – Per-stroke RP3 force curves (small multiples) with angle overlay
+
+Navigate pages with slider, keyboard (LEFT/RIGHT, HOME/END), or scroll wheel.
+Press 's' to save the current page as a PNG.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("MPLCONFIGDIR", str(Path("/tmp/matplotlib")))
-
-import matplotlib
-
-matplotlib.use("Agg")
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
+from matplotlib.widgets import Slider, TextBox
 import numpy as np
 import pandas as pd
 
@@ -107,7 +105,6 @@ def _render_panel_handle(
     t_min: float,
     t_max: float,
 ) -> None:
-    """Panel 1: smoothed handle distance with catch/finish markers."""
     time_s = pd.to_numeric(stroke_signal["time_s"], errors="coerce").to_numpy(dtype=float)
 
     col = (
@@ -159,7 +156,6 @@ def _render_panel_durations(
     drive_events: pd.DataFrame,
     page_strokes: list[int],
 ) -> None:
-    """Panel 2: video vs RP3 drive/recovery duration bars."""
     bar_h = 0.35
     page_manifest = manifest[manifest["video_stroke_idx"].isin(page_strokes)]
     page_events = drive_events[drive_events["stroke_idx"].isin(page_strokes)]
@@ -183,13 +179,11 @@ def _render_panel_durations(
         y_video = i * 2.0
         y_rp3 = i * 2.0 + 0.55
 
-        # Video bars (solid)
         ax.barh(y_video, video_drive, height=bar_h, left=video_catch_t,
                 color="tab:blue", alpha=0.7, edgecolor="white", linewidth=0.5)
         ax.barh(y_video, video_recover, height=bar_h, left=video_catch_t + video_drive,
                 color="tab:orange", alpha=0.5, edgecolor="white", linewidth=0.5)
 
-        # RP3 bars (hatched)
         ax.barh(y_rp3, rp3_drive, height=bar_h, left=video_catch_t,
                 color="tab:blue", alpha=0.4, edgecolor="white", linewidth=0.5, hatch="//")
         ax.barh(y_rp3, rp3_recover, height=bar_h, left=video_catch_t + rp3_drive,
@@ -240,16 +234,22 @@ def _render_panel_force(
     manifest: pd.DataFrame,
     segments: pd.DataFrame,
     page_strokes: list[int],
-) -> None:
-    """Panel 3: small-multiple force curves with knee angle overlay."""
+) -> list[plt.Axes]:
+    """Returns every axes created so they can be removed later."""
     n = len(page_strokes)
     inner_gs = gridspec.GridSpecFromSubplotSpec(1, n, subplot_spec=parent_gs, wspace=0.35)
 
     page_manifest = manifest[manifest["video_stroke_idx"].isin(page_strokes)]
+    created_axes: list[plt.Axes] = []
 
     for col_idx, stroke_idx in enumerate(page_strokes):
         ax = fig.add_subplot(inner_gs[0, col_idx])
-        stroke_seg = segments[segments["video_stroke_idx"] == stroke_idx] if not segments.empty else pd.DataFrame()
+        created_axes.append(ax)
+        stroke_seg = (
+            segments[segments["video_stroke_idx"] == stroke_idx]
+            if not segments.empty
+            else pd.DataFrame()
+        )
 
         if stroke_seg.empty:
             ax.text(
@@ -268,6 +268,7 @@ def _render_panel_force(
 
         if "knee_active_deg" in stroke_seg.columns:
             ax_tw = ax.twinx()
+            created_axes.append(ax_tw)
             knee = stroke_seg["knee_active_deg"].to_numpy(dtype=float)
             ax_tw.plot(s, knee, color="tab:red", linewidth=0.8, alpha=0.7)
             ax_tw.tick_params(axis="y", labelsize=5, colors="tab:red")
@@ -286,112 +287,207 @@ def _render_panel_force(
         ax.set_xlabel("s", fontsize=7)
         ax.grid(True, alpha=0.2)
 
-
-# ---------------------------------------------------------------------------
-# Page composition
-# ---------------------------------------------------------------------------
-
-def _plot_page(
-    *,
-    run_dir: Path,
-    stroke_signal: pd.DataFrame,
-    drive_events: pd.DataFrame,
-    manifest: pd.DataFrame,
-    segments: pd.DataFrame,
-    summary: dict[str, Any],
-    page_strokes: list[int],
-    page_num: int,
-    total_pages: int,
-    output_path: Path,
-    dpi: int,
-) -> Path:
-    page_events = drive_events[drive_events["stroke_idx"].isin(page_strokes)]
-    if page_events.empty:
-        return output_path
-
-    t_min = max(0.0, float(page_events["catch_time_s"].min()) - 0.5)
-    t_max = float(page_events["next_catch_time_s"].max()) + 0.5
-
-    fig = plt.figure(figsize=(18, 14))
-    outer_gs = gridspec.GridSpec(
-        3, 1, figure=fig,
-        height_ratios=[3, 2, 2],
-        hspace=0.35,
-    )
-
-    # Panel 1 – handle tracking
-    ax1 = fig.add_subplot(outer_gs[0])
-    _render_panel_handle(ax1, stroke_signal, drive_events, page_strokes, t_min, t_max)
-
-    mean_cum = summary.get("mean_abs_cum_catch_err_s")
-    subtitle_parts = [
-        f"Page {page_num}/{total_pages}",
-        f"Strokes v{page_strokes[0]}\u2013v{page_strokes[-1]}",
-    ]
-    if mean_cum is not None:
-        subtitle_parts.append(f"mean |cum err| = {mean_cum:.3f}s")
-
-    ax1.set_title(
-        f"Stroke Match Diagnostics \u2014 {run_dir.name}\n"
-        + "  |  ".join(subtitle_parts),
-        fontsize=12, fontweight="bold",
-    )
-
-    # Panel 2 – duration comparison
-    ax2 = fig.add_subplot(outer_gs[1], sharex=ax1)
-    _render_panel_durations(ax2, manifest, drive_events, page_strokes)
-
-    # Panel 3 – force curve small multiples
-    _render_panel_force(outer_gs[2], fig, manifest, segments, page_strokes)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
-    return output_path
+    return created_axes
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Interactive viewer
 # ---------------------------------------------------------------------------
 
-def generate_diagnostics(
-    run_dir: Path,
-    *,
-    strokes_per_page: int = 10,
-    dpi: int = 200,
-) -> list[Path]:
-    data = _load_run_data(run_dir)
-    manifest = data["manifest"]
-    if manifest.empty:
-        print("No matched strokes in manifest.")
-        return []
+class DiagnosticsViewer:
+    def __init__(
+        self,
+        run_dir: Path,
+        data: dict[str, Any],
+        strokes_per_page: int = 10,
+    ) -> None:
+        self.run_dir = run_dir
+        self.manifest: pd.DataFrame = data["manifest"]
+        self.drive_events: pd.DataFrame = data["drive_events"]
+        self.stroke_signal: pd.DataFrame = data["stroke_signal"]
+        self.segments: pd.DataFrame = data["segments"]
+        self.summary: dict[str, Any] = data["summary"]
 
-    all_idxs = sorted(manifest["video_stroke_idx"].unique().tolist())
+        all_idxs = sorted(self.manifest["video_stroke_idx"].unique().tolist())
+        self.pages: list[list[int]] = []
+        for i in range(0, len(all_idxs), strokes_per_page):
+            self.pages.append(all_idxs[i : i + strokes_per_page])
 
-    pages: list[list[int]] = []
-    for i in range(0, len(all_idxs), strokes_per_page):
-        pages.append(all_idxs[i : i + strokes_per_page])
+        self.total_pages = len(self.pages)
+        self.page_index = 0
 
-    output_paths: list[Path] = []
-    for page_0, page_strokes in enumerate(pages):
-        out = run_dir / "inference" / f"match_diagnostics_page_{page_0 + 1:02d}.png"
-        _plot_page(
-            run_dir=run_dir,
-            stroke_signal=data["stroke_signal"],
-            drive_events=data["drive_events"],
-            manifest=manifest,
-            segments=data["segments"],
-            summary=data["summary"],
-            page_strokes=page_strokes,
-            page_num=page_0 + 1,
-            total_pages=len(pages),
-            output_path=out,
-            dpi=dpi,
+        self._ignore_slider = False
+        self._ignore_text = False
+
+        self.fig: plt.Figure | None = None
+        self.main_gs: gridspec.GridSpec | None = None
+        self.slider: Slider | None = None
+        self.textbox: TextBox | None = None
+        self._panel_axes: list[plt.Axes] = []
+
+    # -- drawing -----------------------------------------------------------
+
+    def _clear_panels(self) -> None:
+        for ax in self._panel_axes:
+            ax.remove()
+        self._panel_axes.clear()
+
+    def _draw_page(self) -> None:
+        self._clear_panels()
+
+        page_strokes = self.pages[self.page_index]
+        page_events = self.drive_events[
+            self.drive_events["stroke_idx"].isin(page_strokes)
+        ]
+        if page_events.empty:
+            self.fig.canvas.draw_idle()
+            return
+
+        t_min = max(0.0, float(page_events["catch_time_s"].min()) - 0.5)
+        t_max = float(page_events["next_catch_time_s"].max()) + 0.5
+
+        # Panel 1
+        ax1 = self.fig.add_subplot(self.main_gs[0])
+        self._panel_axes.append(ax1)
+        _render_panel_handle(
+            ax1, self.stroke_signal, self.drive_events, page_strokes, t_min, t_max,
         )
-        output_paths.append(out)
-        print(f"  Saved: {out}")
 
-    return output_paths
+        mean_cum = self.summary.get("mean_abs_cum_catch_err_s")
+        parts = [
+            f"Page {self.page_index + 1}/{self.total_pages}",
+            f"Strokes v{page_strokes[0]}\u2013v{page_strokes[-1]}",
+        ]
+        if mean_cum is not None:
+            parts.append(f"mean |cum err| = {mean_cum:.3f}s")
+        ax1.set_title(
+            f"Stroke Match Diagnostics \u2014 {self.run_dir.name}\n"
+            + "  |  ".join(parts),
+            fontsize=12, fontweight="bold",
+        )
+
+        # Panel 2
+        ax2 = self.fig.add_subplot(self.main_gs[1], sharex=ax1)
+        self._panel_axes.append(ax2)
+        _render_panel_durations(
+            ax2, self.manifest, self.drive_events, page_strokes,
+        )
+
+        # Panel 3
+        force_axes = _render_panel_force(
+            self.main_gs[2], self.fig, self.manifest, self.segments, page_strokes,
+        )
+        self._panel_axes.extend(force_axes)
+
+        self.fig.canvas.draw_idle()
+
+    # -- navigation --------------------------------------------------------
+
+    def _set_page(self, new_index: int) -> None:
+        new_index = max(0, min(self.total_pages - 1, new_index))
+        if new_index == self.page_index and self._panel_axes:
+            return
+        self.page_index = new_index
+        self._draw_page()
+        self._sync_widgets()
+
+    def _sync_widgets(self) -> None:
+        if self.slider is not None:
+            self._ignore_slider = True
+            self.slider.set_val(self.page_index + 1)
+            self._ignore_slider = False
+        if self.textbox is not None:
+            self._ignore_text = True
+            self.textbox.set_val(str(self.page_index + 1))
+            self._ignore_text = False
+
+    def _on_slider_change(self, val: float) -> None:
+        if self._ignore_slider:
+            return
+        self._set_page(int(round(val)) - 1)
+
+    def _on_text_submit(self, text: str) -> None:
+        if self._ignore_text:
+            return
+        try:
+            page = int(text.strip())
+        except ValueError:
+            self._sync_widgets()
+            return
+        if page < 1 or page > self.total_pages:
+            self._sync_widgets()
+            return
+        self._set_page(page - 1)
+
+    def _on_key(self, event: Any) -> None:
+        if event.key in ("right", "d"):
+            self._set_page(self.page_index + 1)
+        elif event.key in ("left", "a"):
+            self._set_page(self.page_index - 1)
+        elif event.key == "home":
+            self._set_page(0)
+        elif event.key == "end":
+            self._set_page(self.total_pages - 1)
+        elif event.key == "s":
+            self._save_current_page()
+
+    def _on_scroll(self, event: Any) -> None:
+        if event.button == "up":
+            self._set_page(self.page_index + 1)
+        elif event.button == "down":
+            self._set_page(self.page_index - 1)
+
+    def _save_current_page(self) -> None:
+        out = (
+            self.run_dir
+            / "inference"
+            / f"match_diagnostics_page_{self.page_index + 1:02d}.png"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        self.fig.savefig(str(out), dpi=200, bbox_inches="tight")
+        print(f"Saved: {out}")
+
+    # -- entry point -------------------------------------------------------
+
+    def show(self) -> None:
+        self.fig = plt.figure("Match Diagnostics", figsize=(18, 14))
+
+        self.main_gs = self.fig.add_gridspec(
+            nrows=3, ncols=1,
+            left=0.06, right=0.94,
+            top=0.93, bottom=0.12,
+            height_ratios=[3, 2, 2],
+            hspace=0.35,
+        )
+
+        slider_ax = self.fig.add_axes([0.08, 0.03, 0.65, 0.025])
+        text_ax = self.fig.add_axes([0.78, 0.03, 0.10, 0.025])
+
+        self.slider = Slider(
+            slider_ax, "Page",
+            1, max(1, self.total_pages),
+            valinit=1, valstep=1,
+            color="steelblue",
+        )
+        self.textbox = TextBox(text_ax, "Go to ", initial="1")
+
+        self.slider.on_changed(self._on_slider_change)
+        self.textbox.on_submit(self._on_text_submit)
+        self.fig.canvas.mpl_connect("key_press_event", self._on_key)
+        self.fig.canvas.mpl_connect("scroll_event", self._on_scroll)
+
+        self._draw_page()
+
+        help_ax = self.fig.add_axes([0.0, 0.0, 1.0, 0.018])
+        help_ax.axis("off")
+        help_ax.text(
+            0.5, 0.5,
+            "LEFT/RIGHT or scroll: navigate pages  |  HOME/END: first/last  |  S: save PNG",
+            transform=help_ax.transAxes,
+            ha="center", va="center", fontsize=8, color="gray",
+        )
+
+        plt.show()
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +496,7 @@ def generate_diagnostics(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate diagnostic plots for RP3-to-video stroke match alignment.",
+        description="Interactive diagnostic viewer for RP3-to-video stroke match alignment.",
     )
     parser.add_argument(
         "--runs-root", type=Path, default=DEFAULT_RUNS_ROOT,
@@ -413,10 +509,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strokes-per-page", type=int, default=10,
         help="Max strokes per diagnostic page (default: 10).",
-    )
-    parser.add_argument(
-        "--dpi", type=int, default=200,
-        help="Output DPI (default: 200).",
     )
     return parser.parse_args()
 
@@ -431,16 +523,18 @@ def main() -> int:
         print("Run inference with --match-rp3 first.")
         return 1
 
+    data = _load_run_data(run_dir)
+    if data["manifest"].empty:
+        print("No matched strokes in manifest.")
+        return 1
+
     print(f"Run: {run_dir.name}")
-    outputs = generate_diagnostics(
-        run_dir,
+    viewer = DiagnosticsViewer(
+        run_dir=run_dir,
+        data=data,
         strokes_per_page=args.strokes_per_page,
-        dpi=args.dpi,
     )
-    if outputs:
-        print(f"Generated {len(outputs)} diagnostic page(s).")
-    else:
-        print("No diagnostic pages generated.")
+    viewer.show()
     return 0
 
 
