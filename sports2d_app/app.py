@@ -779,7 +779,7 @@ def main() -> None:
         pose_model = st.selectbox(
             "Pose model",
             ["Whole_body", "Whole_body_wrist", "Body_with_feet", "Body"],
-            index=0,
+            index=2,
         )
         mode_choice = st.selectbox("Mode", ["lightweight", "balanced", "performance"], index=1)
         det_frequency = st.slider("Detection frequency (frames)", 1, 30, 4, 1)

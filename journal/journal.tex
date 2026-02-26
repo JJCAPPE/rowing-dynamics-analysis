@@ -401,7 +401,59 @@ Figure~\ref{fig:rp3-recreation} shows a per-stroke reconstruction plot of the cl
   \label{fig:rp3-recreation}
 \end{figure}
 
+\paragraph{Inference CLI and pose--force matching.}
+We implemented \texttt{inference\_cli.py} by composing drive-event detection (from Sports2D's \texttt{stroke\_signal.csv}), RP3 curve cleaning (\texttt{expand\_rp3\_curve\_data.py}), and stroke-to-RP3 alignment (\texttt{match\_rp3\_cli.py}). The CLI detects catch/finish events from the handle-distance slope, optionally matches video strokes to RP3 rows via timing and duration costs, and exports per-2.2\,cm segments that align pose angles (from \texttt{angles\_h36m.csv}) with force bins. This unifies the video-derived kinematics and RP3 telemetry into a single matched dataset. Obviously, it is the main tool we will use to match the pose extracted from the user and align it to the per-stroke force-curve data for downstream learning and inference.
 
+\paragraph{First end-to-end inference run and stroke-matching diagnostics.}
+I quickly tried to test and run the whole inference pipeline end-to-end. The goal was to match the RP3 force curves with the video and then infer where the drive phase occurs in the video, compared to each stroke. As shown in Figure~\ref{fig:stroke-matching}, the diagnostics reveal that there is quite a bit of error in the positioning of the stroke---discrepancies between video-derived and RP3-derived drive/recovery durations, and cumulative timing drift across successive strokes. This would throw off all of my data if left unaddressed. There is definitely some learning to do, and we have to figure out a solution (e.g., improved alignment heuristics, synchronization protocols, or alternative matching strategies).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\linewidth]{process-pics/stroke-matching.png}
+  \caption{Stroke match diagnostics: comparison of video-derived vs.\ RP3 drive and recovery phase durations across strokes. Cumulative timing drift and phase misalignment indicate that the current stroke-matching approach needs refinement before downstream inference can be trusted.}
+  \label{fig:stroke-matching}
+\end{figure}
+
+\paragraph{Resolving drive finish overestimation (February 25, 2026).}
+The diagnostic viewer from Figure~\ref{fig:stroke-matching} revealed a systematic problem: the video-inferred drive finish was consistently \emph{later} than the RP3-reported drive finish, by roughly $0.38$\,s on average (${\sim}1.02$\,s video vs.\ ${\sim}0.65$\,s RP3). The root cause is that the original finish detection used the \emph{position maximum} of the smoothed handle signal (\texttt{np.argmax}), but the handle continues to travel forward after the rower stops producing force (momentum/coast phase). The RP3, in contrast, cuts off when chain force drops below a threshold, ending the drive earlier. This ``dead zone'' compressed the normalized drive-progress mapping $s_{\mathrm{video}}$ and diluted pose features at high progress values.
+
+\paragraph{Fix A: velocity-based finish detection.}
+The handle velocity (already computed as the gradient of the smoothed handle signal) was leveraged to define a better finish point. Within each catch-to-catch segment, the algorithm now: (1) finds the peak handle velocity during the drive, (2) scans forward from the peak to find the first index where velocity drops below a fraction $f$ of the peak (controlled by \texttt{--finish-velocity-frac}), and (3) uses that index as the finish. If the threshold is never crossed, it falls back to the position maximum. This fix is independent of RP3 data and improves standalone video processing, the drive-phase overlay video, and the DP matching scores.
+
+\paragraph{Fix B: RP3 drive-time override for segment export.}
+When RP3 data are available, the segment export (\texttt{\_build\_force\_pose\_segments}) can now override the video finish with $t_{\mathrm{finish}} = t_{\mathrm{catch}} + \Delta t_{\mathrm{rp3\_drive}}$, using the RP3 drive duration as ground truth. This is controlled by \texttt{--use-rp3-finish} (enabled by default when RP3 matching is active). It guarantees exact temporal alignment between the video pose window and the RP3 force curve, regardless of residual video detection error.
+
+\paragraph{Tuning and results.}
+Using the \texttt{giacomo-6strk} test run, I swept the velocity fraction parameter $f$ and compared the resulting video drive durations against RP3 ground truth (5 matched strokes). Table~\ref{tab:velocity-tuning} summarizes the results. The original position-maximum method ($f = 0$) had a mean absolute drive error of $0.378$\,s. At $f = 0.85$---where the finish is placed when velocity has decayed to 15\% of its peak---the mean absolute error dropped to $0.029$\,s with a slight positive bias of $+0.020$\,s (only one stroke marginally negative). This represents a 92\% reduction in alignment error.
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{ccc}
+    \hline
+    $f$ (velocity frac) & Mean $|\mathrm{drive\_err}|$ (s) & Mean signed err (s) \\
+    \hline
+    0.00 (pos-max)      & 0.378 & $+0.378$ \\
+    0.15                & 0.285 & $+0.285$ \\
+    0.30                & 0.233 & $+0.233$ \\
+    0.50                & 0.172 & $+0.172$ \\
+    0.70                & 0.103 & $+0.103$ \\
+    0.80                & 0.055 & $+0.055$ \\
+    \textbf{0.85}       & \textbf{0.029} & $\mathbf{+0.020}$ \\
+    0.90                & 0.035 & $-0.020$ \\
+    \hline
+  \end{tabular}
+  \caption{Drive-finish velocity threshold tuning on \texttt{giacomo-6strk} (5 strokes). $f = 0.85$ minimizes absolute error without systematic overcorrection. Higher values begin to place the finish before the RP3 drive end (negative signed error).}
+  \label{tab:velocity-tuning}
+\end{table}
+
+Based on this, the default was set to $f = 0.85$. Combined with Fix~B (RP3 finish override for segment export), the pose-to-force alignment in the exported training data is now exact to within one video frame, resolving the systematic misalignment observed in Figure~\ref{fig:stroke-matching}.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\linewidth]{process-pics/stroke-matching-2.png}
+  \caption{Stroke match diagnostics after velocity-based finish detection ($f = 0.85$). Drive phase boundaries now closely match RP3 drive durations across all five strokes, with mean $|\mathrm{cum\;err}| = 0.058$\,s---a 92\% reduction from the original position-maximum method (cf.\ Figure~\ref{fig:stroke-matching}).}
+  \label{fig:stroke-matching-2}
+\end{figure}
 
 
 \end{document}

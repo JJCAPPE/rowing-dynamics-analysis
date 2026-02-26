@@ -551,6 +551,7 @@ def detect_drive_events(
     min_recover_s: float,
     min_drive_disp_frac: float,
     slope_tol_frac: float,
+    finish_velocity_frac: float = 0.0,
 ) -> DetectionResult:
     if "relative_axis_px" not in df.columns:
         raise ValueError("stroke_signal.csv must contain 'relative_axis_px'.")
@@ -599,8 +600,20 @@ def detect_drive_events(
                 continue
 
             segment = signal_smooth_px[c0 : c1 + 1]
-            finish_rel = int(np.argmax(segment))
-            f0 = int(c0 + finish_rel)
+            pos_max_rel = int(np.argmax(segment))
+            f0 = int(c0 + pos_max_rel)
+
+            if finish_velocity_frac > 0 and pos_max_rel > 1:
+                vel_seg = slope_px_s[c0 : c0 + pos_max_rel + 1]
+                peak_vel_rel = int(np.argmax(vel_seg))
+                peak_vel = float(vel_seg[peak_vel_rel])
+                if peak_vel > 0:
+                    threshold = peak_vel * finish_velocity_frac
+                    after_peak = vel_seg[peak_vel_rel:]
+                    below = np.where(after_peak <= threshold)[0]
+                    if below.size > 0:
+                        f0 = int(c0 + peak_vel_rel + int(below[0]))
+
             if not (c0 < f0 < c1):
                 continue
 
@@ -854,6 +867,7 @@ def _build_force_pose_segments(
     rp3_df: pd.DataFrame,
     active_side: str,
     rp3_clean_csv: Path,
+    use_rp3_finish: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     angles_csv = run_dir / "motionbert" / "angles_h36m.csv"
     if not angles_csv.exists():
@@ -913,6 +927,20 @@ def _build_force_pose_segments(
         ev = events_by_stroke[v_stroke]
         c_frame = int(ev["catch_frame_idx"])
         f_frame = int(ev["finish_frame_idx"])
+
+        if use_rp3_finish:
+            rp3_drive_s = float(mrow["rp3_drive_s"])
+            catch_time = float(ev["catch_time_s"])
+            rp3_finish_time = catch_time + rp3_drive_s
+            time_col = "time_s_recomputed" if "time_s_recomputed" in merged.columns else "time_s"
+            merged_times = pd.to_numeric(merged[time_col], errors="coerce")
+            candidates = merged[
+                (merged["frame_idx"] >= c_frame)
+                & (merged_times <= rp3_finish_time + 1e-6)
+            ]
+            if not candidates.empty:
+                f_frame = int(candidates["frame_idx"].iloc[-1])
+
         drive = merged[(merged["frame_idx"] >= c_frame) & (merged["frame_idx"] <= f_frame)].copy()
         if len(drive) < 2:
             status_row["drop_reason"] = "invalid_drive_window"
@@ -928,7 +956,7 @@ def _build_force_pose_segments(
         dist = _interp_nans(dist)
 
         x0 = float(ev["catch_distance_px"]) if "catch_distance_px" in ev.index else float(np.nanmin(dist))
-        x1 = float(ev["finish_distance_px"]) if "finish_distance_px" in ev.index else float(np.nanmax(dist))
+        x1 = float(np.nanmax(dist))
         if not np.isfinite(x0) or not np.isfinite(x1) or x1 <= x0 + 1e-6:
             x0 = float(np.nanmin(dist))
             x1 = float(np.nanmax(dist))
@@ -1212,6 +1240,26 @@ def _parse_args() -> argparse.Namespace:
         choices=["left", "right"],
         help="Active side to export canonical one-side features from.",
     )
+    parser.add_argument(
+        "--finish-velocity-frac",
+        type=float,
+        default=0.85,
+        help=(
+            "Finish detection: velocity threshold as fraction of peak drive velocity. "
+            "0 = use position maximum (legacy). (default: 0.85)."
+        ),
+    )
+    parser.add_argument(
+        "--use-rp3-finish",
+        action="store_true",
+        default=True,
+        help="Override video finish with catch + rp3_drive_s for segment export (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-use-rp3-finish",
+        action="store_true",
+        help="Disable RP3 finish override for segment export.",
+    )
     parser.add_argument("--max-jump-rows", type=int, default=6, help="Max RP3 row jump between matched strokes.")
     parser.add_argument("--max-interval-error-s", type=float, default=1.2)
     parser.add_argument("--max-cumulative-error-base-s", type=float, default=0.8)
@@ -1236,6 +1284,8 @@ def main() -> int:
     if args.anchor_rp3_row_idx is not None and args.anchor_rp3_stroke_number is not None:
         print("Input error: use only one of --anchor-rp3-row-idx or --anchor-rp3-stroke-number.")
         return 1
+
+    use_rp3_finish = args.use_rp3_finish and not args.no_use_rp3_finish
 
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     selected_run_via_selector = args.run_dir is None
@@ -1289,6 +1339,7 @@ def main() -> int:
             min_recover_s=float(args.min_recover_s),
             min_drive_disp_frac=float(args.min_drive_disp_frac),
             slope_tol_frac=float(args.slope_tol_frac),
+            finish_velocity_frac=float(args.finish_velocity_frac),
         )
     except Exception as exc:
         print(f"Failed to process {stroke_csv}: {exc}")
@@ -1382,6 +1433,7 @@ def main() -> int:
                 rp3_df=rp3_df,
                 active_side=active_side,
                 rp3_clean_csv=rp3_clean_csv_path,
+                use_rp3_finish=use_rp3_finish,
             )
             _validate_force_segment_exports(
                 manifest_df=manifest_df,
@@ -1464,6 +1516,8 @@ def main() -> int:
             "min_recover_s": float(args.min_recover_s),
             "min_drive_disp_frac": float(args.min_drive_disp_frac),
             "slope_tol_frac": float(args.slope_tol_frac),
+            "finish_velocity_frac": float(args.finish_velocity_frac),
+            "use_rp3_finish": use_rp3_finish if run_rp3_matching else None,
         },
         "outputs": {
             "drive_events_csv": str(events_csv),

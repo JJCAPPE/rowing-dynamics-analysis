@@ -19,7 +19,7 @@ MIN_POSE2SIM_VERSION = (0, 10, 40)
 
 @dataclass(frozen=True)
 class Sports2DOptions:
-    pose_model: str = "Whole_body"
+    pose_model: str = "Body_with_feet"
     mode: str = "balanced"
     nb_persons: int | str = 1
     person_ordering: str = "highest_likelihood"
@@ -135,7 +135,7 @@ def _sanitize_pose_model(name: str) -> str:
         return "Body_with_feet"
     if n in {"body", "coco_17"}:
         return "Body"
-    return "Whole_body"
+    return "Body_with_feet"
 
 
 def build_sports2d_config(

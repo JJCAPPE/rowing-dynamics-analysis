@@ -855,7 +855,7 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
     pose_model = _choose_option(
         "Pose model",
         ["Whole_body", "Whole_body_wrist", "Body_with_feet", "Body"],
-        default_index=1,
+        default_index=2,
     )
     nb_persons_raw = _choose_option(
         "Max persons to detect",
