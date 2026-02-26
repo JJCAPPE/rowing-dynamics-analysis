@@ -82,7 +82,8 @@ If not using `--annotate`, provide machine geometry explicitly:
 
 For each run directory:
 
-- `input/`: copied input video used by pipeline.
+- `input/` (when debug videos are enabled): copied/normalized input video used by pipeline.
+- `input_video_source.txt` (when debug videos are disabled in CLI): absolute path to the source video, so the run does not duplicate large input files.
 - `rp3/`: drop folder for run-specific dirty RP3 CSVs (clean `*-clean.csv` files are generated here by inference).
 - `sports2d/`: raw Sports2D outputs (`logs`, TRC, MOT, annotated video).
 - `exports/`: parsed points/angles CSV + NPZ exports.

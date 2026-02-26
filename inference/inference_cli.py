@@ -42,6 +42,7 @@ VIDEO_SUFFIXES = {
     ".m2ts",
     ".wmv",
 }
+INPUT_VIDEO_SOURCE_PATH_FILE = "input_video_source.txt"
 FORCE_COL_RE = re.compile(r"^force_at_([0-9]+(?:\.[0-9]+)?)cm$")
 PDF_AREA_EPS = 1e-9
 PDF_AREA_TOL = 1e-6
@@ -747,17 +748,36 @@ def _events_to_dataframe(events: Iterable[DriveEvent]) -> pd.DataFrame:
 
 def _find_input_video(run_dir: Path) -> Path:
     input_dir = run_dir / "input"
-    if not input_dir.exists() or not input_dir.is_dir():
-        raise FileNotFoundError(f"Input video directory not found: {input_dir}")
+    if input_dir.exists() and input_dir.is_dir():
+        candidates = [
+            path
+            for path in sorted(input_dir.iterdir())
+            if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES
+        ]
+        if candidates:
+            return candidates[0]
 
-    candidates = [
-        path
-        for path in sorted(input_dir.iterdir())
-        if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES
-    ]
-    if not candidates:
-        raise FileNotFoundError(f"No input video found in: {input_dir}")
-    return candidates[0]
+    pointer_path = run_dir / INPUT_VIDEO_SOURCE_PATH_FILE
+    if pointer_path.exists() and pointer_path.is_file():
+        source_text = pointer_path.read_text(encoding="utf-8", errors="ignore").strip()
+        if not source_text:
+            raise FileNotFoundError(f"Input video source pointer is empty: {pointer_path}")
+        source_video = Path(source_text).expanduser().resolve()
+        if not source_video.exists() or not source_video.is_file():
+            raise FileNotFoundError(
+                f"Input video source path from {pointer_path} does not exist: {source_video}"
+            )
+        return source_video
+
+    if not input_dir.exists() or not input_dir.is_dir():
+        raise FileNotFoundError(
+            f"Input video directory not found: {input_dir}. "
+            f"Expected copied input video or {INPUT_VIDEO_SOURCE_PATH_FILE}."
+        )
+    raise FileNotFoundError(
+        f"No input video found in: {input_dir}. "
+        f"Expected copied input video or {INPUT_VIDEO_SOURCE_PATH_FILE}."
+    )
 
 
 def _write_drive_overlay_video(

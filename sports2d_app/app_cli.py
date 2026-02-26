@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -54,6 +55,7 @@ VIDEO_SUFFIXES = {
     ".m2ts",
     ".wmv",
 }
+INPUT_VIDEO_SOURCE_PATH_FILE = "input_video_source.txt"
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,45 @@ def _copy_input_video(src_path: Path, dest_dir: Path) -> Path:
     if src_path.resolve() != dst.resolve():
         shutil.copy2(str(src_path), str(dst))
     return dst
+
+
+def _write_input_video_source_path(run_dir: Path, source_video: Path) -> None:
+    pointer_path = run_dir / INPUT_VIDEO_SOURCE_PATH_FILE
+    pointer_path.write_text(f"{source_video.resolve()}\n", encoding="utf-8")
+
+
+def _prepare_input_video(
+    source_video: Path,
+    run_dir: Path,
+    debug_videos: DebugVideoOptions,
+) -> Tuple[Path, Optional[tempfile.TemporaryDirectory]]:
+    if debug_videos.enabled:
+        input_dir = run_dir / "input"
+        return _copy_input_video(source_video, input_dir), None
+
+    source_video = source_video.resolve()
+    _write_input_video_source_path(run_dir, source_video)
+    print("Debug videos disabled: source video will not be copied into the run folder.")
+
+    rotation = _detect_video_rotation_degrees(source_video)
+    if rotation not in {90, -90, 180, -180}:
+        return source_video, None
+
+    temp_dir = tempfile.TemporaryDirectory(prefix="sports2d-input-")
+    temp_input = Path(temp_dir.name) / f"input{source_video.suffix or '.mp4'}"
+    print(
+        "Detected video rotation metadata "
+        f"({rotation}°); normalizing orientation in temporary storage."
+    )
+    if _transcode_with_baked_rotation(source_video, temp_input):
+        return temp_input, temp_dir
+
+    print(
+        "Warning: failed to normalize orientation in temporary storage. "
+        "Falling back to original source video."
+    )
+    temp_dir.cleanup()
+    return source_video, None
 
 
 def _round_to_right_angle(value: float) -> Optional[int]:
@@ -1058,83 +1099,95 @@ def main() -> int:
     run_dir = RUNS_DIR / f"{video_stem}_{timestamp}"
     rp3_dir = run_dir / "rp3"
     rp3_dir.mkdir(parents=True, exist_ok=True)
-    input_dir = run_dir / "input"
-    input_video = _copy_input_video(source_video, input_dir)
     try:
-        stroke_tracking = _resolve_stroke_annotations(
-            input_video,
-            stroke_tracking,
-            reference_frame_idx=0,
+        input_video, temp_input_dir = _prepare_input_video(
+            source_video,
+            run_dir,
+            debug_videos,
         )
-    except KeyboardInterrupt:
-        print("\nAnnotation cancelled.")
-        return 130
     except Exception as exc:
-        print(f"\nAnnotation failed: {exc}")
+        print(f"\nInput preparation failed: {exc}")
         return 1
 
-    print("\nRunning pipeline...\n")
-
-    progress_state = {"line_len": 0}
-    progress_stream = sys.__stdout__ if sys.__stdout__ is not None else sys.stdout
-
-    def _on_progress(label: str, progress: float) -> None:
-        pct = int(round(progress * 100))
-        width = 30
-        filled = int(round(max(0.0, min(1.0, progress)) * width))
-        bar = "#" * filled + "-" * (width - filled)
-        line = f"[{bar}] {pct:3d}% {label}"
-        pad = " " * max(0, progress_state["line_len"] - len(line))
-        print(f"\r{line}{pad}", end="", file=progress_stream, flush=True)
-        progress_state["line_len"] = len(line)
-
     try:
-        artifacts, summary, overlay_video = _run_pipeline(
-            input_video=input_video,
-            run_dir=run_dir,
-            options=options,
-            stroke_tracking=stroke_tracking,
-            debug_videos=debug_videos,
-            person_index=person_index,
-            progress_callback=_on_progress,
+        try:
+            stroke_tracking = _resolve_stroke_annotations(
+                input_video,
+                stroke_tracking,
+                reference_frame_idx=0,
+            )
+        except KeyboardInterrupt:
+            print("\nAnnotation cancelled.")
+            return 130
+        except Exception as exc:
+            print(f"\nAnnotation failed: {exc}")
+            return 1
+
+        print("\nRunning pipeline...\n")
+
+        progress_state = {"line_len": 0}
+        progress_stream = sys.__stdout__ if sys.__stdout__ is not None else sys.stdout
+
+        def _on_progress(label: str, progress: float) -> None:
+            pct = int(round(progress * 100))
+            width = 30
+            filled = int(round(max(0.0, min(1.0, progress)) * width))
+            bar = "#" * filled + "-" * (width - filled)
+            line = f"[{bar}] {pct:3d}% {label}"
+            pad = " " * max(0, progress_state["line_len"] - len(line))
+            print(f"\r{line}{pad}", end="", file=progress_stream, flush=True)
+            progress_state["line_len"] = len(line)
+
+        try:
+            artifacts, summary, overlay_video = _run_pipeline(
+                input_video=input_video,
+                run_dir=run_dir,
+                options=options,
+                stroke_tracking=stroke_tracking,
+                debug_videos=debug_videos,
+                person_index=person_index,
+                progress_callback=_on_progress,
+            )
+        except Sports2DError as exc:
+            print(f"\nSports2D failed: {exc}")
+            return 2
+        except Exception as exc:
+            print(f"\nPipeline failed: {exc}")
+            return 3
+
+        print()
+        print("\nDone.\n")
+        print(f"Run directory: {artifacts.run_dir}")
+        print(f"RP3 folder (drop dirty RP3 CSV here): {rp3_dir}")
+        print(f"Sports2D annotated video: {artifacts.sports2d_annotated_video}")
+        if artifacts.stroke_signal_csv is not None and artifacts.stroke_signal_csv.exists():
+            print(f"Stroke signal CSV: {artifacts.stroke_signal_csv}")
+        if overlay_video is not None and overlay_video.exists():
+            print(f"3D overlay video: {overlay_video}")
+        else:
+            print("3D overlay video: not available")
+        if summary.angles_plots:
+            for plot_path in summary.angles_plots:
+                print(f"3D angles plot: {plot_path}")
+        else:
+            print("3D angles plot: not available")
+        if summary.angle_plot_errors:
+            for msg in summary.angle_plot_errors:
+                print(f"Plot warning: {msg}")
+        print(f"Results ZIP: {artifacts.zip_path}")
+        """ video_to_open = (
+            overlay_video
+            if overlay_video is not None and overlay_video.exists()
+            else artifacts.sports2d_annotated_video
         )
-    except Sports2DError as exc:
-        print(f"\nSports2D failed: {exc}")
-        return 2
-    except Exception as exc:
-        print(f"\nPipeline failed: {exc}")
-        return 3
+        _open_path(video_to_open) """
 
-    print()
-    print("\nDone.\n")
-    print(f"Run directory: {artifacts.run_dir}")
-    print(f"RP3 folder (drop dirty RP3 CSV here): {rp3_dir}")
-    print(f"Sports2D annotated video: {artifacts.sports2d_annotated_video}")
-    if artifacts.stroke_signal_csv is not None and artifacts.stroke_signal_csv.exists():
-        print(f"Stroke signal CSV: {artifacts.stroke_signal_csv}")
-    if overlay_video is not None and overlay_video.exists():
-        print(f"3D overlay video: {overlay_video}")
-    else:
-        print("3D overlay video: not available")
-    if summary.angles_plots:
-        for plot_path in summary.angles_plots:
-            print(f"3D angles plot: {plot_path}")
-    else:
-        print("3D angles plot: not available")
-    if summary.angle_plot_errors:
-        for msg in summary.angle_plot_errors:
-            print(f"Plot warning: {msg}")
-    print(f"Results ZIP: {artifacts.zip_path}")
-    """ video_to_open = (
-        overlay_video
-        if overlay_video is not None and overlay_video.exists()
-        else artifacts.sports2d_annotated_video
-    )
-    _open_path(video_to_open) """
-
-    if summary.angles_plots:
-        _open_path(summary.angles_plots[0])
-    return 0
+        if summary.angles_plots:
+            _open_path(summary.angles_plots[0])
+        return 0
+    finally:
+        if temp_input_dir is not None:
+            temp_input_dir.cleanup()
 
 if __name__ == "__main__":
     raise SystemExit(main())

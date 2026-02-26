@@ -6,7 +6,7 @@ Post-processing CLIs that run after `sports2d_app` and produce stroke-level infe
 
 - A Sports2D run directory under `runs/<run_name>/`.
 - At minimum: `stroke/stroke_signal.csv`.
-- For overlay video output: `input/<video_file>` must exist in the run.
+- For overlay video output: either `input/<video_file>` exists in the run, or `input_video_source.txt` points to an accessible source video path.
 - For RP3 matching in `inference_cli.py`: put dirty RP3 CSV files in `<run_name>/rp3/`.
 
 ## `inference_cli.py`
