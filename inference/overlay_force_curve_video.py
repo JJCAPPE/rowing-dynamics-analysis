@@ -416,10 +416,16 @@ def build_overlay_video(
     if missing_frame_cols:
         raise ValueError(f"stroke_signal_with_drive_events.csv missing columns: {missing_frame_cols}")
 
-    required_seg_cols = {"video_stroke_idx", "s_force", "force_n", "rp3_row_idx"}
+    required_seg_cols = {"video_stroke_idx", "s_force", "rp3_row_idx"}
     missing_seg_cols = [c for c in required_seg_cols if c not in seg_df.columns]
     if missing_seg_cols:
         raise ValueError(f"rp3_pose_force_matched_segments.csv missing columns: {missing_seg_cols}")
+    if "force_raw" in seg_df.columns:
+        force_col = "force_raw"
+    elif "force_n" in seg_df.columns:
+        force_col = "force_n"
+    else:
+        raise ValueError("rp3_pose_force_matched_segments.csv missing both force_raw and force_n columns.")
 
     rp3_csv_path = _resolve_rp3_clean_csv(
         run_dir=run_dir,
@@ -435,8 +441,8 @@ def build_overlay_video(
     seg_df["video_stroke_idx"] = pd.to_numeric(seg_df["video_stroke_idx"], errors="coerce").astype("Int64")
     seg_df["rp3_row_idx"] = pd.to_numeric(seg_df["rp3_row_idx"], errors="coerce").astype("Int64")
     seg_df["s_force"] = _safe_numeric(seg_df["s_force"])
-    seg_df["force_n"] = _safe_numeric(seg_df["force_n"])
-    seg_df = seg_df.dropna(subset=["video_stroke_idx", "rp3_row_idx", "s_force", "force_n"]).copy()
+    seg_df[force_col] = _safe_numeric(seg_df[force_col])
+    seg_df = seg_df.dropna(subset=["video_stroke_idx", "rp3_row_idx", "s_force", force_col]).copy()
     seg_df["video_stroke_idx"] = seg_df["video_stroke_idx"].astype(int)
     seg_df["rp3_row_idx"] = seg_df["rp3_row_idx"].astype(int)
     if "distance_cm" in seg_df.columns:
@@ -449,7 +455,7 @@ def build_overlay_video(
         grp = seg_df[seg_df["video_stroke_idx"] == stroke_idx].copy()
         g = grp.sort_values("s_force")
         s = g["s_force"].to_numpy(dtype=np.float64)
-        f = g["force_n"].to_numpy(dtype=np.float64)
+        f = g[force_col].to_numpy(dtype=np.float64)
         if len(s) < 2:
             continue
         if "distance_cm" in g.columns:
@@ -544,7 +550,7 @@ def build_overlay_video(
             cv2.line(frame, (x0 + 8, y0 + h - 8), (x0 + w - 8, y0 + h - 8), (130, 130, 130), 1)
             cv2.line(frame, (x0 + 8, y0 + h - 8), (x0 + 8, y0 + 8), (130, 130, 130), 1)
 
-            title = "Force PDF (drive-synced)"
+            title = "Force Curve (drive-synced)" if force_col == "force_raw" else "Force PDF (drive-synced)"
             cv2.putText(frame, title, (x0 + 10, y0 + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1, cv2.LINE_AA)
 
             if np.isfinite(stroke_idx_val):
@@ -636,7 +642,10 @@ def build_overlay_video(
                         cv2.circle(frame, (cx, cy), 4, (0, 255, 255), -1)
                         cv2.circle(frame, (cx, cy), 7, (0, 0, 0), 1)
 
-                    txt = f"stroke {stroke_idx}  drive {s_prog*100:.1f}%  density={y_prog:.3f}"
+                    if force_col == "force_raw":
+                        txt = f"stroke {stroke_idx}  drive {s_prog*100:.1f}%  F={y_prog:.0f}N"
+                    else:
+                        txt = f"stroke {stroke_idx}  drive {s_prog*100:.1f}%  density={y_prog:.3f}"
                     cv2.putText(frame, txt, (x0 + 10, y0 + h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (230, 230, 230), 1, cv2.LINE_AA)
                     overlay_frames += 1
                 else:
@@ -652,7 +661,7 @@ def build_overlay_video(
             else:
                 cv2.putText(
                     frame,
-                    "No matched force PDF for this stroke",
+                    "No matched force curve for this stroke" if force_col == "force_raw" else "No matched force PDF for this stroke",
                     (x0 + 10, y0 + h - 14),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.45,
