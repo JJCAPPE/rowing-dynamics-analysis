@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
@@ -16,6 +16,7 @@ from typing import Callable, List, Optional, Tuple
 from motionbert_3d import run_motionbert
 from overlay_3d import generate_pose3d_overlay_video, get_video_metadata
 from parse_sports2d import (
+    TrcData,
     extract_coco17_from_trc,
     parse_mot_file,
     parse_trc_file,
@@ -26,7 +27,12 @@ from parse_sports2d import (
 from plot_angles import generate_angles_plot
 from progress_utils import ProgressMux
 from runner_sports2d import Sports2DError, Sports2DOptions, run_sports2d
-from stroke_signal import StrokeTrackingOutputs, run_stroke_signal_tracking
+from stroke_signal import (
+    StrokeTrackingOutputs,
+    annotate_handle_and_machine,
+    annotate_machine_only,
+    run_stroke_signal_tracking,
+)
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -277,7 +283,12 @@ def _filter_person_files(files: List[Path], person_index: int) -> List[Path]:
 
 def _zip_outputs(zip_path: Path, paths: List[Path]) -> None:
     zip_path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(
+        zip_path,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=1,
+    ) as zf:
         for path in paths:
             if path.is_dir():
                 for sub in path.rglob("*"):
@@ -288,14 +299,21 @@ def _zip_outputs(zip_path: Path, paths: List[Path]) -> None:
 
 
 def _export_sports2d_outputs(
-    trc_files: List[Path], mot_files: List[Path], exports_dir: Path
+    trc_files: List[Path],
+    mot_files: List[Path],
+    exports_dir: Path,
+    trc_cache: Optional[dict[Path, TrcData]] = None,
 ) -> ExportSummary:
     points_csv: List[Path] = []
     points_npz: List[Path] = []
     angles_csv: List[Path] = []
+    trc_cache = trc_cache if trc_cache is not None else {}
 
     for trc in trc_files:
-        trc_data = parse_trc_file(trc)
+        trc_data = trc_cache.get(trc)
+        if trc_data is None:
+            trc_data = parse_trc_file(trc)
+            trc_cache[trc] = trc_data
         stem = trc.stem
         out_csv = exports_dir / f"{stem}_points.csv"
         out_npz = exports_dir / f"{stem}_points.npz"
@@ -400,21 +418,23 @@ def _run_pipeline(
             "Increase the number of persons to detect or choose a different index."
         )
     step2("Parsing TRC and MOT", 0.35)
+    trc_cache: dict[Path, TrcData] = {}
+    primary_trc = person_trc_files[0]
+    trc_cache[primary_trc] = parse_trc_file(primary_trc)
     summary_base = _export_sports2d_outputs(
         person_trc_files,
         person_mot_files,
         exports_dir,
+        trc_cache=trc_cache,
     )
     step2("Completed", 1.0)
-
-    person_trc = person_trc_files[0]
 
     step3 = progress.span(
         *STEP_SPANS[3],
         prefix="Step 3/7: Preparing MotionBERT inputs",
     )
     step3("Loading TRC data", 0.05)
-    trc_data = parse_trc_file(person_trc)
+    trc_data = trc_cache[primary_trc]
     step3("Extracting COCO-17 keypoints", 0.6)
     j2d_px, _ = extract_coco17_from_trc(trc_data)
     meta = get_video_metadata(result.annotated_video)
@@ -433,6 +453,7 @@ def _run_pipeline(
         clip_len=243,
         flip=False,
         rootrel=False,
+        device=options.device,
         progress_callback=step4,
     )
     step4("Completed", 1.0)
@@ -988,6 +1009,40 @@ def _collect_options() -> Tuple[Path, int, Sports2DOptions, StrokeTrackingOption
     return video_path, person_index, options, stroke_tracking, debug_videos
 
 
+def _resolve_stroke_annotations(
+    video_path: Path,
+    stroke_tracking: StrokeTrackingOptions,
+    *,
+    reference_frame_idx: int = 0,
+) -> StrokeTrackingOptions:
+    if not stroke_tracking.enabled or not stroke_tracking.annotate:
+        return stroke_tracking
+
+    if stroke_tracking.handle_source == "manual":
+        machine_bbox, machine_cable_point, handle_bbox = annotate_handle_and_machine(
+            video_path=video_path,
+            reference_frame_idx=int(reference_frame_idx),
+        )
+        return replace(
+            stroke_tracking,
+            annotate=False,
+            machine_bbox=machine_bbox,
+            machine_cable_point=machine_cable_point,
+            handle_bbox=handle_bbox,
+        )
+
+    machine_bbox, machine_cable_point = annotate_machine_only(
+        video_path=video_path,
+        reference_frame_idx=int(reference_frame_idx),
+    )
+    return replace(
+        stroke_tracking,
+        annotate=False,
+        machine_bbox=machine_bbox,
+        machine_cable_point=machine_cable_point,
+    )
+
+
 def main() -> int:
     try:
         source_video, person_index, options, stroke_tracking, debug_videos = _collect_options()
@@ -1005,6 +1060,18 @@ def main() -> int:
     rp3_dir.mkdir(parents=True, exist_ok=True)
     input_dir = run_dir / "input"
     input_video = _copy_input_video(source_video, input_dir)
+    try:
+        stroke_tracking = _resolve_stroke_annotations(
+            input_video,
+            stroke_tracking,
+            reference_frame_idx=0,
+        )
+    except KeyboardInterrupt:
+        print("\nAnnotation cancelled.")
+        return 130
+    except Exception as exc:
+        print(f"\nAnnotation failed: {exc}")
+        return 1
 
     print("\nRunning pipeline...\n")
 

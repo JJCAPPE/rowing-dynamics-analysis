@@ -619,6 +619,7 @@ def _run_pipeline(
         clip_len=243,
         flip=False,
         rootrel=False,
+        device=options.device,
         progress_callback=step4,
     )
     step4("Completed", 1.0)

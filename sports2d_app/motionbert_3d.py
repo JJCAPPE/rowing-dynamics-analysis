@@ -150,6 +150,30 @@ def _resolve_motionbert_assets() -> Tuple[Path, Path, Path]:
     return motionbert_root, config_path, ckpt_path
 
 
+def _resolve_motionbert_device(device: str) -> str:
+    requested = (device or "auto").strip().lower()
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+
+    if requested in {"cpu", "cuda", "mps"}:
+        if requested == "cuda" and not torch.cuda.is_available():
+            return "cpu"
+        if requested == "mps":
+            mps_backend = getattr(torch.backends, "mps", None)
+            if mps_backend is None or not bool(mps_backend.is_available()):
+                return "cpu"
+        return requested
+
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is not None and bool(mps_backend.is_available()):
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 def run_motionbert(
     J2d_px: np.ndarray,
     width: int,
@@ -159,6 +183,7 @@ def run_motionbert(
     clip_len: int = 243,
     flip: bool = False,
     rootrel: bool = False,
+    device: str = "auto",
     progress_callback: Optional[ProgressCallback] = None,
 ) -> MotionBertOutputs:
     out_dir = Path(out_dir)
@@ -170,7 +195,12 @@ def run_motionbert(
     _emit_progress(progress_callback, "MotionBERT: formatting 2D inputs", 0.08)
     mb_in = prepare_motionbert_input_from_coco(J2d_px, width=width, height=height, mode="pixel")
 
-    _emit_progress(progress_callback, "MotionBERT: running 3D lift", 0.12)
+    resolved_device = _resolve_motionbert_device(device)
+    _emit_progress(
+        progress_callback,
+        f"MotionBERT: running 3D lift ({resolved_device.upper()})",
+        0.12,
+    )
     motionbert_progress = (
         _MappedProgressReporter(progress_callback, start=0.12, end=0.9)
         if progress_callback is not None
@@ -180,6 +210,7 @@ def run_motionbert(
         mb_in.X_h36m17,
         motionbert_root=motionbert_root,
         checkpoint_path=ckpt_path,
+        device=resolved_device,
         clip_len=int(clip_len),
         flip=bool(flip),
         rootrel=bool(rootrel),

@@ -39,6 +39,7 @@ def lift_pose3d_motionbert(
     """
 
     import sys
+    from contextlib import nullcontext
     import torch
     import torch.nn as nn
 
@@ -83,6 +84,7 @@ def lift_pose3d_motionbert(
 
     model_backbone = load_backbone(args)
     model_pos: nn.Module = model_backbone
+    device = str(device).strip().lower() or "cpu"
     model_pos.to(device)
 
     # MotionBERT checkpoints may require full unpickling (PyTorch 2.6 defaults
@@ -113,7 +115,17 @@ def lift_pose3d_motionbert(
 
     prog = get_progress(progress)
     stage = prog.start("Stage F/G: pose3d lift (MotionBERT)", total=len(starts), unit="clip")
-    with torch.no_grad():
+    use_autocast = device in {"mps", "cuda"}
+
+    def _autocast_ctx():
+        if not use_autocast:
+            return nullcontext()
+        try:
+            return torch.autocast(device_type=device, dtype=torch.float16)
+        except Exception:
+            return nullcontext()
+
+    with torch.inference_mode():
         for st in starts:
             ed = min(T, st + clip_len)
             clip = X[st:ed]  # (L,17,3)
@@ -122,14 +134,15 @@ def lift_pose3d_motionbert(
             if getattr(args, "no_conf", False):
                 batch = batch[:, :, :, :2]
 
-            if flip:
-                batch_flip = flip_data(batch)
-                pred1 = model_pos(batch)
-                pred2 = model_pos(batch_flip)
-                pred2 = flip_data(pred2)  # flip back
-                pred = (pred1 + pred2) / 2.0
-            else:
-                pred = model_pos(batch)
+            with _autocast_ctx():
+                if flip:
+                    batch_flip = flip_data(batch)
+                    pred1 = model_pos(batch)
+                    pred2 = model_pos(batch_flip)
+                    pred2 = flip_data(pred2)  # flip back
+                    pred = (pred1 + pred2) / 2.0
+                else:
+                    pred = model_pos(batch)
 
             if rootrel:
                 pred[:, :, 0, :] = 0
