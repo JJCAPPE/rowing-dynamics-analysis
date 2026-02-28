@@ -11,6 +11,13 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from drive_detection import (
+    DetectionResult as _SharedDetectionResult,
+    detect_drive_events as _shared_detect_drive_events,
+    FINISH_METHOD_POSITION_MAX,
+    FINISH_METHOD_VELOCITY_THRESHOLD,
+    VALID_FINISH_METHODS,
+)
 from parse_sports2d import COCO17_NAMES
 from plot_angles import generate_angles_plot
 
@@ -640,148 +647,6 @@ def _smooth_signal(signal: np.ndarray, window: int) -> np.ndarray:
     )
 
 
-def _local_minima_indices(signal: np.ndarray) -> np.ndarray:
-    if signal.size < 3:
-        return np.array([], dtype=int)
-    left = signal[:-2]
-    mid = signal[1:-1]
-    right = signal[2:]
-    return np.where((mid <= left) & (mid <= right))[0] + 1
-
-
-def _local_maxima_indices(signal: np.ndarray) -> np.ndarray:
-    if signal.size < 3:
-        return np.array([], dtype=int)
-    left = signal[:-2]
-    mid = signal[1:-1]
-    right = signal[2:]
-    return np.where((mid >= left) & (mid >= right))[0] + 1
-
-
-def _auto_prominence(signal: np.ndarray, frac: float) -> float:
-    finite = signal[np.isfinite(signal)]
-    if finite.size == 0:
-        return 0.0
-    p95 = float(np.percentile(finite, 95))
-    p05 = float(np.percentile(finite, 5))
-    return max((p95 - p05) * float(frac), 1e-6)
-
-
-def _filter_prominence(
-    signal: np.ndarray,
-    candidates: np.ndarray,
-    *,
-    min_distance: int,
-    prominence: float,
-    mode: str,
-) -> np.ndarray:
-    if prominence <= 0 or candidates.size == 0:
-        return candidates
-    keep: list[int] = []
-    n = signal.size
-    for idx in candidates:
-        left = max(0, idx - min_distance)
-        right = min(n - 1, idx + min_distance)
-        left_vals = signal[left : idx + 1]
-        right_vals = signal[idx : right + 1]
-        if mode == "min":
-            prom = min(float(np.nanmax(left_vals)), float(np.nanmax(right_vals))) - float(signal[idx])
-        else:
-            prom = float(signal[idx]) - max(float(np.nanmin(left_vals)), float(np.nanmin(right_vals)))
-        if np.isfinite(prom) and prom >= prominence:
-            keep.append(int(idx))
-    return np.asarray(keep, dtype=int)
-
-
-def _enforce_min_distance(signal: np.ndarray, candidates: np.ndarray, *, min_distance: int, mode: str) -> np.ndarray:
-    if candidates.size == 0:
-        return candidates
-    ordered = np.sort(candidates)
-    selected: list[int] = []
-    for idx in ordered:
-        if not selected:
-            selected.append(int(idx))
-            continue
-        if idx - selected[-1] >= min_distance:
-            selected.append(int(idx))
-            continue
-        if mode == "min":
-            replace = signal[idx] < signal[selected[-1]]
-        else:
-            replace = signal[idx] > signal[selected[-1]]
-        if replace:
-            selected[-1] = int(idx)
-    return np.asarray(selected, dtype=int)
-
-
-def _detect_stroke_events(
-    signal_px: np.ndarray,
-    *,
-    fps: float,
-    min_stroke_distance_s: float,
-    prominence: Optional[float],
-    prominence_frac: float,
-    smooth_window_s: float,
-) -> StrokeEvents:
-    if signal_px.size < 5:
-        return StrokeEvents(catch_idx=np.array([], dtype=int), finish_idx=np.array([], dtype=int))
-
-    dt = 1.0 / float(max(fps, 1e-6))
-    min_distance = max(2, int(round(float(min_stroke_distance_s) / dt)))
-    smooth_window = max(1, int(round(float(smooth_window_s) / dt)))
-    smooth = _smooth_signal(signal_px, window=smooth_window)
-    prom = float(prominence) if prominence is not None else _auto_prominence(smooth, prominence_frac)
-
-    catches = _local_minima_indices(smooth)
-    catches = _filter_prominence(
-        smooth,
-        catches,
-        min_distance=min_distance,
-        prominence=prom,
-        mode="min",
-    )
-    catches = _enforce_min_distance(smooth, catches, min_distance=min_distance, mode="min")
-    if catches.size < 2:
-        return StrokeEvents(catch_idx=np.array([], dtype=int), finish_idx=np.array([], dtype=int))
-
-    finish_candidates = _local_maxima_indices(smooth)
-    finish_candidates = _filter_prominence(
-        smooth,
-        finish_candidates,
-        min_distance=max(2, min_distance // 2),
-        prominence=max(prom * 0.5, 1e-6),
-        mode="max",
-    )
-    finish_candidates = _enforce_min_distance(
-        smooth,
-        finish_candidates,
-        min_distance=max(2, min_distance // 2),
-        mode="max",
-    )
-
-    finish_idx: list[int] = []
-    kept_catches: list[int] = []
-    for i in range(len(catches) - 1):
-        c0 = int(catches[i])
-        c1 = int(catches[i + 1])
-        local = finish_candidates[(finish_candidates > c0) & (finish_candidates < c1)]
-        if local.size == 0:
-            continue
-        peak = int(local[np.argmax(smooth[local])])
-        kept_catches.append(c0)
-        finish_idx.append(peak)
-
-    if finish_idx:
-        # Ensure the final catch closes the last stroke.
-        final_catch = int(catches[-1])
-        kept_catches.append(final_catch)
-
-    return StrokeEvents(
-        catch_idx=np.asarray(kept_catches, dtype=int),
-        finish_idx=np.asarray(finish_idx, dtype=int),
-    )
-
-
 def _principal_axis(vectors_xy: np.ndarray) -> np.ndarray:
     valid = np.isfinite(vectors_xy).all(axis=1)
     pts = vectors_xy[valid]
@@ -974,10 +839,14 @@ def _build_stroke_dataframe(
     machine_track: TrackSeries,
     machine_cable_centers_xy: np.ndarray,
     m_per_px: Optional[float],
-    min_stroke_distance_s: float,
-    prominence: Optional[float],
-    prominence_frac: float,
     smooth_window_s: float,
+    min_cycle_s: float = 0.8,
+    min_drive_s: float = 0.2,
+    min_recover_s: float = 0.2,
+    min_drive_disp_frac: float = 0.05,
+    slope_tol_frac: float = 0.05,
+    finish_velocity_frac: float = 0.85,
+    finish_method: str = FINISH_METHOD_VELOCITY_THRESHOLD,
 ) -> Tuple[pd.DataFrame, StrokeEvents, np.ndarray]:
     T = int(handle_track.centers_xy.shape[0])
     if machine_track.centers_xy.shape[0] != T:
@@ -996,22 +865,41 @@ def _build_stroke_dataframe(
     rel_axis_smooth = _smooth_signal(rel_axis_px, window=smooth_window).astype(np.float32)
     vel_axis_px_s = np.gradient(rel_axis_smooth.astype(float), dt).astype(np.float32)
 
-    events = _detect_stroke_events(
-        rel_axis_smooth.astype(float),
-        fps=fps,
-        min_stroke_distance_s=min_stroke_distance_s,
-        prominence=prominence,
-        prominence_frac=prominence_frac,
+    frame_idx = np.arange(T, dtype=np.int32)
+    time_s_arr = frame_idx.astype(np.float32) / float(max(fps, 1e-6))
+    tmp_df = pd.DataFrame({
+        "frame_idx": frame_idx,
+        "time_s": time_s_arr,
+        "relative_axis_px": rel_axis_px.astype(np.float32),
+    })
+    detection = _shared_detect_drive_events(
+        tmp_df,
         smooth_window_s=smooth_window_s,
+        min_cycle_s=min_cycle_s,
+        min_drive_s=min_drive_s,
+        min_recover_s=min_recover_s,
+        min_drive_disp_frac=min_drive_disp_frac,
+        slope_tol_frac=slope_tol_frac,
+        finish_velocity_frac=finish_velocity_frac,
+        finish_method=finish_method,
     )
+
+    catch_indices = np.array(
+        [e.catch_frame_idx for e in detection.events], dtype=int
+    )
+    finish_indices = np.array(
+        [e.finish_frame_idx for e in detection.events], dtype=int
+    )
+    if detection.events:
+        last_next = detection.events[-1].next_catch_frame_idx
+        catch_indices = np.append(catch_indices, last_next)
+    events = StrokeEvents(catch_idx=catch_indices, finish_idx=finish_indices)
+
     phase, stroke_idx, drive = _stroke_phase_series(
         events.catch_idx,
         events.finish_idx,
         length=T,
     )
-
-    frame_idx = np.arange(T, dtype=np.int32)
-    time_s = frame_idx.astype(np.float32) / float(max(fps, 1e-6))
 
     catch_flag = np.zeros((T,), dtype=np.uint8)
     finish_flag = np.zeros((T,), dtype=np.uint8)
@@ -1021,7 +909,7 @@ def _build_stroke_dataframe(
     df = pd.DataFrame(
         {
             "frame_idx": frame_idx,
-            "time_s": time_s,
+            "time_s": time_s_arr,
             "handle_cx_px": handle_track.centers_xy[:, 0].astype(np.float32),
             "handle_cy_px": handle_track.centers_xy[:, 1].astype(np.float32),
             "machine_cx_px": machine_track.centers_xy[:, 0].astype(np.float32),
@@ -1030,7 +918,8 @@ def _build_stroke_dataframe(
             "machine_cable_cy_px": machine_cable_centers_xy[:, 1].astype(np.float32),
             "handle_status": handle_track.status.astype(np.uint8),
             "machine_status": machine_track.status.astype(np.uint8),
-            "relative_axis_px": rel_axis_smooth.astype(np.float32),
+            "relative_axis_px": rel_axis_px.astype(np.float32),
+            "relative_axis_px_smooth": rel_axis_smooth.astype(np.float32),
             "relative_perp_px": rel_perp_px.astype(np.float32),
             "velocity_axis_px_s": vel_axis_px_s.astype(np.float32),
             "stroke_idx": stroke_idx.astype(np.int32),
@@ -1088,14 +977,22 @@ def run_stroke_signal_tracking(
     m_per_px: Optional[float] = None,
     ema_alpha: float = 0.4,
     min_points: int = 10,
-    min_stroke_distance_s: float = 0.8,
-    prominence: Optional[float] = None,
-    prominence_frac: float = 0.1,
     smooth_window_s: float = 0.2,
+    min_cycle_s: float = 0.8,
+    min_drive_s: float = 0.2,
+    min_recover_s: float = 0.2,
+    min_drive_disp_frac: float = 0.05,
+    slope_tol_frac: float = 0.05,
+    finish_velocity_frac: float = 0.85,
+    finish_method: str = FINISH_METHOD_VELOCITY_THRESHOLD,
     create_plot: bool = True,
     plot_video_path: Optional[Path] = None,
     debug_video: bool = False,
     debug_video_max_seconds: Optional[float] = None,
+    # Legacy params (ignored, kept for API compatibility)
+    min_stroke_distance_s: Optional[float] = None,
+    prominence: Optional[float] = None,
+    prominence_frac: Optional[float] = None,
 ) -> StrokeTrackingOutputs:
     video_path = Path(video_path)
     out_dir = Path(out_dir)
@@ -1135,10 +1032,14 @@ def run_stroke_signal_tracking(
         machine_track=machine_track,
         machine_cable_centers_xy=machine_cable_centers_xy,
         m_per_px=m_per_px,
-        min_stroke_distance_s=float(min_stroke_distance_s),
-        prominence=prominence,
-        prominence_frac=float(prominence_frac),
         smooth_window_s=float(smooth_window_s),
+        min_cycle_s=float(min_cycle_s),
+        min_drive_s=float(min_drive_s),
+        min_recover_s=float(min_recover_s),
+        min_drive_disp_frac=float(min_drive_disp_frac),
+        slope_tol_frac=float(slope_tol_frac),
+        finish_velocity_frac=float(finish_velocity_frac),
+        finish_method=finish_method,
     )
 
     stroke_csv = out_dir / "stroke_signal.csv"
@@ -1301,28 +1202,53 @@ def _parse_args() -> argparse.Namespace:
         help="Minimum LK points per frame before re-initialization (default: 10)",
     )
     parser.add_argument(
-        "--min-stroke-distance-s",
-        type=float,
-        default=0.8,
-        help="Minimum separation between catches in seconds (default: 0.8)",
-    )
-    parser.add_argument(
-        "--prominence",
-        type=float,
-        default=None,
-        help="Optional prominence threshold in pixels for catch detection",
-    )
-    parser.add_argument(
-        "--prominence-frac",
-        type=float,
-        default=0.1,
-        help="Auto prominence fraction of signal range (default: 0.1)",
-    )
-    parser.add_argument(
         "--smooth-window-s",
         type=float,
         default=0.2,
-        help="Smoothing window in seconds for stroke signal (default: 0.2)",
+        help="Smoothing window in seconds for display and detection (default: 0.2)",
+    )
+    parser.add_argument(
+        "--min-cycle-s",
+        type=float,
+        default=0.8,
+        help="Minimum time between consecutive catches (default: 0.8)",
+    )
+    parser.add_argument(
+        "--min-drive-s",
+        type=float,
+        default=0.2,
+        help="Minimum drive duration from catch to finish (default: 0.2)",
+    )
+    parser.add_argument(
+        "--min-recover-s",
+        type=float,
+        default=0.2,
+        help="Minimum recovery duration from finish to next catch (default: 0.2)",
+    )
+    parser.add_argument(
+        "--min-drive-disp-frac",
+        type=float,
+        default=0.05,
+        help="Minimum drive displacement as fraction of signal span (default: 0.05)",
+    )
+    parser.add_argument(
+        "--slope-tol-frac",
+        type=float,
+        default=0.05,
+        help="Flat-slope tolerance as fraction of slope std (default: 0.05)",
+    )
+    parser.add_argument(
+        "--finish-velocity-frac",
+        type=float,
+        default=0.85,
+        help="Velocity threshold as fraction of peak drive velocity (default: 0.85)",
+    )
+    parser.add_argument(
+        "--finish-method",
+        type=str,
+        default=FINISH_METHOD_VELOCITY_THRESHOLD,
+        choices=sorted(VALID_FINISH_METHODS),
+        help=f"Finish detection method (default: {FINISH_METHOD_VELOCITY_THRESHOLD})",
     )
     parser.add_argument(
         "--angles-csv",
@@ -1363,10 +1289,14 @@ def main() -> None:
         m_per_px=args.m_per_px,
         ema_alpha=float(args.ema_alpha),
         min_points=int(args.min_points),
-        min_stroke_distance_s=float(args.min_stroke_distance_s),
-        prominence=args.prominence,
-        prominence_frac=float(args.prominence_frac),
         smooth_window_s=float(args.smooth_window_s),
+        min_cycle_s=float(args.min_cycle_s),
+        min_drive_s=float(args.min_drive_s),
+        min_recover_s=float(args.min_recover_s),
+        min_drive_disp_frac=float(args.min_drive_disp_frac),
+        slope_tol_frac=float(args.slope_tol_frac),
+        finish_velocity_frac=float(args.finish_velocity_frac),
+        finish_method=str(args.finish_method),
         create_plot=not args.no_plot,
         plot_video_path=Path(args.video),
         debug_video=bool(args.debug_video),

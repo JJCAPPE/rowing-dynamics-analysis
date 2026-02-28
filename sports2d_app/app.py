@@ -75,10 +75,14 @@ class StrokeTrackingOptions:
     m_per_px: Optional[float] = None
     ema_alpha: float = 0.4
     min_points: int = 10
-    min_stroke_distance_s: float = 0.8
-    prominence: Optional[float] = None
-    prominence_frac: float = 0.1
     smooth_window_s: float = 0.2
+    min_cycle_s: float = 0.8
+    min_drive_s: float = 0.2
+    min_recover_s: float = 0.2
+    min_drive_disp_frac: float = 0.05
+    slope_tol_frac: float = 0.05
+    finish_velocity_frac: float = 0.85
+    finish_method: str = "velocity_threshold"
     debug_video: bool = True
 
 
@@ -652,10 +656,14 @@ def _run_pipeline(
                 m_per_px=stroke_tracking.m_per_px,
                 ema_alpha=stroke_tracking.ema_alpha,
                 min_points=stroke_tracking.min_points,
-                min_stroke_distance_s=stroke_tracking.min_stroke_distance_s,
-                prominence=stroke_tracking.prominence,
-                prominence_frac=stroke_tracking.prominence_frac,
                 smooth_window_s=stroke_tracking.smooth_window_s,
+                min_cycle_s=stroke_tracking.min_cycle_s,
+                min_drive_s=stroke_tracking.min_drive_s,
+                min_recover_s=stroke_tracking.min_recover_s,
+                min_drive_disp_frac=stroke_tracking.min_drive_disp_frac,
+                slope_tol_frac=stroke_tracking.slope_tol_frac,
+                finish_velocity_frac=stroke_tracking.finish_velocity_frac,
+                finish_method=stroke_tracking.finish_method,
                 create_plot=True,
                 plot_video_path=result.annotated_video,
                 debug_video=stroke_tracking.debug_video,

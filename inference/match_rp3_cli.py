@@ -24,11 +24,12 @@ class MatchConfig:
     max_interval_error_s: float
     max_cumulative_error_base_s: float
     max_cumulative_error_per_s: float
-    w_drive: float
-    w_recover: float
-    w_interval: float
-    w_cumulative: float
-    w_skip: float
+    max_abs_cum_error_s: float = 2.0
+    w_drive: float = 0.4
+    w_recover: float = 0.4
+    w_interval: float = 1.0
+    w_cumulative: float = 1.0
+    w_skip: float = 0.08
 
 
 @dataclass(frozen=True)
@@ -352,6 +353,8 @@ def _build_match_manifest(
         for j in range(min_row, m):
             r_rel = float(rp3_rel[j])
             cum_err = abs(v_rel - r_rel)
+            if cum_err > cfg.max_abs_cum_error_s:
+                continue
             allowed_cum_err = cfg.max_cumulative_error_base_s + cfg.max_cumulative_error_per_s * max(0.0, v_rel)
             if cum_err > allowed_cum_err:
                 continue
@@ -456,6 +459,21 @@ def _build_match_manifest(
         )
 
     manifest = pd.DataFrame(rows)
+
+    if not manifest.empty:
+        abs_cum = manifest["cum_catch_err_s"].abs()
+        max_abs_cum = float(abs_cum.max())
+        mean_abs_cum = float(abs_cum.mean())
+        warn_threshold = cfg.max_abs_cum_error_s * 0.8
+        if max_abs_cum > warn_threshold:
+            import logging
+            logging.warning(
+                "RP3 match cumulative drift is high: max |cum_err|=%.3fs, "
+                "mean |cum_err|=%.3fs (hard cap=%.1fs). Late strokes may be "
+                "misaligned. Consider tighter tolerances or re-anchoring.",
+                max_abs_cum, mean_abs_cum, cfg.max_abs_cum_error_s,
+            )
+
     return MatchResult(
         manifest=manifest,
         total_score=total_score,
@@ -480,6 +498,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-interval-error-s", type=float, default=1.2)
     parser.add_argument("--max-cumulative-error-base-s", type=float, default=0.8)
     parser.add_argument("--max-cumulative-error-per-s", type=float, default=0.08)
+    parser.add_argument("--max-abs-cum-error-s", type=float, default=2.0,
+                        help="Hard cap on absolute cumulative timing error (default: 2.0s).")
     parser.add_argument("--w-drive", type=float, default=0.4)
     parser.add_argument("--w-recover", type=float, default=0.4)
     parser.add_argument("--w-interval", type=float, default=1.0)
@@ -512,6 +532,7 @@ def main() -> int:
             max_interval_error_s=float(args.max_interval_error_s),
             max_cumulative_error_base_s=float(args.max_cumulative_error_base_s),
             max_cumulative_error_per_s=float(args.max_cumulative_error_per_s),
+            max_abs_cum_error_s=float(args.max_abs_cum_error_s),
             w_drive=float(args.w_drive),
             w_recover=float(args.w_recover),
             w_interval=float(args.w_interval),
