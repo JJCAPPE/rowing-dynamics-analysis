@@ -455,7 +455,6 @@ Based on this, the default was set to $f = 0.85$. Combined with Fix~B (RP3 finis
   \label{fig:stroke-matching-2}
 \end{figure}
 
-
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.9\linewidth]{process-pics/giacomo-stroke-matching.png}
@@ -466,25 +465,22 @@ Based on this, the default was set to $f = 0.85$. Combined with Fix~B (RP3 finis
 \paragraph{Assessment and audit update (February 28, 2026): implementation plan now in progress.}
 Following the latest audit, we confirmed that the dominant remaining mismatch is not a single bug but a stack of interacting timing/design issues in the stroke-signal and inference path. The highest-severity findings were:
 \begin{itemize}
-  \item \textbf{HIGH --- Double smoothing:} \texttt{stroke\_signal.csv} currently stores an already-smoothed signal (25-frame rolling mean at \texttt{smooth\_window\_s=0.2}), and the inference path smooths again (11-frame moving average at \texttt{smooth\_window\_s=0.08}), yielding roughly 36 frames of cascaded averaging at 120\,FPS and blunted catch/finish transitions.
-  \item \textbf{HIGH --- Dual detector inconsistency:} \texttt{stroke\_signal.py} and \texttt{inference\_cli.py} use different event detectors and disagree substantially (including failed detections and large finish-time disagreement where both detect).
-  \item \textbf{HIGH --- Finish mismatch source:} velocity-threshold finish can be placed 28--46 frames before position-maximum finish in some runs, creating a primary visual mismatch channel.
-  \item \textbf{HIGH --- RP3 cumulative drift:} long-piece matching can accumulate large timing error (e.g., multi-second drift), indicating DP tolerances are too permissive without a hard cumulative-error gate.
-  \item \textbf{MEDIUM --- LK tracking drift:} machine-reference drift contributes noise but appears secondary after relative-signal cancellation.
-  \item \textbf{CONFIRMED ZERO --- Butterworth delay:} Pose2Sim uses zero-phase \texttt{filtfilt}, so no filter-induced timing shift is introduced.
-  \item \textbf{LOW --- Axis sign / wrist midpoint / frame timing:} not primary causes in the audited runs.
+  \item \textbf{Double smoothing:} \texttt{stroke\_signal.csv} currently stores an already-smoothed signal (25-frame rolling mean at \texttt{smooth\_window\_s=0.2}), and the inference path smooths again (11-frame moving average at \texttt{smooth\_window\_s=0.08}), yielding roughly 36 frames of cascaded averaging at 120\,FPS and blunted catch/finish transitions.
+  \item \textbf{Dual detector inconsistency:} \texttt{stroke\_signal.py} and \texttt{inference\_cli.py} use different event detectors and disagree substantially (including failed detections and large finish-time disagreement where both detect).
+  \item \textbf{Finish mismatch source:} velocity-threshold finish can be placed 28--46 frames before position-maximum finish in some runs, creating a primary visual mismatch channel.
+  \item \textbf{RP3 cumulative drift:} long-piece matching can accumulate large timing error (e.g., multi-second drift), indicating DP tolerances are too permissive without a hard cumulative-error gate.
+  \item \textbf{LK tracking drift:} machine-reference drift contributes noise but appears secondary after relative-signal cancellation.
+  \item \textbf{Butterworth delay:} Pose2Sim uses zero-phase \texttt{filtfilt}, so no filter-induced timing shift is introduced.
+  \item \textbf{Axis sign / wrist midpoint / frame timing:} not primary causes in the audited runs.
 \end{itemize}
 
-\paragraph{Planned fixes (active implementation sequence).}
+\paragraph{Fixes implemented}
 The implementation is proceeding in four coordinated fixes:
 \begin{enumerate}
-  \item \textbf{Fix 1 (HIGH): eliminate double smoothing.} In \texttt{\_build\_stroke\_dataframe()}, store raw projection as \texttt{relative\_axis\_px}; keep explicit \texttt{relative\_axis\_px\_smooth} for columns that require smoothing.
-  \item \textbf{Fix 2 (HIGH): unify detector path.} Move detection logic into a shared module (\texttt{sports2d\_app/drive\_detection.py}) and make both \texttt{stroke\_signal.py} and \texttt{inference\_cli.py} call the same detector, with one controlled smoothing pass.
-  \item \textbf{Fix 3 (HIGH): expose finish method.} Add a clean \texttt{finish\_method} switch (\texttt{velocity\_threshold} vs.\ \texttt{position\_max}) in the shared detector and expose corresponding CLI flags for side-by-side diagnostics.
-  \item \textbf{Fix 4 (HIGH): hard-fail cumulative drift.} Add \texttt{--max-abs-cum-error-s} as a hard DP gate, tighten cumulative-growth defaults, and surface per-stroke cumulative error in summary output.
+  \item \textbf{Fix 1: eliminate double smoothing.} In \texttt{\_build\_stroke\_dataframe()}, store raw projection as \texttt{relative\_axis\_px}; keep explicit \texttt{relative\_axis\_px\_smooth} for columns that require smoothing.
+  \item \textbf{Fix 2: unify detector path.} Move detection logic into a shared module (\texttt{sports2d\_app/drive\_detection.py}) and make both \texttt{stroke\_signal.py} and \texttt{inference\_cli.py} call the same detector, with one controlled smoothing pass.
+  \item \textbf{Fix 3: expose finish method.} Add a clean \texttt{finish\_method} switch (\texttt{velocity\_threshold} vs.\ \texttt{position\_max}) in the shared detector and expose corresponding CLI flags for side-by-side diagnostics.
+  \item \textbf{Fix 4: hard-fail cumulative drift.} Add \texttt{--max-abs-cum-error-s} as a hard DP gate, tighten cumulative-growth defaults, and surface per-stroke cumulative error in summary output.
 \end{enumerate}
-
-\paragraph{Execution order and dependency rationale.}
-Fix~1 must land first because it changes the semantics of the CSV signal consumed downstream. Fix~2 depends on Fix~1 (shared detector expects raw signal input). After detector unification, Fixes~3 and~4 can proceed independently. Final validation is then run on both the short controlled run and the 10-minute piece to confirm reduced finish mismatch and bounded cumulative drift.
 
 \end{document}
