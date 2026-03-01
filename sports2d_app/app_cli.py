@@ -8,14 +8,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import zipfile
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from motionbert_3d import run_motionbert
-from overlay_3d import generate_pose3d_overlay_video, get_video_metadata
+from overlay_3d import get_video_metadata
 from parse_sports2d import (
     TrcData,
     extract_coco17_from_trc,
@@ -70,7 +69,6 @@ class RunArtifacts:
     stroke_dir: Optional[Path]
     stroke_signal_csv: Optional[Path]
     stroke_signal_npz: Optional[Path]
-    zip_path: Path
 
 
 @dataclass(frozen=True)
@@ -132,26 +130,6 @@ def _sanitize_stem(name: str) -> str:
     return safe or "video"
 
 
-def _copy_input_video(src_path: Path, dest_dir: Path) -> Path:
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dst = dest_dir / f"input{src_path.suffix or '.mp4'}"
-    rotation = _detect_video_rotation_degrees(src_path)
-    if rotation in {90, -90, 180, -180}:
-        print(
-            "Detected video rotation metadata "
-            f"({rotation}°); normalizing orientation for processing."
-        )
-        if _transcode_with_baked_rotation(src_path, dst):
-            return dst
-        print(
-            "Warning: failed to normalize orientation. "
-            "Falling back to raw file copy."
-        )
-    if src_path.resolve() != dst.resolve():
-        shutil.copy2(str(src_path), str(dst))
-    return dst
-
-
 def _write_input_video_source_path(run_dir: Path, source_video: Path) -> None:
     pointer_path = run_dir / INPUT_VIDEO_SOURCE_PATH_FILE
     pointer_path.write_text(f"{source_video.resolve()}\n", encoding="utf-8")
@@ -162,13 +140,9 @@ def _prepare_input_video(
     run_dir: Path,
     debug_videos: DebugVideoOptions,
 ) -> Tuple[Path, Optional[tempfile.TemporaryDirectory]]:
-    if debug_videos.enabled:
-        input_dir = run_dir / "input"
-        return _copy_input_video(source_video, input_dir), None
-
     source_video = source_video.resolve()
     _write_input_video_source_path(run_dir, source_video)
-    print("Debug videos disabled: source video will not be copied into the run folder.")
+    print("Source video will not be copied into the run folder.")
 
     rotation = _detect_video_rotation_degrees(source_video)
     if rotation not in {90, -90, 180, -180}:
@@ -326,23 +300,6 @@ def _filter_person_files(files: List[Path], person_index: int) -> List[Path]:
     return sorted([p for p in files if pattern.search(p.stem)], key=lambda p: p.name)
 
 
-def _zip_outputs(zip_path: Path, paths: List[Path]) -> None:
-    zip_path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(
-        zip_path,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=1,
-    ) as zf:
-        for path in paths:
-            if path.is_dir():
-                for sub in path.rglob("*"):
-                    if sub.is_file():
-                        zf.write(sub, sub.relative_to(zip_path.parent))
-            elif path.is_file():
-                zf.write(path, path.relative_to(zip_path.parent))
-
-
 def _export_sports2d_outputs(
     trc_files: List[Path],
     mot_files: List[Path],
@@ -415,9 +372,23 @@ STEP_SPANS: dict[int, Tuple[float, float]] = {
     3: (0.60, 0.64),
     4: (0.64, 0.80),
     5: (0.80, 0.88),
-    6: (0.88, 0.97),
-    7: (0.97, 1.00),
+    6: (0.88, 1.00),
 }
+
+
+def _prune_video_artifacts(run_dir: Path, keep_paths: List[Path]) -> None:
+    keep_resolved = {p.resolve() for p in keep_paths if p is not None and p.exists()}
+    for path in run_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in VIDEO_SUFFIXES:
+            continue
+        if path.resolve() in keep_resolved:
+            continue
+        try:
+            path.unlink()
+        except Exception:
+            pass
 
 def _run_pipeline(
     *,
@@ -556,7 +527,7 @@ def _run_pipeline(
 
     step6 = progress.span(
         *STEP_SPANS[6],
-        prefix="Step 6/7: Rendering 3D overlay + plots",
+        prefix="Step 6/6: Finalizing outputs",
     )
     angles_plots: List[Path] = []
     angle_plot_errors: List[str] = []
@@ -574,42 +545,18 @@ def _run_pipeline(
     if stroke_error is not None:
         angle_plot_errors.append(f"stroke tracking: {stroke_error}")
 
-    overlay_video: Optional[Path] = None
-    if debug_videos.enabled:
-        overlay_video = overlay_dir / "pose3d_overlay.mp4"
-
-        def _overlay_progress(label: str, prog: float) -> None:
-            step6(label, 0.3 + 0.7 * max(0.0, min(1.0, prog)))
-
-        generate_pose3d_overlay_video(
-            video_path=result.annotated_video,
-            pose3d_npz=mb_outputs.pose3d_npz,
-            out_video_path=overlay_video,
-            stroke_signal_npz=(
-                stroke_outputs.stroke_npz
-                if stroke_outputs is not None and stroke_outputs.stroke_npz.exists()
-                else None
-            ),
-            max_duration_s=debug_videos.max_seconds,
-            progress_callback=_overlay_progress,
-        )
-    else:
-        step6("Overlay video skipped (debug videos disabled)", 1.0)
-    step6("Completed", 1.0)
-
-    step7 = progress.span(
-        *STEP_SPANS[7],
-        prefix="Step 7/7: Packaging outputs",
+    step6("Removing non-debug videos", 0.8)
+    debug_video_path = (
+        stroke_outputs.debug_video
+        if stroke_outputs is not None and stroke_outputs.debug_video is not None
+        else None
     )
-    step7("Creating ZIP archive", 0.2)
-    zip_path = run_dir / "results.zip"
-    zip_inputs = [result.output_dir, exports_dir, motionbert_dir]
-    if overlay_video is not None and overlay_video.exists():
-        zip_inputs.append(overlay_dir)
-    if stroke_outputs is not None:
-        zip_inputs.append(stroke_dir)
-    _zip_outputs(zip_path, zip_inputs)
-    step7("Completed", 1.0)
+    _prune_video_artifacts(
+        run_dir,
+        keep_paths=[debug_video_path] if debug_video_path is not None else [],
+    )
+    overlay_video: Optional[Path] = None
+    step6("Completed", 1.0)
 
     artifacts = RunArtifacts(
         run_dir=run_dir,
@@ -622,7 +569,6 @@ def _run_pipeline(
         stroke_dir=stroke_dir if stroke_outputs is not None else None,
         stroke_signal_csv=stroke_outputs.stroke_csv if stroke_outputs is not None else None,
         stroke_signal_npz=stroke_outputs.stroke_npz if stroke_outputs is not None else None,
-        zip_path=zip_path,
     )
 
     summary = ExportSummary(
@@ -1167,7 +1113,10 @@ def main() -> int:
         print("\nDone.\n")
         print(f"Run directory: {artifacts.run_dir}")
         print(f"RP3 folder (drop dirty RP3 CSV here): {rp3_dir}")
-        print(f"Sports2D annotated video: {artifacts.sports2d_annotated_video}")
+        if artifacts.sports2d_annotated_video.exists():
+            print(f"Sports2D annotated video: {artifacts.sports2d_annotated_video}")
+        else:
+            print("Sports2D annotated video: removed to save space")
         if artifacts.stroke_signal_csv is not None and artifacts.stroke_signal_csv.exists():
             print(f"Stroke signal CSV: {artifacts.stroke_signal_csv}")
         if overlay_video is not None and overlay_video.exists():
@@ -1182,7 +1131,6 @@ def main() -> int:
         if summary.angle_plot_errors:
             for msg in summary.angle_plot_errors:
                 print(f"Plot warning: {msg}")
-        print(f"Results ZIP: {artifacts.zip_path}")
         """ video_to_open = (
             overlay_video
             if overlay_video is not None and overlay_video.exists()
