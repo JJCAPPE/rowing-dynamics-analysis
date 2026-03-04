@@ -1041,8 +1041,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--anchor-video-stroke-idx",
         type=int,
-        default=0,
-        help="Video stroke index to anchor matching from (default: 0).",
+        default=1,
+        help="Video stroke index to anchor matching from (default: 1).",
     )
     parser.add_argument(
         "--anchor-rp3-row-idx",
@@ -1099,12 +1099,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable RP3 finish override for segment export.",
     )
-    parser.add_argument("--max-jump-rows", type=int, default=6, help="Max RP3 row jump between matched strokes.")
-    parser.add_argument("--max-interval-error-s", type=float, default=1.2)
-    parser.add_argument("--max-cumulative-error-base-s", type=float, default=0.8)
-    parser.add_argument("--max-cumulative-error-per-s", type=float, default=0.08)
-    parser.add_argument("--max-abs-cum-error-s", type=float, default=2.0,
-                        help="Hard cap on absolute cumulative timing error (default: 2.0s).")
+    parser.add_argument("--max-jump-rows", type=int, default=10, help="Max RP3 row jump between matched strokes.")
+    parser.add_argument("--max-interval-error-s", type=float, default=2.0)
+    parser.add_argument("--max-cumulative-error-base-s", type=float, default=1.5)
+    parser.add_argument("--max-cumulative-error-per-s", type=float, default=0.15)
+    parser.add_argument("--max-abs-cum-error-s", type=float, default=4.0,
+                        help="Hard cap on absolute cumulative timing error (default: 4.0s).")
     parser.add_argument("--w-drive", type=float, default=0.4)
     parser.add_argument("--w-recover", type=float, default=0.4)
     parser.add_argument("--w-interval", type=float, default=1.0)

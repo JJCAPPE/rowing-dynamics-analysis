@@ -41,7 +41,8 @@ Notes:
 
 - If dirty RP3 CSVs exist in `<run>/rp3/`, matching auto-runs unless you pass `--no-match-rp3`.
 - If multiple dirty files exist, interactive mode prompts for selection; non-interactive mode requires `--rp3-dirty-csv <run>/rp3/<file>.csv`.
-- `--anchor-rp3-stroke-number` is the recommended anchor input for the first matched video stroke (default video anchor is `--anchor-video-stroke-idx 0`).
+- `--anchor-rp3-stroke-number` is the recommended anchor input for the first matched video stroke (default video anchor is `--anchor-video-stroke-idx 1`).
+- RP3 matcher defaults are tuned to `max_jump_rows=10`, `max_interval_error_s=2.0`, `max_cumulative_error_base_s=1.5`, `max_cumulative_error_per_s=0.15`, `max_abs_cum_error_s=4.0`.
 
 ### Outputs (`<run_dir>/inference/`)
 
