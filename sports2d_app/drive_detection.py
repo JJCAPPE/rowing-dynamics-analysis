@@ -139,7 +139,15 @@ def _filter_catches_by_cycle(
 
 FINISH_METHOD_VELOCITY_THRESHOLD = "velocity_threshold"
 FINISH_METHOD_POSITION_MAX = "position_max"
-VALID_FINISH_METHODS = {FINISH_METHOD_VELOCITY_THRESHOLD, FINISH_METHOD_POSITION_MAX}
+FINISH_METHOD_VELOCITY_CALIBRATED = "velocity_calibrated"
+VALID_FINISH_METHODS = {
+    FINISH_METHOD_VELOCITY_THRESHOLD,
+    FINISH_METHOD_POSITION_MAX,
+    FINISH_METHOD_VELOCITY_CALIBRATED,
+}
+
+DEFAULT_CATCH_VELOCITY_FRAC = 0.43
+DEFAULT_FINISH_VELOCITY_FRAC_CALIBRATED = 0.75
 
 
 def detect_drive_events(
@@ -152,12 +160,24 @@ def detect_drive_events(
     min_drive_disp_frac: float,
     slope_tol_frac: float,
     finish_velocity_frac: float = 0.0,
+    catch_velocity_frac: float = 0.0,
     finish_method: str = FINISH_METHOD_VELOCITY_THRESHOLD,
 ) -> DetectionResult:
     """Detect catch/finish events from a stroke signal DataFrame.
 
     The DataFrame must contain a ``relative_axis_px`` column (raw or
-    smoothed — the function applies its own single smoothing pass).
+    smoothed -- the function applies its own single smoothing pass).
+
+    ``finish_method`` controls how catch and finish are placed:
+
+    * ``velocity_threshold`` -- catch at slope zero-crossing, finish
+      where velocity drops to ``finish_velocity_frac`` of peak.
+    * ``position_max`` -- catch at slope zero-crossing, finish at the
+      position maximum (argmax).
+    * ``velocity_calibrated`` -- both catch *and* finish placed by
+      per-stroke velocity-fraction thresholds.  Catch fires when
+      velocity rises above ``catch_velocity_frac * peak_vel``; finish
+      fires when velocity drops below ``finish_velocity_frac * peak_vel``.
     """
     if finish_method not in VALID_FINISH_METHODS:
         raise ValueError(
@@ -207,7 +227,9 @@ def detect_drive_events(
         finish_method == FINISH_METHOD_VELOCITY_THRESHOLD
         and finish_velocity_frac > 0
     )
+    use_calibrated = finish_method == FINISH_METHOD_VELOCITY_CALIBRATED
 
+    has_frame_idx = "frame_idx" in df.columns
     events: list[DriveEvent] = []
     if catches_filtered.size >= 2:
         for i in range(catches_filtered.size - 1):
@@ -220,7 +242,27 @@ def detect_drive_events(
             pos_max_rel = int(np.argmax(segment))
             f0 = int(c0 + pos_max_rel)
 
-            if use_velocity and pos_max_rel > 1:
+            if use_calibrated and pos_max_rel > 1:
+                c0_orig = c0
+                cycle_len = c1 - c0
+                max_catch_shift = int(cycle_len * 0.25)
+                seg_vel = slope_px_s[c0 : c0 + pos_max_rel + 1]
+                peak_vel_rel = int(np.argmax(seg_vel))
+                peak_vel = float(seg_vel[peak_vel_rel])
+                if peak_vel > 0:
+                    if catch_velocity_frac > 0:
+                        catch_thresh = peak_vel * catch_velocity_frac
+                        rising = np.where(seg_vel >= catch_thresh)[0]
+                        if rising.size > 0:
+                            shift = int(rising[0])
+                            if shift <= max_catch_shift:
+                                c0 = c0_orig + shift
+                    finish_thresh = peak_vel * finish_velocity_frac
+                    after_peak = seg_vel[peak_vel_rel:]
+                    falling = np.where(after_peak <= finish_thresh)[0]
+                    if falling.size > 0:
+                        f0 = int(c0_orig + peak_vel_rel + int(falling[0]))
+            elif use_velocity and pos_max_rel > 1:
                 vel_seg = slope_px_s[c0 : c0 + pos_max_rel + 1]
                 peak_vel_rel = int(np.argmax(vel_seg))
                 peak_vel = float(vel_seg[peak_vel_rel])
@@ -249,11 +291,11 @@ def detect_drive_events(
             events.append(
                 DriveEvent(
                     stroke_idx=len(events),
-                    catch_frame_idx=int(df.iloc[c0]["frame_idx"]) if "frame_idx" in df.columns else c0,
+                    catch_frame_idx=int(df.iloc[c0]["frame_idx"]) if has_frame_idx else c0,
                     catch_time_s=float(time_s[c0]),
-                    finish_frame_idx=int(df.iloc[f0]["frame_idx"]) if "frame_idx" in df.columns else f0,
+                    finish_frame_idx=int(df.iloc[f0]["frame_idx"]) if has_frame_idx else f0,
                     finish_time_s=float(time_s[f0]),
-                    next_catch_frame_idx=int(df.iloc[c1]["frame_idx"]) if "frame_idx" in df.columns else c1,
+                    next_catch_frame_idx=int(df.iloc[c1]["frame_idx"]) if has_frame_idx else c1,
                     next_catch_time_s=float(time_s[c1]),
                     drive_duration_s=drive_duration_s,
                     recover_duration_s=recover_duration_s,
@@ -272,4 +314,171 @@ def detect_drive_events(
         slope_px_s=slope_px_s.astype(np.float32),
         fps_estimate=fps_estimate,
         min_drive_disp_px=min_drive_disp_px,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Calibration
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CalibrationResult:
+    catch_velocity_frac: float
+    finish_velocity_frac: float
+    mae_s: float
+    me_s: float
+    std_s: float
+    n_strokes: int
+
+
+def calibrate_velocity_fracs(
+    df: pd.DataFrame,
+    rp3_drive_durations: dict[int, float],
+    *,
+    smooth_window_s: float = 0.04,
+    min_cycle_s: float = 0.8,
+    slope_tol_frac: float = 0.05,
+    catch_frac_range: tuple[float, float] = (0.30, 0.60),
+    finish_frac_range: tuple[float, float] = (0.65, 0.85),
+    step: float = 0.01,
+    min_matched_strokes: int = 5,
+) -> CalibrationResult:
+    """Sweep catch/finish velocity fracs to minimise MAE vs RP3 drive durations.
+
+    Uses coarse zero-crossing stroke boundaries, then for each
+    ``(catch_frac, finish_frac)`` pair recomputes catch/finish within
+    each cycle using per-stroke peak-velocity fractions.
+
+    Parameters
+    ----------
+    df : DataFrame with ``relative_axis_px``, ``time_s``, ``frame_idx``.
+    rp3_drive_durations : ``{video_stroke_idx: rp3_drive_s}``.
+    """
+    time_s = _infer_time_s(df)
+    fps_est = 120.0
+    dt = np.diff(time_s)
+    valid_dt = dt[np.isfinite(dt) & (dt > 1e-9)]
+    if valid_dt.size:
+        fps_est = float(1.0 / np.median(valid_dt))
+
+    signal_raw = pd.to_numeric(
+        df["relative_axis_px"], errors="coerce"
+    ).to_numpy(dtype=np.float64)
+    signal_raw = _interp_nans(signal_raw)
+
+    window_frames = max(3, int(round(max(0.01, smooth_window_s) * fps_est)))
+    sig = _moving_average(signal_raw, window=window_frames)
+    vel = np.gradient(sig, time_s)
+
+    slope_std = float(np.nanstd(vel))
+    slope_tol = max(1e-6, slope_std * max(0.0, slope_tol_frac))
+    signs = np.zeros_like(vel, dtype=np.int8)
+    signs[vel > slope_tol] = 1
+    signs[vel < -slope_tol] = -1
+    signs = _fill_zero_signs(signs)
+    catches_raw = _find_catch_candidates(signs)
+    catches = _filter_catches_by_cycle(
+        catches_raw, sig, time_s, max(0.0, min_cycle_s),
+    )
+
+    if catches.size < 2:
+        return CalibrationResult(
+            DEFAULT_CATCH_VELOCITY_FRAC,
+            DEFAULT_FINISH_VELOCITY_FRAC_CALIBRATED,
+            mae_s=float("nan"), me_s=float("nan"),
+            std_s=float("nan"), n_strokes=0,
+        )
+
+    has_frame_idx = "frame_idx" in df.columns
+    frame_idx_arr = (
+        pd.to_numeric(df["frame_idx"], errors="coerce").to_numpy(dtype=np.int64)
+        if has_frame_idx else None
+    )
+
+    stroke_info: list[tuple[int, int, int, int, float]] = []
+    event_counter = 0
+    for ci in range(catches.size - 1):
+        c0 = int(catches[ci])
+        c1 = int(catches[ci + 1])
+        if c1 <= c0 + 1:
+            continue
+        seg = sig[c0 : c1 + 1]
+        pos_max_rel = int(np.argmax(seg))
+        if pos_max_rel < 2:
+            continue
+        si = event_counter
+        event_counter += 1
+        if si not in rp3_drive_durations:
+            continue
+        stroke_info.append((si, c0, c1, pos_max_rel, rp3_drive_durations[si]))
+
+    if len(stroke_info) < min_matched_strokes:
+        return CalibrationResult(
+            DEFAULT_CATCH_VELOCITY_FRAC,
+            DEFAULT_FINISH_VELOCITY_FRAC_CALIBRATED,
+            mae_s=float("nan"), me_s=float("nan"),
+            std_s=float("nan"), n_strokes=len(stroke_info),
+        )
+
+    catch_fracs = np.arange(
+        catch_frac_range[0], catch_frac_range[1] + step * 0.5, step,
+    )
+    finish_fracs = np.arange(
+        finish_frac_range[0], finish_frac_range[1] + step * 0.5, step,
+    )
+
+    best_mae = float("inf")
+    best_cf = DEFAULT_CATCH_VELOCITY_FRAC
+    best_ff = DEFAULT_FINISH_VELOCITY_FRAC_CALIBRATED
+    best_me = 0.0
+    best_std = 0.0
+    best_n = 0
+
+    for cf in catch_fracs:
+        for ff in finish_fracs:
+            errors: list[float] = []
+            for si, c0, c1, pos_max_rel, rp3_d in stroke_info:
+                seg_vel = vel[c0 : c0 + pos_max_rel + 1]
+                peak_vel_rel = int(np.argmax(seg_vel))
+                peak_vel = float(seg_vel[peak_vel_rel])
+                if peak_vel <= 0:
+                    continue
+
+                catch_cands = np.where(seg_vel >= peak_vel * cf)[0]
+                if catch_cands.size == 0:
+                    continue
+                catch_rel = int(catch_cands[0])
+
+                after_peak = seg_vel[peak_vel_rel:]
+                finish_cands = np.where(after_peak <= peak_vel * ff)[0]
+                if finish_cands.size == 0:
+                    continue
+                finish_rel = peak_vel_rel + int(finish_cands[0])
+                if finish_rel <= catch_rel:
+                    continue
+
+                video_drive = float(
+                    time_s[c0 + finish_rel] - time_s[c0 + catch_rel]
+                )
+                errors.append(video_drive - rp3_d)
+
+            if len(errors) < min_matched_strokes:
+                continue
+            errs = np.array(errors)
+            mae = float(np.abs(errs).mean())
+            if mae < best_mae:
+                best_mae = mae
+                best_cf = float(cf)
+                best_ff = float(ff)
+                best_me = float(errs.mean())
+                best_std = float(errs.std())
+                best_n = len(errors)
+
+    return CalibrationResult(
+        catch_velocity_frac=round(best_cf, 4),
+        finish_velocity_frac=round(best_ff, 4),
+        mae_s=best_mae,
+        me_s=best_me,
+        std_s=best_std,
+        n_strokes=best_n,
     )

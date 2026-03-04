@@ -101,6 +101,7 @@ class StrokeTrackingOptions:
     min_drive_disp_frac: float = 0.05
     slope_tol_frac: float = 0.05
     finish_velocity_frac: float = 0.85
+    catch_velocity_frac: float = 0.0
     finish_method: str = "velocity_threshold"
     debug_video: bool = True
 
@@ -509,6 +510,7 @@ def _run_pipeline(
                 min_drive_disp_frac=stroke_tracking.min_drive_disp_frac,
                 slope_tol_frac=stroke_tracking.slope_tol_frac,
                 finish_velocity_frac=stroke_tracking.finish_velocity_frac,
+                catch_velocity_frac=stroke_tracking.catch_velocity_frac,
                 finish_method=stroke_tracking.finish_method,
                 create_plot=True,
                 plot_video_path=result.annotated_video,

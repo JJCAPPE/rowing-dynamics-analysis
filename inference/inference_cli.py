@@ -21,12 +21,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sports2d_app"))
 from drive_detection import (
     DriveEvent,
     DetectionResult,
+    CalibrationResult,
     detect_drive_events,
+    calibrate_velocity_fracs,
     _infer_time_s,
     _interp_nans,
     FINISH_METHOD_VELOCITY_THRESHOLD,
     FINISH_METHOD_POSITION_MAX,
+    FINISH_METHOD_VELOCITY_CALIBRATED,
     VALID_FINISH_METHODS,
+    DEFAULT_CATCH_VELOCITY_FRAC,
+    DEFAULT_FINISH_VELOCITY_FRAC_CALIBRATED,
 )
 sys.path.pop(0)
 
@@ -965,8 +970,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--smooth-window-s",
         type=float,
-        default=0.08,
-        help="Smoothing window (seconds) for relative distance signal (default: 0.08).",
+        default=None,
+        help=(
+            "Smoothing window (seconds) for relative distance signal. "
+            "Default: 0.04 for velocity_calibrated, 0.08 otherwise."
+        ),
     )
     parser.add_argument(
         "--min-cycle-s",
@@ -1058,18 +1066,27 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--finish-velocity-frac",
         type=float,
-        default=0.85,
+        default=None,
         help=(
-            "Finish detection: velocity threshold as fraction of peak drive velocity. "
-            "Only used when --finish-method=velocity_threshold. (default: 0.85)."
+            "Finish velocity threshold as fraction of peak drive velocity. "
+            "Default: 0.75 for velocity_calibrated, 0.85 for velocity_threshold."
+        ),
+    )
+    parser.add_argument(
+        "--catch-velocity-frac",
+        type=float,
+        default=None,
+        help=(
+            "Catch velocity threshold as fraction of peak drive velocity. "
+            "Only used with velocity_calibrated. Default: 0.43 (or auto-calibrated from RP3)."
         ),
     )
     parser.add_argument(
         "--finish-method",
         type=str,
-        default=FINISH_METHOD_VELOCITY_THRESHOLD,
+        default=FINISH_METHOD_VELOCITY_CALIBRATED,
         choices=sorted(VALID_FINISH_METHODS),
-        help=f"Finish detection method (default: {FINISH_METHOD_VELOCITY_THRESHOLD}).",
+        help=f"Finish detection method (default: {FINISH_METHOD_VELOCITY_CALIBRATED}).",
     )
     parser.add_argument(
         "--use-rp3-finish",
@@ -1152,19 +1169,134 @@ def main() -> int:
     else:
         active_side = "right"
 
+    # ------------------------------------------------------------------
+    # Resolve effective detection parameters
+    # ------------------------------------------------------------------
+    finish_method = str(args.finish_method)
+    is_calibrated = finish_method == FINISH_METHOD_VELOCITY_CALIBRATED
+
+    smooth_window_s: float = (
+        float(args.smooth_window_s) if args.smooth_window_s is not None
+        else (0.04 if is_calibrated else 0.08)
+    )
+    finish_velocity_frac: float = (
+        float(args.finish_velocity_frac) if args.finish_velocity_frac is not None
+        else (DEFAULT_FINISH_VELOCITY_FRAC_CALIBRATED if is_calibrated else 0.85)
+    )
+    catch_velocity_frac: float = (
+        float(args.catch_velocity_frac) if args.catch_velocity_frac is not None
+        else DEFAULT_CATCH_VELOCITY_FRAC
+    )
+
+    # ------------------------------------------------------------------
+    # Shared detection kwargs
+    # ------------------------------------------------------------------
+    detect_kwargs: dict[str, Any] = dict(
+        smooth_window_s=smooth_window_s,
+        min_cycle_s=float(args.min_cycle_s),
+        min_drive_s=float(args.min_drive_s),
+        min_recover_s=float(args.min_recover_s),
+        min_drive_disp_frac=float(args.min_drive_disp_frac),
+        slope_tol_frac=float(args.slope_tol_frac),
+        finish_velocity_frac=finish_velocity_frac,
+        catch_velocity_frac=catch_velocity_frac,
+    )
+
     stroke_csv = run_dir / "stroke" / "stroke_signal.csv"
     try:
         df = pd.read_csv(stroke_csv)
+    except Exception as exc:
+        print(f"Failed to read {stroke_csv}: {exc}")
+        return 2
+
+    # ------------------------------------------------------------------
+    # Two-pass calibration flow when velocity_calibrated + RP3
+    # ------------------------------------------------------------------
+    calibration: CalibrationResult | None = None
+
+    if is_calibrated and run_rp3_matching:
+        try:
+            rp3_dirty_csv_path_cal = _resolve_rp3_dirty_csv(
+                run_dir=run_dir,
+                rp3_dirty_csv=args.rp3_dirty_csv,
+                interactive=interactive,
+            )
+            rp3_clean_csv_path_cal = _clean_rp3_dirty_csv(rp3_dirty_csv_path_cal)
+            rp3_df_cal = _load_rp3_clean_csv(rp3_clean_csv_path_cal)
+            anchor_rp3_idx_cal = _resolve_rp3_anchor_idx(
+                rp3_df_cal,
+                anchor_rp3_row_idx=args.anchor_rp3_row_idx,
+                anchor_rp3_stroke_number=args.anchor_rp3_stroke_number,
+                interactive=interactive,
+            )
+
+            coarse_detect = detect_drive_events(
+                df,
+                **{**detect_kwargs, "finish_method": FINISH_METHOD_VELOCITY_THRESHOLD},
+            )
+            if not coarse_detect.events:
+                print("Pass-1 coarse detection found 0 drives; cannot calibrate.")
+                return 2
+
+            coarse_events_df = _events_to_dataframe(coarse_detect.events)
+            match_cfg_cal = Rp3MatchConfig(
+                max_jump_rows=int(args.max_jump_rows),
+                max_interval_error_s=float(args.max_interval_error_s),
+                max_cumulative_error_base_s=float(args.max_cumulative_error_base_s),
+                max_cumulative_error_per_s=float(args.max_cumulative_error_per_s),
+                max_abs_cum_error_s=float(args.max_abs_cum_error_s),
+                w_drive=float(args.w_drive),
+                w_recover=float(args.w_recover),
+                w_interval=float(args.w_interval),
+                w_cumulative=float(args.w_cumulative),
+                w_skip=float(args.w_skip),
+            )
+            coarse_match = _build_rp3_match_manifest(
+                video_df=coarse_events_df,
+                rp3_df=rp3_df_cal,
+                anchor_video_idx=int(args.anchor_video_stroke_idx),
+                anchor_rp3_idx=int(anchor_rp3_idx_cal),
+                cfg=match_cfg_cal,
+            )
+            coarse_manifest = coarse_match.manifest
+
+            rp3_drive_durations: dict[int, float] = {}
+            for _, row in coarse_manifest.iterrows():
+                vi = int(row["video_stroke_idx"])
+                rp3_drive_durations[vi] = float(row["rp3_drive_s"])
+
+            calibration = calibrate_velocity_fracs(
+                df,
+                rp3_drive_durations,
+                smooth_window_s=smooth_window_s,
+                min_cycle_s=float(args.min_cycle_s),
+                slope_tol_frac=float(args.slope_tol_frac),
+            )
+
+            if args.catch_velocity_frac is None:
+                catch_velocity_frac = calibration.catch_velocity_frac
+            if args.finish_velocity_frac is None:
+                finish_velocity_frac = calibration.finish_velocity_frac
+            detect_kwargs["catch_velocity_frac"] = catch_velocity_frac
+            detect_kwargs["finish_velocity_frac"] = finish_velocity_frac
+
+            print(
+                f"Calibration: catch_frac={catch_velocity_frac:.3f} "
+                f"finish_frac={finish_velocity_frac:.3f} "
+                f"(MAE={calibration.mae_s * 1000:.1f}ms, "
+                f"ME={calibration.me_s * 1000:.1f}ms, "
+                f"n={calibration.n_strokes})"
+            )
+        except Exception as exc:
+            print(f"Calibration failed ({exc}); using default fracs.")
+
+    # ------------------------------------------------------------------
+    # Final detection (Pass 2 if calibrated, or single-pass otherwise)
+    # ------------------------------------------------------------------
+    try:
         detection = detect_drive_events(
             df,
-            smooth_window_s=float(args.smooth_window_s),
-            min_cycle_s=float(args.min_cycle_s),
-            min_drive_s=float(args.min_drive_s),
-            min_recover_s=float(args.min_recover_s),
-            min_drive_disp_frac=float(args.min_drive_disp_frac),
-            slope_tol_frac=float(args.slope_tol_frac),
-            finish_velocity_frac=float(args.finish_velocity_frac),
-            finish_method=str(args.finish_method),
+            **{**detect_kwargs, "finish_method": finish_method},
         )
     except Exception as exc:
         print(f"Failed to process {stroke_csv}: {exc}")
@@ -1206,6 +1338,9 @@ def main() -> int:
             alpha=float(args.overlay_opacity),
         )
 
+    # ------------------------------------------------------------------
+    # RP3 matching (final pass)
+    # ------------------------------------------------------------------
     rp3_summary: dict[str, Any] | None = None
     rp3_dirty_csv_path: Path | None = None
     rp3_clean_csv_path: Path | None = None
@@ -1228,10 +1363,13 @@ def main() -> int:
                 interactive=interactive,
             )
 
+            cum_err_base = float(args.max_cumulative_error_base_s)
+            if calibration is not None:
+                cum_err_base = max(cum_err_base, 2.0)
             match_cfg = Rp3MatchConfig(
                 max_jump_rows=int(args.max_jump_rows),
                 max_interval_error_s=float(args.max_interval_error_s),
-                max_cumulative_error_base_s=float(args.max_cumulative_error_base_s),
+                max_cumulative_error_base_s=cum_err_base,
                 max_cumulative_error_per_s=float(args.max_cumulative_error_per_s),
                 max_abs_cum_error_s=float(args.max_abs_cum_error_s),
                 w_drive=float(args.w_drive),
@@ -1316,6 +1454,9 @@ def main() -> int:
             print(f"RP3 match failed: {exc}")
             return 3
 
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
     inferred_time = _infer_time_s(df)
     if inferred_time.size:
         t0 = float(inferred_time[0])
@@ -1323,6 +1464,16 @@ def main() -> int:
     else:
         t0 = 0.0
         t1 = 0.0
+
+    cal_info: dict[str, Any] | None = None
+    if calibration is not None:
+        cal_info = {
+            "source": "rp3_optimized",
+            "mae_ms": round(calibration.mae_s * 1000, 2),
+            "me_ms": round(calibration.me_s * 1000, 2),
+            "std_ms": round(calibration.std_s * 1000, 2),
+            "n_strokes": calibration.n_strokes,
+        }
 
     summary: dict[str, Any] = {
         "run_dir": str(run_dir),
@@ -1336,15 +1487,17 @@ def main() -> int:
         "complete_drives": int(len(detection.events)),
         "min_drive_displacement_px": float(detection.min_drive_disp_px),
         "parameters": {
-            "smooth_window_s": float(args.smooth_window_s),
+            "smooth_window_s": smooth_window_s,
             "min_cycle_s": float(args.min_cycle_s),
             "min_drive_s": float(args.min_drive_s),
             "min_recover_s": float(args.min_recover_s),
             "min_drive_disp_frac": float(args.min_drive_disp_frac),
             "slope_tol_frac": float(args.slope_tol_frac),
-            "finish_velocity_frac": float(args.finish_velocity_frac),
-            "finish_method": str(args.finish_method),
+            "catch_velocity_frac": catch_velocity_frac,
+            "finish_velocity_frac": finish_velocity_frac,
+            "finish_method": finish_method,
             "use_rp3_finish": use_rp3_finish if run_rp3_matching else None,
+            "calibration": cal_info,
         },
         "outputs": {
             "drive_events_csv": str(events_csv),

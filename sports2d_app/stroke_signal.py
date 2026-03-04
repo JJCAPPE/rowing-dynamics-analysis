@@ -16,6 +16,7 @@ from drive_detection import (
     detect_drive_events as _shared_detect_drive_events,
     FINISH_METHOD_POSITION_MAX,
     FINISH_METHOD_VELOCITY_THRESHOLD,
+    FINISH_METHOD_VELOCITY_CALIBRATED,
     VALID_FINISH_METHODS,
 )
 from parse_sports2d import COCO17_NAMES
@@ -846,6 +847,7 @@ def _build_stroke_dataframe(
     min_drive_disp_frac: float = 0.05,
     slope_tol_frac: float = 0.05,
     finish_velocity_frac: float = 0.85,
+    catch_velocity_frac: float = 0.0,
     finish_method: str = FINISH_METHOD_VELOCITY_THRESHOLD,
 ) -> Tuple[pd.DataFrame, StrokeEvents, np.ndarray]:
     T = int(handle_track.centers_xy.shape[0])
@@ -881,6 +883,7 @@ def _build_stroke_dataframe(
         min_drive_disp_frac=min_drive_disp_frac,
         slope_tol_frac=slope_tol_frac,
         finish_velocity_frac=finish_velocity_frac,
+        catch_velocity_frac=catch_velocity_frac,
         finish_method=finish_method,
     )
 
@@ -984,6 +987,7 @@ def run_stroke_signal_tracking(
     min_drive_disp_frac: float = 0.05,
     slope_tol_frac: float = 0.05,
     finish_velocity_frac: float = 0.85,
+    catch_velocity_frac: float = 0.0,
     finish_method: str = FINISH_METHOD_VELOCITY_THRESHOLD,
     create_plot: bool = True,
     plot_video_path: Optional[Path] = None,
@@ -1039,6 +1043,7 @@ def run_stroke_signal_tracking(
         min_drive_disp_frac=float(min_drive_disp_frac),
         slope_tol_frac=float(slope_tol_frac),
         finish_velocity_frac=float(finish_velocity_frac),
+        catch_velocity_frac=float(catch_velocity_frac),
         finish_method=finish_method,
     )
 
@@ -1244,6 +1249,12 @@ def _parse_args() -> argparse.Namespace:
         help="Velocity threshold as fraction of peak drive velocity (default: 0.85)",
     )
     parser.add_argument(
+        "--catch-velocity-frac",
+        type=float,
+        default=0.0,
+        help="Catch velocity threshold as fraction of peak drive velocity (default: 0.0 = zero-crossing)",
+    )
+    parser.add_argument(
         "--finish-method",
         type=str,
         default=FINISH_METHOD_VELOCITY_THRESHOLD,
@@ -1296,6 +1307,7 @@ def main() -> None:
         min_drive_disp_frac=float(args.min_drive_disp_frac),
         slope_tol_frac=float(args.slope_tol_frac),
         finish_velocity_frac=float(args.finish_velocity_frac),
+        catch_velocity_frac=float(args.catch_velocity_frac),
         finish_method=str(args.finish_method),
         create_plot=not args.no_plot,
         plot_video_path=Path(args.video),

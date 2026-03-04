@@ -483,4 +483,29 @@ The implementation is proceeding in four coordinated fixes:
   \item \textbf{Fix 4: hard-fail cumulative drift.} Add \texttt{--max-abs-cum-error-s} as a hard DP gate, tighten cumulative-growth defaults, and surface per-stroke cumulative error in summary output.
 \end{enumerate}
 
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\linewidth]{process-pics/matching-3.png}
+  \caption{Even after all the fixes, I'm still not convinced that the velocity-based finish detection is the best way to go. The catch detection must be too early.}
+  \label{fig:matching-3}
+\end{figure}
+
+\paragraph{Velocity-calibrated catch/finish detection (February 28, 2026).}
+The residual mismatch in Figure~\ref{fig:matching-3}---finish appearing too early and catch too early---motivated a different approach. Instead of fixing a single velocity fraction by hand, we now \emph{calibrate} both catch and finish triggers per run by minimizing the mean absolute error (MAE) of video drive duration versus RP3 drive duration across matched strokes.
+
+The idea: if the RP3 force curve and video handle motion share similar physical triggers (force onset/offset correlate with handle velocity crossing thresholds), then the velocity fractions that minimize drive-duration error should yield the correct alignment. We express both catch and finish as fractions of the per-stroke peak handle velocity: catch fires when velocity rises above $\alpha \cdot v_{\mathrm{peak}}$, finish when it drops below $\beta \cdot v_{\mathrm{peak}}$.
+
+\paragraph{Two-pass flow and calibration.}
+When RP3 data are available, the inference CLI runs a two-pass flow:
+\begin{enumerate}
+  \item \textbf{Pass 1:} coarse detection (zero-crossing catch, velocity-threshold finish) to obtain stroke boundaries; run RP3 matching to get video--RP3 stroke alignment and extract $(\texttt{video\_stroke\_idx} \mapsto \texttt{rp3\_drive\_s})$.
+  \item \textbf{Calibrate:} sweep $(\alpha, \beta)$ over a grid (e.g.\ $\alpha \in [0.30, 0.60]$, $\beta \in [0.65, 0.85]$) and compute video drive durations for each pair; choose the pair that minimizes MAE vs.\ RP3 drive durations.
+  \item \textbf{Pass 2:} re-detect with $\texttt{finish\_method}=\texttt{velocity\_calibrated}$ and the calibrated fractions; re-run RP3 matching; export segments.
+\end{enumerate}
+When RP3 is not available, we fall back to empirically optimal defaults ($\alpha = 0.43$, $\beta = 0.75$).
+
+\paragraph{Results.}
+On the 10-minute run (\texttt{giacomo-10m\_20260228\_215432}), calibration converged to $\alpha \approx 0.43$, $\beta \approx 0.75$, with MAE $= 15.2$\,ms (down from $\sim$58\,ms with the previous velocity-threshold-only setup) and mean signed error $= -0.3$\,ms. The plateau in the error surface is broad (e.g.\ $\alpha \in [0.40, 0.48]$, $\beta \in [0.73, 0.76]$), so the result is physically grounded rather than overfitted. The calibrated catch shifts later (median $\sim$58\,ms) and the finish shifts later (median $\sim$33\,ms), addressing the visual complaints that the drive phase was too short. Smoothing is reduced to 0.04\,s (5 frames at 120\,fps) for velocity-calibrated mode to avoid blunting velocity peaks. A 25\%-of-cycle clamp on catch shift prevents outlier strokes (e.g.\ the first stroke in a run) from disrupting RP3 matching.
+
+
 \end{document}
