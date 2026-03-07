@@ -68,6 +68,57 @@ def _resolve_run_dir(run_dir: Path | None, runs_root: Path) -> Path:
 # Data loading
 # ---------------------------------------------------------------------------
 
+def _resolve_active_side(summary: dict[str, Any], segments: pd.DataFrame) -> str | None:
+    side = summary.get("active_side")
+    if isinstance(side, str) and side.lower() in {"left", "right"}:
+        return side.lower()
+    if not segments.empty and "active_side" in segments.columns:
+        non_null = segments["active_side"].dropna()
+        if not non_null.empty:
+            side = str(non_null.iloc[0]).strip().lower()
+            if side in {"left", "right"}:
+                return side
+    return None
+
+
+def _attach_active_side_angles(
+    run_dir: Path,
+    stroke_signal: pd.DataFrame,
+    summary: dict[str, Any],
+    segments: pd.DataFrame,
+) -> pd.DataFrame:
+    if "frame_idx" not in stroke_signal.columns:
+        return stroke_signal
+    if all(c in stroke_signal.columns for c in ("knee_active_deg", "hip_active_deg", "elbow_active_deg")):
+        return stroke_signal
+
+    side = _resolve_active_side(summary, segments)
+    if side is None:
+        return stroke_signal
+
+    knee_col = f"{side}_knee_deg"
+    hip_col = f"{side}_hip_deg"
+    elbow_col = f"{side}_elbow_deg"
+    angles_path = run_dir / "motionbert" / "angles_h36m.csv"
+    if not angles_path.exists():
+        return stroke_signal
+
+    try:
+        angles = pd.read_csv(angles_path, usecols=["frame_idx", knee_col, hip_col, elbow_col])
+    except Exception:
+        return stroke_signal
+
+    out = stroke_signal.copy()
+    lookup = angles.drop_duplicates(subset="frame_idx").set_index("frame_idx")
+    if "knee_active_deg" not in out.columns:
+        out["knee_active_deg"] = out["frame_idx"].map(lookup[knee_col])
+    if "hip_active_deg" not in out.columns:
+        out["hip_active_deg"] = out["frame_idx"].map(lookup[hip_col])
+    if "elbow_active_deg" not in out.columns:
+        out["elbow_active_deg"] = out["frame_idx"].map(lookup[elbow_col])
+    return out
+
+
 def _load_run_data(run_dir: Path) -> dict[str, Any]:
     inf = run_dir / "inference"
 
@@ -83,6 +134,8 @@ def _load_run_data(run_dir: Path) -> dict[str, Any]:
     if summary_path.exists():
         with open(summary_path) as f:
             summary = json.load(f)
+
+    stroke_signal = _attach_active_side_angles(run_dir, stroke_signal, summary, segments)
 
     return {
         "manifest": manifest,
@@ -104,23 +157,69 @@ def _render_panel_handle(
     page_strokes: list[int],
     t_min: float,
     t_max: float,
-) -> None:
+) -> list[plt.Axes]:
+    created_axes: list[plt.Axes] = []
     time_s = pd.to_numeric(stroke_signal["time_s"], errors="coerce").to_numpy(dtype=float)
 
-    col = (
-        "relative_axis_px_smooth"
-        if "relative_axis_px_smooth" in stroke_signal.columns
-        else "relative_axis_px"
-    )
-    handle = pd.to_numeric(stroke_signal[col], errors="coerce").to_numpy(dtype=float)
+    raw_handle: np.ndarray | None = None
+    smooth_handle: np.ndarray | None = None
+    if "relative_axis_px" in stroke_signal.columns:
+        raw_handle = pd.to_numeric(
+            stroke_signal["relative_axis_px"], errors="coerce"
+        ).to_numpy(dtype=float)
+    if "relative_axis_px_smooth" in stroke_signal.columns:
+        smooth_handle = pd.to_numeric(
+            stroke_signal["relative_axis_px_smooth"], errors="coerce"
+        ).to_numpy(dtype=float)
+    if raw_handle is None and smooth_handle is None:
+        raise ValueError(
+            "stroke_signal is missing both 'relative_axis_px' and 'relative_axis_px_smooth'"
+        )
 
     mask = (time_s >= t_min) & (time_s <= t_max)
-    ax.plot(
-        time_s[mask], handle[mask], color="steelblue", linewidth=1.2, alpha=0.9,
-        label="Handle distance (smoothed)",
-    )
+    if raw_handle is not None:
+        ax.plot(
+            time_s[mask], raw_handle[mask],
+            color="dimgray", linewidth=0.8, alpha=0.45,
+            label="Handle distance (raw)",
+        )
 
-    sig_max = float(np.nanmax(handle[mask])) if mask.any() else 1.0
+    if smooth_handle is not None:
+        ax.plot(
+            time_s[mask], smooth_handle[mask],
+            color="steelblue", linewidth=1.2, alpha=0.9,
+            label="Handle distance (smoothed)",
+        )
+
+    handle_for_scale = smooth_handle if smooth_handle is not None else raw_handle
+    sig_max = float(np.nanmax(handle_for_scale[mask])) if mask.any() else 1.0
+
+    angle_series: list[tuple[str, str, np.ndarray]] = []
+    if "knee_active_deg" in stroke_signal.columns:
+        knee = pd.to_numeric(stroke_signal["knee_active_deg"], errors="coerce").to_numpy(dtype=float)
+        if np.isfinite(knee[mask]).any():
+            angle_series.append(("Knee angle (deg)", "tab:red", knee))
+    if "hip_active_deg" in stroke_signal.columns:
+        hip = pd.to_numeric(stroke_signal["hip_active_deg"], errors="coerce").to_numpy(dtype=float)
+        if np.isfinite(hip[mask]).any():
+            angle_series.append(("Hip angle (deg)", "tab:olive", hip))
+    if "elbow_active_deg" in stroke_signal.columns:
+        elbow = pd.to_numeric(stroke_signal["elbow_active_deg"], errors="coerce").to_numpy(dtype=float)
+        if np.isfinite(elbow[mask]).any():
+            angle_series.append(("Elbow angle (deg)", "tab:orange", elbow))
+
+    angle_ax: plt.Axes | None = None
+    if angle_series:
+        angle_ax = ax.twinx()
+        created_axes.append(angle_ax)
+        for label, color, values in angle_series:
+            angle_ax.plot(
+                time_s[mask], values[mask], color=color, linewidth=1.0, alpha=0.75,
+                label=label,
+            )
+        angle_ax.set_ylabel("Joint angle (deg)")
+        angle_ax.tick_params(axis="y", labelsize=8, colors="dimgray")
+        angle_ax.grid(False)
 
     page_events = drive_events[drive_events["stroke_idx"].isin(page_strokes)]
     for i, (_, ev) in enumerate(page_events.iterrows()):
@@ -154,10 +253,16 @@ def _render_panel_handle(
 
     ax.set_xlim(t_min, t_max)
     ax.set_ylabel("Handle distance (px)")
-    ax.legend(loc="upper right", fontsize=7, ncol=3)
+    lines_1, labels_1 = ax.get_legend_handles_labels()
+    if angle_ax is not None:
+        lines_2, labels_2 = angle_ax.get_legend_handles_labels()
+    else:
+        lines_2, labels_2 = ([], [])
+    ax.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper right", fontsize=7, ncol=4)
     ax.grid(True, alpha=0.2)
     ax.margins(x=0)
     ax.tick_params(axis="x", labelbottom=False)
+    return created_axes
 
 
 def _render_panel_durations(
@@ -423,9 +528,10 @@ class DiagnosticsViewer:
         # Panel 1
         ax1 = self.fig.add_subplot(top_gs[0])
         self._panel_axes.append(ax1)
-        _render_panel_handle(
+        handle_extra_axes = _render_panel_handle(
             ax1, self.stroke_signal, self.drive_events, page_strokes, t_min, t_max,
         )
+        self._panel_axes.extend(handle_extra_axes)
 
         mean_cum = self.summary.get("mean_abs_cum_catch_err_s")
         parts = [
@@ -598,8 +704,8 @@ def _parse_args() -> argparse.Namespace:
         help="Run directory to diagnose (skip interactive selection).",
     )
     parser.add_argument(
-        "--strokes-per-page", type=int, default=10,
-        help="Max strokes per diagnostic page (default: 10).",
+        "--strokes-per-page", type=int, default=5,
+        help="Max strokes per diagnostic page (default: 5).",
     )
     return parser.parse_args()
 
