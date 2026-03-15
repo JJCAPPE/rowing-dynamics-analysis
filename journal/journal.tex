@@ -521,4 +521,19 @@ On the 10-minute run (\texttt{giacomo-10m\_20260228\_215432}), calibration conve
 	\label{fig:stroke-matching-angles}
 \end{figure}
 
+\paragraph{Smoothing and derivative policy (March 14, 2026).}
+Completed Section~8 of the inference plan. Changes in \texttt{\_build\_force\_pose\_segments}:
+
+\textbf{Smoothing:} Savitzky--Golay filter (window 7, poly 3) on all five angle time series before interpolation. Fallback to raw if drive too short.
+
+\textbf{Derivatives:} Switched from \texttt{np.gradient} on interpolated values to chain rule in time domain: $d\theta/ds = (d\theta/dt)/(ds/dt + \varepsilon)$. More stable on regular time sampling.
+
+\textbf{Bug fix:} Added missing \texttt{spine\_flexion\_ddeg\_ds}; all five angles now have first derivatives.
+
+\textbf{Optional:} \texttt{--include-second-derivatives} adds $d^2\theta/ds^2$ for ablation (default off).
+
+\textbf{QC flags:} Per-stroke checks in \texttt{qc\_flags}: \texttt{qc\_tracking\_sparse} (NaN frac $> 0.3$), \texttt{qc\_nonphysio\_deriv} ($|d\theta/dt| > 600$\,deg/s), \texttt{qc\_ds\_dt\_stall} ($ds/dt$ min $< 5\%$ median). Strokes not dropped; flags for downstream filtering.
+
+\textbf{New columns:} \texttt{handle\_velocity\_px\_s}, \texttt{handle\_accel\_px\_s2}, \texttt{qc\_flags}. Status CSV: \texttt{nan\_frac\_angles}, \texttt{max\_deriv\_deg\_s}, \texttt{ds\_dt\_min}. Constants exposed at module top.
+
 \end{document}
