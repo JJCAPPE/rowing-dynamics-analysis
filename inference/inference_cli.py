@@ -16,6 +16,7 @@ from typing import Any, Iterable, Sequence
 import cv2
 import numpy as np
 import pandas as pd
+from scipy.signal import savgol_filter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sports2d_app"))
 from drive_detection import (
@@ -65,6 +66,13 @@ FORCE_COL_RE = re.compile(r"^force_at_([0-9]+(?:\.[0-9]+)?)cm$")
 PDF_AREA_EPS = 1e-9
 PDF_AREA_TOL = 1e-6
 _RP3_EXPAND_MODULE: ModuleType | None = None
+
+SAVGOL_WINDOW = 7
+SAVGOL_POLYORDER = 3
+CHAIN_RULE_EPS = 1e-6
+DS_DT_STALL_FRAC = 0.05
+MAX_ANGULAR_VEL_DEG_S = 600.0
+MAX_NAN_FRAC_ANGLES = 0.3
 
 
 
@@ -678,6 +686,22 @@ def _interp_feature_on_progress(
     return np.interp(clipped_targets, unique_s, y_unique)
 
 
+def _savgol_smooth(arr: np.ndarray, window: int = SAVGOL_WINDOW, polyorder: int = SAVGOL_POLYORDER) -> np.ndarray:
+    finite = np.isfinite(arr)
+    if finite.sum() < max(window, polyorder + 1):
+        return arr.copy()
+    filled = _interp_nans(arr.copy())
+    eff_win = min(window, len(filled))
+    if eff_win % 2 == 0:
+        eff_win -= 1
+    eff_win = max(eff_win, 1)
+    eff_poly = min(polyorder, eff_win - 1)
+    smoothed = savgol_filter(filled, eff_win, eff_poly)
+    out = arr.copy()
+    out[finite] = smoothed[finite]
+    return out
+
+
 def _build_force_pose_segments(
     *,
     run_dir: Path,
@@ -688,6 +712,7 @@ def _build_force_pose_segments(
     active_side: str,
     rp3_clean_csv: Path,
     use_rp3_finish: bool = False,
+    include_second_derivatives: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     angles_csv = run_dir / "motionbert" / "angles_h36m.csv"
     if not angles_csv.exists():
@@ -834,19 +859,91 @@ def _build_force_pose_segments(
             status_rows.append(status_row)
             continue
 
-        interp_features: dict[str, np.ndarray] = {}
+        # -- Time array for time-domain derivatives --
+        time_col = "time_s_recomputed" if "time_s_recomputed" in drive.columns else "time_s"
+        time_arr = pd.to_numeric(drive[time_col], errors="coerce").to_numpy(dtype=np.float64)
+        time_arr = _interp_nans(time_arr)
+
+        # -- QC: NaN fraction across angle columns --
+        qc_flags: list[str] = []
+        angle_src_cols = list(side_map.values())
+        nan_counts = sum(
+            pd.to_numeric(drive[c], errors="coerce").isna().sum() for c in angle_src_cols
+        )
+        total_angle_vals = len(drive) * len(angle_src_cols)
+        nan_frac = nan_counts / max(total_angle_vals, 1)
+        status_row["nan_frac_angles"] = float(nan_frac)
+        if nan_frac > MAX_NAN_FRAC_ANGLES:
+            qc_flags.append("qc_tracking_sparse")
+
+        # -- Savitzky-Golay smoothing + time-domain derivatives --
+        smoothed_angles: dict[str, np.ndarray] = {}
+        dtheta_dt_time: dict[str, np.ndarray] = {}
+        max_angular_vel = 0.0
         for out_col, src_col in side_map.items():
-            values = pd.to_numeric(drive[src_col], errors="coerce").to_numpy(dtype=np.float64)
-            interp_features[out_col] = _interp_feature_on_progress(s_video, values, s_targets)
+            raw = pd.to_numeric(drive[src_col], errors="coerce").to_numpy(dtype=np.float64)
+            smooth = _savgol_smooth(raw)
+            smoothed_angles[out_col] = smooth
+            if np.isfinite(smooth).sum() >= 2 and np.isfinite(time_arr).sum() >= 2:
+                dt_arr = np.gradient(_interp_nans(smooth), time_arr)
+                dtheta_dt_time[out_col] = dt_arr
+                finite_dt = np.abs(dt_arr[np.isfinite(dt_arr)])
+                if finite_dt.size > 0:
+                    max_angular_vel = max(max_angular_vel, float(finite_dt.max()))
+            else:
+                dtheta_dt_time[out_col] = np.full_like(smooth, np.nan)
+
+        status_row["max_deriv_deg_s"] = float(max_angular_vel)
+        if max_angular_vel > MAX_ANGULAR_VEL_DEG_S:
+            qc_flags.append("qc_nonphysio_deriv")
+
+        # -- ds/dt in time domain --
+        ds_dt_time = np.gradient(s_video, time_arr) if np.isfinite(time_arr).sum() >= 2 else np.full_like(s_video, np.nan)
+        finite_ds_dt = ds_dt_time[np.isfinite(ds_dt_time)]
+        ds_dt_min = float(finite_ds_dt.min()) if finite_ds_dt.size > 0 else float("nan")
+        ds_dt_median = float(np.median(finite_ds_dt)) if finite_ds_dt.size > 0 else float("nan")
+        status_row["ds_dt_min"] = ds_dt_min
+        if np.isfinite(ds_dt_median) and ds_dt_median > 0 and np.isfinite(ds_dt_min):
+            if ds_dt_min < DS_DT_STALL_FRAC * ds_dt_median:
+                qc_flags.append("qc_ds_dt_stall")
+
+        status_row["qc_flags"] = ",".join(qc_flags) if qc_flags else ""
+
+        # -- Interpolate smoothed angles to s_targets --
+        interp_features: dict[str, np.ndarray] = {}
+        for out_col in side_map:
+            interp_features[out_col] = _interp_feature_on_progress(s_video, smoothed_angles[out_col], s_targets)
+
+        # -- Interpolate dtheta/dt and ds/dt to s_targets, then chain-rule --
+        ds_dt_on_s = _interp_feature_on_progress(s_video, ds_dt_time, s_targets)
 
         deriv_features: dict[str, np.ndarray] = {}
-        for out_col in ["knee_active_deg", "hip_active_deg", "elbow_active_deg", "trunk_vs_horizontal_deg"]:
-            vals = interp_features[out_col]
-            if vals.size < 2:
-                deriv_features[f"{out_col.replace('_deg', '')}_ddeg_ds"] = np.full_like(vals, np.nan)
-                continue
-            deriv_features[f"{out_col.replace('_deg', '')}_ddeg_ds"] = np.gradient(vals, s_targets)
+        all_angle_keys = list(side_map.keys())
+        for out_col in all_angle_keys:
+            dtheta_dt_on_s = _interp_feature_on_progress(s_video, dtheta_dt_time[out_col], s_targets)
+            dtheta_ds = dtheta_dt_on_s / (ds_dt_on_s + CHAIN_RULE_EPS)
+            deriv_features[f"{out_col.replace('_deg', '')}_ddeg_ds"] = dtheta_ds
 
+        # -- Optional second derivatives --
+        second_deriv_features: dict[str, np.ndarray] = {}
+        if include_second_derivatives:
+            for out_col in all_angle_keys:
+                d1_key = f"{out_col.replace('_deg', '')}_ddeg_ds"
+                d1 = deriv_features[d1_key]
+                if d1.size >= 2 and np.isfinite(d1).sum() >= 2:
+                    second_deriv_features[f"{out_col.replace('_deg', '')}_d2deg_ds2"] = np.gradient(d1, s_targets)
+                else:
+                    second_deriv_features[f"{out_col.replace('_deg', '')}_d2deg_ds2"] = np.full_like(d1, np.nan)
+
+        # -- Handle velocity/acceleration support features --
+        vel_col = "velocity_axis_recomputed_px_s" if "velocity_axis_recomputed_px_s" in drive.columns else "velocity_axis_px_s"
+        handle_vel_raw = pd.to_numeric(drive.get(vel_col, pd.Series(dtype=float)), errors="coerce").to_numpy(dtype=np.float64) if vel_col in drive.columns else np.full(len(drive), np.nan)
+        handle_vel_on_s = _interp_feature_on_progress(s_video, handle_vel_raw, s_targets)
+
+        handle_accel_time = np.gradient(_interp_nans(handle_vel_raw), time_arr) if (np.isfinite(handle_vel_raw).sum() >= 2 and np.isfinite(time_arr).sum() >= 2) else np.full_like(handle_vel_raw, np.nan)
+        handle_accel_on_s = _interp_feature_on_progress(s_video, handle_accel_time, s_targets)
+
+        # -- Build output rows --
         for i in range(len(distances)):
             row = {
                 "run_name": run_dir.name,
@@ -874,10 +971,15 @@ def _build_force_pose_segments(
                 "s_force": float(s_targets[i]),
                 "force_raw": float(force_raw_arr[i]),
                 "force_n": float(force_pdf_arr[i]),
+                "qc_flags": status_row["qc_flags"],
+                "handle_velocity_px_s": float(handle_vel_on_s[i]) if np.isfinite(handle_vel_on_s[i]) else float("nan"),
+                "handle_accel_px_s2": float(handle_accel_on_s[i]) if np.isfinite(handle_accel_on_s[i]) else float("nan"),
             }
             for key, arr in interp_features.items():
                 row[key] = float(arr[i]) if np.isfinite(arr[i]) else float("nan")
             for key, arr in deriv_features.items():
+                row[key] = float(arr[i]) if np.isfinite(arr[i]) else float("nan")
+            for key, arr in second_deriv_features.items():
                 row[key] = float(arr[i]) if np.isfinite(arr[i]) else float("nan")
             rows.append(row)
 
@@ -1110,6 +1212,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--w-interval", type=float, default=1.0)
     parser.add_argument("--w-cumulative", type=float, default=1.0)
     parser.add_argument("--w-skip", type=float, default=0.08)
+    parser.add_argument(
+        "--include-second-derivatives",
+        action="store_true",
+        default=False,
+        help="Include d2theta/ds2 columns in segment export (ablation-gated, default off).",
+    )
     return parser.parse_args()
 
 
@@ -1398,6 +1506,7 @@ def main() -> int:
                 active_side=active_side,
                 rp3_clean_csv=rp3_clean_csv_path,
                 use_rp3_finish=use_rp3_finish,
+                include_second_derivatives=args.include_second_derivatives,
             )
             _validate_force_segment_exports(
                 manifest_df=manifest_df,
