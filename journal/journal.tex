@@ -521,19 +521,52 @@ On the 10-minute run (\texttt{giacomo-10m\_20260228\_215432}), calibration conve
 	\label{fig:stroke-matching-angles}
 \end{figure}
 
-\paragraph{Smoothing and derivative policy (March 14, 2026).}
-Completed Section~8 of the inference plan. Changes in \texttt{\_build\_force\_pose\_segments}:
+\paragraph{Smoothing and derivative policy completion (March 14, 2026).}
+The segment export in \texttt{\_build\_force\_pose\_segments} previously computed progress-domain derivatives via a simple finite difference on the interpolated angle values:
+\[
+	\frac{d\theta}{ds} \approx \texttt{np.gradient}(\theta_{\mathrm{interp}},\; s_{\mathrm{targets}}).
+\]
+This operated \emph{after} interpolation onto the RP3 force-bin grid $s_{\mathrm{targets}}$, which is irregularly spaced in normalized progress. Because the raw signal is regularly sampled in time (constant fps), differentiating in the time domain is better conditioned. The following changes bring the implementation in line with the plan (Section~8 of \texttt{force-curve-inference-process.md}).
 
-\textbf{Smoothing:} Savitzky--Golay filter (window 7, poly 3) on all five angle time series before interpolation. Fallback to raw if drive too short.
+\paragraph{Savitzky--Golay pre-smoothing.}
+Before any interpolation or differentiation, a Savitzky--Golay filter (window $= 7$, polynomial order $= 3$) is now applied to each joint-angle time series within the drive window. The filter operates on NaN-interpolated data in the time domain. If the drive window is shorter than the filter window, the raw signal is kept unchanged. Smoothing is applied to all five canonical angles: \texttt{knee\_active}, \texttt{hip\_active}, \texttt{elbow\_active}, \texttt{trunk\_vs\_horizontal}, and \texttt{spine\_flexion}.
 
-\textbf{Derivatives:} Switched from \texttt{np.gradient} on interpolated values to chain rule in time domain: $d\theta/ds = (d\theta/dt)/(ds/dt + \varepsilon)$. More stable on regular time sampling.
+\paragraph{Chain-rule derivatives.}
+Derivatives are now computed via the chain rule in the time domain:
+\begin{enumerate}
+	\item Compute $d\theta/dt$ on the smoothed angle trajectory using \texttt{np.gradient($\theta_{\mathrm{smooth}}$, $t$)}.
+	\item Compute $ds/dt$ from the video progress signal using \texttt{np.gradient($s_{\mathrm{video}}$, $t$)}.
+	\item Interpolate both $d\theta/dt$ and $ds/dt$ from $s_{\mathrm{video}}$ onto $s_{\mathrm{targets}}$.
+	\item Form $d\theta/ds = (d\theta/dt)\,/\,(ds/dt + \varepsilon)$ at each target bin, with $\varepsilon = 10^{-6}$.
+\end{enumerate}
+This is more numerically stable than the prior approach because differentiation happens on regularly-sampled signals, and the division by $ds/dt$ correctly accounts for non-uniform handle progression.
 
-\textbf{Bug fix:} Added missing \texttt{spine\_flexion\_ddeg\_ds}; all five angles now have first derivatives.
+\paragraph{Spine flexion derivative (bug fix).}
+The previous derivative loop only covered four of the five exported angles; \texttt{spine\_flexion\_deg} was missing. All five angles now receive \texttt{\_ddeg\_ds} columns.
 
-\textbf{Optional:} \texttt{--include-second-derivatives} adds $d^2\theta/ds^2$ for ablation (default off).
+\paragraph{Second derivatives (ablation-gated).}
+Optional $d^2\theta/ds^2$ columns for all five angles can be enabled via \texttt{--include-second-derivatives}. These are computed as \texttt{np.gradient($d\theta/ds$, $s_{\mathrm{targets}}$)} on the chain-rule first derivatives and are off by default, to be included only if ablation experiments show clear predictive gain.
 
-\textbf{QC flags:} Per-stroke checks in \texttt{qc\_flags}: \texttt{qc\_tracking\_sparse} (NaN frac $> 0.3$), \texttt{qc\_nonphysio\_deriv} ($|d\theta/dt| > 600$\,deg/s), \texttt{qc\_ds\_dt\_stall} ($ds/dt$ min $< 5\%$ median). Strokes not dropped; flags for downstream filtering.
+\paragraph{Quality guardrails.}
+Three per-stroke QC checks are now computed and surfaced as a comma-separated \texttt{qc\_flags} column in both the status and segment exports:
+\begin{itemize}
+	\item \textbf{\texttt{qc\_tracking\_sparse}}: fires when the NaN fraction across all angle columns in the drive window exceeds 0.3 (configurable via \texttt{MAX\_NAN\_FRAC\_ANGLES}).
+	\item \textbf{\texttt{qc\_nonphysio\_deriv}}: fires when $\max|d\theta/dt|$ across all angles exceeds $600$\,deg/s (configurable via \texttt{MAX\_ANGULAR\_VEL\_DEG\_S}), indicating a tracking spike rather than real motion.
+	\item \textbf{\texttt{qc\_ds\_dt\_stall}}: fires when $\min(ds/dt)$ during the drive falls below $5\%$ of the median $ds/dt$ (configurable via \texttt{DS\_DT\_STALL\_FRAC}), indicating a handle stall or tracking failure.
+\end{itemize}
+Strokes are \emph{not} silently dropped; QC flags are recorded so downstream filtering can be applied at modeling time.
 
-\textbf{New columns:} \texttt{handle\_velocity\_px\_s}, \texttt{handle\_accel\_px\_s2}, \texttt{qc\_flags}. Status CSV: \texttt{nan\_frac\_angles}, \texttt{max\_deriv\_deg\_s}, \texttt{ds\_dt\_min}. Constants exposed at module top.
+\paragraph{Handle velocity and acceleration as support features.}
+Two new columns are added to the segment export: \texttt{handle\_velocity\_px\_s} (interpolated from the recomputed handle velocity) and \texttt{handle\_accel\_px\_s2} (time-domain gradient of handle velocity, then interpolated). These correspond to the Section~9 secondary support features and are available at negligible additional cost since the underlying signals already exist in the stroke data.
+
+\paragraph{Summary of new/modified output columns.}
+All existing columns in \texttt{rp3\_pose\_force\_matched\_segments.csv} are preserved. The following are new:
+\begin{itemize}
+	\item \texttt{spine\_flexion\_ddeg\_ds} (was missing; now computed via chain rule like the other four angles).
+	\item \texttt{handle\_velocity\_px\_s}, \texttt{handle\_accel\_px\_s2} (support features).
+	\item \texttt{qc\_flags} (per-bin, reflecting per-stroke QC status).
+	\item When \texttt{--include-second-derivatives} is passed: \texttt{*\_d2deg\_ds2} for all five angles.
+\end{itemize}
+The status CSV gains \texttt{nan\_frac\_angles}, \texttt{max\_deriv\_deg\_s}, \texttt{ds\_dt\_min}, and \texttt{qc\_flags}. All smoothing/threshold constants are exposed as module-level values at the top of \texttt{inference\_cli.py}.
 
 \end{document}
