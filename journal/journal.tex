@@ -569,4 +569,35 @@ All existing columns in \texttt{rp3\_pose\_force\_matched\_segments.csv} are pre
 \end{itemize}
 The status CSV gains \texttt{nan\_frac\_angles}, \texttt{max\_deriv\_deg\_s}, \texttt{ds\_dt\_min}, and \texttt{qc\_flags}. All smoothing/threshold constants are exposed as module-level values at the top of \texttt{inference\_cli.py}.
 
+\paragraph{Target representation strategy and training dataset builder (March 14, 2026).}
+With the segment export now producing clean, well-aligned per-stroke kinematic and force data, the next step is to transform the raw long-format segment CSV into training-ready artifacts for the modeling stages. This corresponds to Section~10 of the inference plan.
+
+The core challenge is that different strokes have different numbers of native force bins (the RP3 reports force at fixed 2.2\,cm distance steps up to the actual stroke length, which varies stroke by stroke). Two target representations are therefore needed: one that preserves the native bin structure for direct-bin modeling with masked loss, and one that places all strokes on a common grid for dimensionality reduction and sequence modeling.
+
+A new standalone script, \texttt{inference/build\_training\_dataset.py}, handles this transformation. It reads one or more \texttt{rp3\_pose\_force\_matched\_segments.csv} files (enabling aggregation across multiple sessions) and outputs a self-contained \texttt{training\_dataset/} directory with all artifacts required for Stages~0/A/B.
+
+\paragraph{Pivoting from long format to stroke level.}
+The segment CSV is in long format (one row per force bin per stroke). The script groups rows by \texttt{(run\_name, match\_seq\_idx)} to recover one record per stroke, extracting scalar metadata (stroke length, drive/recovery/cycle times, QC flags) and per-bin arrays (force values, normalized progress, all kinematic feature channels) sorted by $s_{\mathrm{force}}$.
+
+\paragraph{QC filtering.}
+Two modes are supported. In \emph{soft} mode (default), all strokes are retained and a \texttt{qc\_excluded} boolean column is added; downstream modeling code can filter as needed. In \emph{hard} mode, strokes flagged with \texttt{qc\_tracking\_sparse} or \texttt{qc\_nonphysio\_deriv} are dropped before any artifact is built; \texttt{qc\_ds\_dt\_stall} is treated as a soft flag only.
+
+\paragraph{Representation 1: native padded bins.}
+Each stroke's force array is placed into a fixed $(N \times 77)$ matrix using the RP3 bin index (distance / 2.2\,cm) as the column address; unoccupied columns remain NaN. A boolean validity mask of the same shape tracks which bins are populated. The same padding is applied to the 12 kinematic feature channels, producing a $(N \times 77 \times 12)$ array. This is the ``direct bins with masked loss'' representation: a model trained on it sees the exact native RP3 samples and uses the mask to ignore padding during loss computation.
+
+\paragraph{Representation 2: fixed-grid resampling.}
+Each stroke's force array is resampled to a fixed 64-point grid over $s \in [0, 1]$ using linear interpolation (\texttt{np.interp}). The same grid is applied to all 12 kinematic channels, producing a $(N \times 64 \times 12)$ sequence array. The 64-point grid slightly oversamples the typical stroke (59--68 native bins) and provides a clean, uniform domain for PCA and sequence models.
+
+\paragraph{PCA on force curve shape.}
+PCA is fitted on peak-normalized fixed-grid curves (each curve divided by its maximum value, so the decomposition captures shape rather than scale). Up to 20 principal components are retained by default; the scree curve and cumulative explained variance are saved so the effective rank can be assessed at modeling time. The fitted PCA object is serialized with \texttt{joblib} for reuse during inference. Each stroke's 20 PCA coefficients are included in \texttt{strokes.csv} alongside metadata, so Stage~A models (interpretable linear/tree baselines) can be trained without loading any NumPy arrays.
+
+\paragraph{Scalar kinematic summary.}
+For each of the five canonical joint angles on the fixed grid, five summary scalars are computed: minimum, maximum, range, mean, and the progress value $s$ at which the angle reaches its maximum. These 25 features (5 angles $\times$ 5 statistics) form the input feature set for Stage~A alongside stroke-level metadata (stroke length, stroke rate, drive time).
+
+\paragraph{Output artifacts.}
+The \texttt{training\_dataset/} directory contains: \texttt{strokes.csv} (one row per stroke, all metadata + PCA coefficients + scalar kinematics); \texttt{force\_curves\_resampled.npy} ($N \times 64$, raw Newtons on fixed grid); \texttt{force\_curves\_peak\_norm.npy} ($N \times 64$, peak-normalized); \texttt{force\_curves\_padded.npy} ($N \times 77$, native bins NaN-padded); \texttt{force\_mask.npy} ($N \times 77$, validity mask); \texttt{kinematic\_sequences.npy} ($N \times 64 \times 12$, fixed grid); \texttt{kinematic\_padded.npy} ($N \times 77 \times 12$, native grid); \texttt{s\_grid.npy} (the 64-point grid); \texttt{pca\_model.joblib}; \texttt{pca\_explained\_variance.csv}; \texttt{feature\_names.json}; and \texttt{dataset\_summary.json} (QC counts, runs included, grid parameters).
+
+\paragraph{Integration into the inference CLI.}
+The dataset builder is called automatically at the end of \texttt{inference\_cli.py} whenever a non-empty segment export is produced. No extra invocation is required: a full end-to-end run (video $\rightarrow$ pose extraction $\rightarrow$ stroke detection $\rightarrow$ RP3 matching $\rightarrow$ segment export $\rightarrow$ training dataset) now completes in a single CLI call. The step can be suppressed with \texttt{--no-build-dataset}, and its parameters (grid size, number of PCA components, QC mode, force column, output directory) are all configurable. The path to the resulting \texttt{training\_dataset/} directory is recorded in both the run summary JSON and the printed output.
+
 \end{document}

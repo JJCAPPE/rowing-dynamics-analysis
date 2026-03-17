@@ -42,6 +42,7 @@ from match_rp3_cli import (
     _load_rp3 as _load_rp3_clean_csv,
     _resolve_anchor_rp3_idx as _resolve_rp3_anchor_idx,
 )
+from build_training_dataset import build_training_dataset as _build_training_dataset
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1218,6 +1219,43 @@ def _parse_args() -> argparse.Namespace:
         default=False,
         help="Include d2theta/ds2 columns in segment export (ablation-gated, default off).",
     )
+    parser.add_argument(
+        "--no-build-dataset",
+        action="store_true",
+        default=False,
+        help="Skip training dataset build after segment export.",
+    )
+    parser.add_argument(
+        "--dataset-output-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Directory for training dataset artifacts (default: <output-dir>/training_dataset/).",
+    )
+    parser.add_argument(
+        "--dataset-qc-mode",
+        choices=["soft", "hard"],
+        default="soft",
+        help="QC mode for dataset builder: soft (default) or hard.",
+    )
+    parser.add_argument(
+        "--dataset-n-grid",
+        type=int,
+        default=64,
+        help="Fixed-grid size for resampled force/kinematic sequences (default: 64).",
+    )
+    parser.add_argument(
+        "--dataset-n-pca-components",
+        type=int,
+        default=20,
+        help="Max PCA components for force curve shape decomposition (default: 20).",
+    )
+    parser.add_argument(
+        "--dataset-force-col",
+        choices=["force_raw", "force_n"],
+        default="force_raw",
+        help="Force column used for target representations (default: force_raw).",
+    )
     return parser.parse_args()
 
 
@@ -1516,6 +1554,29 @@ def main() -> int:
             segments_df.to_csv(rp3_segments_csv, index=False)
             segment_status_df.to_csv(rp3_segment_status_csv, index=False)
 
+            # ------------------------------------------------------------------
+            # Training dataset build (runs inline after segment export)
+            # ------------------------------------------------------------------
+            training_dataset_dir: Path | None = None
+            if not args.no_build_dataset and not segments_df.empty:
+                dataset_dir = (
+                    args.dataset_output_dir.expanduser().resolve()
+                    if args.dataset_output_dir is not None
+                    else output_dir / "training_dataset"
+                )
+                try:
+                    _build_training_dataset(
+                        segment_csvs=[rp3_segments_csv],
+                        output_dir=dataset_dir,
+                        qc_mode=args.dataset_qc_mode,
+                        n_grid=args.dataset_n_grid,
+                        n_pca_components=args.dataset_n_pca_components,
+                        force_col=args.dataset_force_col,
+                    )
+                    training_dataset_dir = dataset_dir
+                except Exception as exc:
+                    print(f"Training dataset build failed (non-fatal): {exc}")
+
             exported_strokes = int(segment_status_df["segment_exported"].astype(bool).sum())
             dropped_strokes = int(len(segment_status_df) - exported_strokes)
             drop_counts_series = (
@@ -1554,6 +1615,7 @@ def main() -> int:
                     "rp3_match_manifest_csv": str(rp3_manifest_csv),
                     "rp3_pose_force_segments_csv": str(rp3_segments_csv),
                     "segment_export_status_csv": str(rp3_segment_status_csv),
+                    "training_dataset_dir": str(training_dataset_dir) if training_dataset_dir is not None else None,
                 },
             }
             with rp3_summary_json.open("w", encoding="utf-8") as f:
@@ -1616,6 +1678,7 @@ def main() -> int:
             "rp3_pose_force_segments_csv": str(rp3_segments_csv) if rp3_summary is not None else None,
             "rp3_pose_force_export_status_csv": str(rp3_segment_status_csv) if rp3_summary is not None else None,
             "rp3_match_summary_json": str(rp3_summary_json) if rp3_summary is not None else None,
+            "training_dataset_dir": str(rp3_summary["outputs"]["training_dataset_dir"]) if rp3_summary is not None and rp3_summary["outputs"].get("training_dataset_dir") else None,
         },
         "input_video": input_video_path,
         "overlay_frames_written": int(overlay_frames_written),
@@ -1655,6 +1718,9 @@ def main() -> int:
         print(f"  {rp3_segments_csv}")
         print(f"  {rp3_segment_status_csv}")
         print(f"  {rp3_summary_json}")
+        td = rp3_summary["outputs"].get("training_dataset_dir")
+        if td:
+            print(f"  {td}/ (training dataset)")
     print(f"  {summary_json}")
     return 0
 
