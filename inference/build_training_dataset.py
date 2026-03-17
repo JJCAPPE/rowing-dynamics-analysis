@@ -44,10 +44,13 @@ DERIV_COLS = [c.replace("_deg", "_ddeg_ds") for c in ANGLE_COLS]
 SUPPORT_COLS = ["handle_velocity_px_s", "handle_accel_px_s2"]
 KINEMATIC_FEATURE_COLS: list[str] = ANGLE_COLS + DERIV_COLS + SUPPORT_COLS
 
+ONSET_FRAC_DEFAULT = 0.15
+
 SCALAR_METADATA_COLS = [
     "run_name",
     "rp3_clean_csv",
     "active_side",
+    "rower_facing",
     "match_seq_idx",
     "video_stroke_idx",
     "rp3_row_idx",
@@ -332,6 +335,99 @@ def _compute_scalar_summary(
 
 
 # ---------------------------------------------------------------------------
+# Coordination features (Section 9)
+# ---------------------------------------------------------------------------
+
+_ONSET_DERIV_COLS = [
+    "knee_active_ddeg_ds",
+    "hip_active_ddeg_ds",
+    "elbow_active_ddeg_ds",
+]
+_ONSET_NAMES = ["onset_knee_s", "onset_trunk_s", "onset_arms_s"]
+
+_RANGE_JOINT_COLS = [
+    "knee_active_deg",
+    "hip_active_deg",
+    "elbow_active_deg",
+]
+_FRAC_NAMES = ["knee_range_frac", "hip_range_frac", "elbow_range_frac"]
+
+
+def _find_onset_s(
+    deriv_curve: np.ndarray,
+    s_grid: np.ndarray,
+    onset_frac: float,
+) -> float:
+    """Return the s value at which |derivative| first exceeds *onset_frac* of its peak."""
+    finite = np.isfinite(deriv_curve)
+    if finite.sum() == 0:
+        return float("nan")
+    abs_d = np.abs(deriv_curve)
+    peak = float(np.nanmax(abs_d))
+    if peak == 0.0:
+        return float("nan")
+    threshold = onset_frac * peak
+    indices = np.where(finite & (abs_d >= threshold))[0]
+    if indices.size == 0:
+        return float("nan")
+    return float(s_grid[indices[0]])
+
+
+def _compute_coordination_features(
+    strokes: list[dict[str, Any]],
+    s_grid: np.ndarray,
+    kinematic_sequences: np.ndarray,
+    scalar_summary_df: pd.DataFrame,
+    onset_frac: float = ONSET_FRAC_DEFAULT,
+) -> pd.DataFrame:
+    """Return a DataFrame with coordination scalars for each stroke.
+
+    Columns produced:
+      onset_knee_s, onset_trunk_s, onset_arms_s,
+      lag_knee_to_trunk_s, lag_trunk_to_arms_s,
+      knee_range_frac, hip_range_frac, elbow_range_frac
+    """
+    deriv_indices = [KINEMATIC_FEATURE_COLS.index(c) for c in _ONSET_DERIV_COLS]
+
+    records: list[dict[str, Any]] = []
+    for i, s in enumerate(strokes):
+        row: dict[str, Any] = {"stroke_key": s["stroke_key"]}
+
+        # --- Phase timing lags ---
+        onsets: list[float] = []
+        for j, d_idx in enumerate(deriv_indices):
+            onset = _find_onset_s(kinematic_sequences[i, :, d_idx], s_grid, onset_frac)
+            row[_ONSET_NAMES[j]] = onset
+            onsets.append(onset)
+
+        row["lag_knee_to_trunk_s"] = onsets[1] - onsets[0] if all(np.isfinite(o) for o in onsets[:2]) else float("nan")
+        row["lag_trunk_to_arms_s"] = onsets[2] - onsets[1] if all(np.isfinite(o) for o in onsets[1:]) else float("nan")
+
+        # --- Angle ratio features ---
+        ranges: list[float] = []
+        for col in _RANGE_JOINT_COLS:
+            range_col = f"{col}_range"
+            if range_col in scalar_summary_df.columns:
+                val = scalar_summary_df.loc[
+                    scalar_summary_df["stroke_key"] == s["stroke_key"], range_col
+                ]
+                ranges.append(float(val.iloc[0]) if len(val) > 0 else float("nan"))
+            else:
+                ranges.append(float("nan"))
+
+        total_range = sum(r for r in ranges if np.isfinite(r))
+        for j, name in enumerate(_FRAC_NAMES):
+            if total_range > 0 and np.isfinite(ranges[j]):
+                row[name] = ranges[j] / total_range
+            else:
+                row[name] = float("nan")
+
+        records.append(row)
+
+    return pd.DataFrame(records)
+
+
+# ---------------------------------------------------------------------------
 # Assemble strokes.csv
 # ---------------------------------------------------------------------------
 
@@ -339,6 +435,7 @@ def _build_strokes_csv(
     strokes: list[dict[str, Any]],
     pca_coeffs: np.ndarray,
     scalar_summary_df: pd.DataFrame,
+    coordination_df: pd.DataFrame,
     n_pca: int,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
@@ -349,6 +446,19 @@ def _build_strokes_csv(
         row["stroke_rate_spm"] = s.get("stroke_rate_spm", float("nan"))
         row["qc_excluded"] = s.get("qc_excluded", False)
         row["n_bins"] = s["n_bins"]
+
+        drive_s = s.get("rp3_drive_s", float("nan"))
+        cycle_s = s.get("rp3_cycle_s", float("nan"))
+        if isinstance(drive_s, str):
+            drive_s = float(drive_s)
+        if isinstance(cycle_s, str):
+            cycle_s = float(cycle_s)
+        row["drive_ratio"] = (
+            drive_s / cycle_s
+            if np.isfinite(drive_s) and np.isfinite(cycle_s) and cycle_s > 0
+            else float("nan")
+        )
+
         for c in range(n_pca):
             row[f"pca_{c}"] = float(pca_coeffs[i, c]) if np.isfinite(pca_coeffs[i, c]) else float("nan")
         rows.append(row)
@@ -356,6 +466,10 @@ def _build_strokes_csv(
     base_df = pd.DataFrame(rows)
     summary_cols = [c for c in scalar_summary_df.columns if c != "stroke_key"]
     merged = base_df.merge(scalar_summary_df[["stroke_key"] + summary_cols], on="stroke_key", how="left")
+
+    coord_cols = [c for c in coordination_df.columns if c != "stroke_key"]
+    merged = merged.merge(coordination_df[["stroke_key"] + coord_cols], on="stroke_key", how="left")
+
     return merged
 
 
@@ -370,6 +484,7 @@ def build_training_dataset(
     n_grid: int = N_GRID_DEFAULT,
     n_pca_components: int = N_PCA_DEFAULT,
     force_col: str = "force_raw",
+    onset_frac: float = ONSET_FRAC_DEFAULT,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -411,9 +526,15 @@ def build_training_dataset(
     print("Computing scalar kinematic summary...")
     scalar_summary_df = _compute_scalar_summary(strokes, s_grid, kinematic_sequences)
 
+    # 7b. Coordination features (Section 9)
+    print("Computing coordination features...")
+    coordination_df = _compute_coordination_features(
+        strokes, s_grid, kinematic_sequences, scalar_summary_df, onset_frac=onset_frac,
+    )
+
     # 8. Assemble strokes.csv
     print("Assembling strokes.csv...")
-    strokes_df = _build_strokes_csv(strokes, pca_coeffs, scalar_summary_df, actual_n_pca)
+    strokes_df = _build_strokes_csv(strokes, pca_coeffs, scalar_summary_df, coordination_df, actual_n_pca)
 
     # 9. Write all artifacts
     print("Writing artifacts...")
@@ -433,6 +554,7 @@ def build_training_dataset(
         n_grid=n_grid,
         n_pca_components=actual_n_pca,
         force_col=force_col,
+        onset_frac=onset_frac,
         n_strokes_before_qc=len(df.groupby(["run_name", "match_seq_idx"])),
         n_strokes_after_qc=N,
         strokes=strokes,
@@ -461,6 +583,7 @@ def _write_artifacts(
     n_grid: int,
     n_pca_components: int,
     force_col: str,
+    onset_frac: float,
     n_strokes_before_qc: int,
     n_strokes_after_qc: int,
     strokes: list[dict[str, Any]],
@@ -505,6 +628,8 @@ def _write_artifacts(
         "pca_total_explained_variance": float(pca_model.explained_variance_ratio_.sum()),
         "kinematic_feature_cols": KINEMATIC_FEATURE_COLS,
         "n_kinematic_features": len(KINEMATIC_FEATURE_COLS),
+        "onset_frac": onset_frac,
+        "coordination_feature_cols": _ONSET_NAMES + ["lag_knee_to_trunk_s", "lag_trunk_to_arms_s"] + _FRAC_NAMES + ["drive_ratio"],
         "source_files": [str(p) for p in segment_csvs],
         "runs_included": sorted({s["run_name"] for s in strokes}),
     }
@@ -579,6 +704,15 @@ def _parse_args() -> argparse.Namespace:
             "force_n: PDF-normalized density (integral=1 over s)."
         ),
     )
+    parser.add_argument(
+        "--onset-frac",
+        type=float,
+        default=ONSET_FRAC_DEFAULT,
+        help=(
+            "Fraction of peak |derivative| used as onset threshold "
+            f"for phase-lag features (default: {ONSET_FRAC_DEFAULT})."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -617,6 +751,7 @@ def main() -> int:
             n_grid=args.n_grid,
             n_pca_components=args.n_pca_components,
             force_col=args.force_col,
+            onset_frac=args.onset_frac,
         )
     except Exception as exc:
         print(f"Error: {exc}")

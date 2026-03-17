@@ -703,6 +703,24 @@ def _savgol_smooth(arr: np.ndarray, window: int = SAVGOL_WINDOW, polyorder: int 
     return out
 
 
+def _detect_rower_facing(
+    trunk_deg: np.ndarray,
+    catch_frac: float = 0.15,
+) -> str:
+    """Return 'right' or 'left' based on the median trunk angle in the early drive.
+
+    Canonical convention: rower faces right means forward lean -> small
+    trunk_vs_horizontal_deg near the catch.  If the median over the first
+    *catch_frac* of frames exceeds 90 deg the rower is facing left.
+    """
+    n_catch = max(1, int(len(trunk_deg) * catch_frac))
+    early = trunk_deg[:n_catch]
+    finite = early[np.isfinite(early)]
+    if finite.size == 0:
+        return "right"
+    return "left" if float(np.median(finite)) > 90.0 else "right"
+
+
 def _build_force_pose_segments(
     *,
     run_dir: Path,
@@ -714,6 +732,7 @@ def _build_force_pose_segments(
     rp3_clean_csv: Path,
     use_rp3_finish: bool = False,
     include_second_derivatives: bool = False,
+    rower_facing: str = "auto",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     angles_csv = run_dir / "motionbert" / "angles_h36m.csv"
     if not angles_csv.exists():
@@ -877,12 +896,25 @@ def _build_force_pose_segments(
         if nan_frac > MAX_NAN_FRAC_ANGLES:
             qc_flags.append("qc_tracking_sparse")
 
+        # -- Mirror-normalize trunk_vs_horizontal_deg (Section 6.4) --
+        trunk_src = side_map["trunk_vs_horizontal_deg"]
+        trunk_raw_for_detect = pd.to_numeric(
+            drive[trunk_src], errors="coerce"
+        ).to_numpy(dtype=np.float64)
+        if rower_facing == "auto":
+            detected_facing = _detect_rower_facing(trunk_raw_for_detect)
+        else:
+            detected_facing = rower_facing
+        need_trunk_flip = detected_facing == "left"
+
         # -- Savitzky-Golay smoothing + time-domain derivatives --
         smoothed_angles: dict[str, np.ndarray] = {}
         dtheta_dt_time: dict[str, np.ndarray] = {}
         max_angular_vel = 0.0
         for out_col, src_col in side_map.items():
             raw = pd.to_numeric(drive[src_col], errors="coerce").to_numpy(dtype=np.float64)
+            if need_trunk_flip and out_col == "trunk_vs_horizontal_deg":
+                raw = 180.0 - raw
             smooth = _savgol_smooth(raw)
             smoothed_angles[out_col] = smooth
             if np.isfinite(smooth).sum() >= 2 and np.isfinite(time_arr).sum() >= 2:
@@ -950,6 +982,7 @@ def _build_force_pose_segments(
                 "run_name": run_dir.name,
                 "rp3_clean_csv": rp3_clean_csv.name,
                 "active_side": active_side,
+                "rower_facing": detected_facing,
                 "match_seq_idx": int(match_seq_idx),
                 "video_stroke_idx": v_stroke,
                 "rp3_row_idx": rp3_idx,
@@ -1214,6 +1247,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--w-cumulative", type=float, default=1.0)
     parser.add_argument("--w-skip", type=float, default=0.08)
     parser.add_argument(
+        "--rower-facing",
+        type=str,
+        default="auto",
+        choices=["auto", "left", "right"],
+        help=(
+            "Canonical rower facing direction in the image. "
+            "'auto' detects from catch posture (default). "
+            "'right'/'left' forces the convention."
+        ),
+    )
+    parser.add_argument(
         "--include-second-derivatives",
         action="store_true",
         default=False,
@@ -1255,6 +1299,12 @@ def _parse_args() -> argparse.Namespace:
         choices=["force_raw", "force_n"],
         default="force_raw",
         help="Force column used for target representations (default: force_raw).",
+    )
+    parser.add_argument(
+        "--dataset-onset-frac",
+        type=float,
+        default=0.15,
+        help="Onset threshold fraction for phase-lag coordination features (default: 0.15).",
     )
     return parser.parse_args()
 
@@ -1545,6 +1595,7 @@ def main() -> int:
                 rp3_clean_csv=rp3_clean_csv_path,
                 use_rp3_finish=use_rp3_finish,
                 include_second_derivatives=args.include_second_derivatives,
+                rower_facing=args.rower_facing,
             )
             _validate_force_segment_exports(
                 manifest_df=manifest_df,
@@ -1572,6 +1623,7 @@ def main() -> int:
                         n_grid=args.dataset_n_grid,
                         n_pca_components=args.dataset_n_pca_components,
                         force_col=args.dataset_force_col,
+                        onset_frac=args.dataset_onset_frac,
                     )
                     training_dataset_dir = dataset_dir
                 except Exception as exc:

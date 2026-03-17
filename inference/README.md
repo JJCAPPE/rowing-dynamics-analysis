@@ -92,6 +92,7 @@ Notes:
 | Flag | Default | Purpose |
 |---|---|---|
 | `--include-second-derivatives` | off | add `d2theta/ds2` columns for all five angles |
+| `--rower-facing` | `auto` | `auto`, `left`, or `right`; controls trunk mirror-normalization |
 
 **Training dataset:**
 
@@ -103,6 +104,7 @@ Notes:
 | `--dataset-n-grid` | 64 | fixed-grid resolution for resampled sequences |
 | `--dataset-n-pca-components` | 20 | PCA components for force curve shape decomposition |
 | `--dataset-force-col` | `force_raw` | `force_raw` (Newtons) or `force_n` (PDF-normalized) as target |
+| `--dataset-onset-frac` | 0.15 | onset threshold fraction for phase-lag coordination features |
 
 ---
 
@@ -124,7 +126,7 @@ Supports shell glob expansion — all matched CSVs are concatenated before build
 
 | File | Shape / Content |
 |---|---|
-| `strokes.csv` | One row per stroke: metadata + scalar kinematics + PCA coefficients |
+| `strokes.csv` | One row per stroke: metadata + scalar kinematics + coordination features + PCA coefficients |
 | `force_curves_resampled.npy` | (N, 64) raw Newton curves on fixed grid |
 | `force_curves_peak_norm.npy` | (N, 64) peak-normalized curves used for PCA |
 | `force_curves_padded.npy` | (N, 77) native-bin padded curves (NaN where bin > stroke length) |
@@ -138,6 +140,22 @@ Supports shell glob expansion — all matched CSVs are concatenated before build
 | `dataset_summary.json` | QC counts, grid params, runs included |
 
 The 12 kinematic channels are: 5 joint angles (`knee_active`, `hip_active`, `elbow_active`, `trunk_vs_horizontal`, `spine_flexion`) + 5 first derivatives (`*_ddeg_ds`) + `handle_velocity_px_s` + `handle_accel_px_s2`.
+
+### Coordination and support columns in `strokes.csv`
+
+| Column | Source | Description |
+|---|---|---|
+| `drive_ratio` | metadata | `rp3_drive_s / rp3_cycle_s` — fraction of the stroke cycle spent in the drive |
+| `onset_knee_s` | derivative curves | normalized progress `s` at which knee extension begins (`\|derivative\|` crosses onset threshold) |
+| `onset_trunk_s` | derivative curves | normalized progress `s` at which trunk swing begins |
+| `onset_arms_s` | derivative curves | normalized progress `s` at which arm draw begins |
+| `lag_knee_to_trunk_s` | onset values | `onset_trunk_s - onset_knee_s` |
+| `lag_trunk_to_arms_s` | onset values | `onset_arms_s - onset_trunk_s` |
+| `knee_range_frac` | scalar summary | knee range / (knee + hip + elbow range) |
+| `hip_range_frac` | scalar summary | hip range / (knee + hip + elbow range) |
+| `elbow_range_frac` | scalar summary | elbow range / (knee + hip + elbow range) |
+
+Onset detection uses a fraction (default 0.15) of each joint's peak |dθ/ds| as the activation threshold. Tunable via `--onset-frac` / `--dataset-onset-frac`.
 
 ---
 
@@ -189,6 +207,7 @@ In `rp3_pose_force_matched_segments.csv`:
   - `qc_tracking_sparse`: >30% NaN angle values in the drive window.
   - `qc_nonphysio_deriv`: max |dθ/dt| exceeds 600 deg/s (tracking spike).
   - `qc_ds_dt_stall`: handle progress rate drops to <5% of its median (stall or tracking failure).
+- `rower_facing` — detected or overridden camera-side facing direction (`"right"` or `"left"`). When `"left"`, `trunk_vs_horizontal_deg` has been mirror-normalized (`180 - θ`) so that forward lean is consistently a small angle.
 - `handle_velocity_px_s`, `handle_accel_px_s2` — handle kinematics resampled to each force bin.
 - `*_ddeg_ds` — chain-rule progress-domain derivatives for all five angles (computed as `dθ/dt ÷ ds/dt` in time domain, then interpolated). Includes `spine_flexion_ddeg_ds`.
 - `*_d2deg_ds2` — second derivatives (only when `--include-second-derivatives` is passed).
