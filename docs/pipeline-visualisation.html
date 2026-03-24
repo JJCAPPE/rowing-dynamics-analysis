@@ -1,0 +1,1963 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Force Curve Inference Pipeline</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700&family=Source+Sans+3:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+         :root {
+            --bg: #f6f2ec;
+            --bg-warm: #efe9e0;
+            --surface: #fff;
+            --surface-hover: #faf8f5;
+            --border: #d8d0c4;
+            --border-active: #8b7355;
+            --text: #3d3529;
+            --text-muted: #8a7e6e;
+            --text-bright: #1a150e;
+            --video: #2563eb;
+            --video-bg: rgba(37, 99, 235, 0.07);
+            --video-border: rgba(37, 99, 235, 0.2);
+            --rp3: #c2410c;
+            --rp3-bg: rgba(194, 65, 12, 0.06);
+            --rp3-border: rgba(194, 65, 12, 0.2);
+            --shared: #6d28d9;
+            --shared-bg: rgba(109, 40, 217, 0.06);
+            --shared-border: rgba(109, 40, 217, 0.18);
+            --output: #047857;
+            --output-bg: rgba(4, 120, 87, 0.06);
+            --output-border: rgba(4, 120, 87, 0.2);
+            --qc: #b91c1c;
+            --qc-bg: rgba(185, 28, 28, 0.05);
+            --qc-border: rgba(185, 28, 28, 0.15);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Source Sans 3', sans-serif;
+            font-weight: 400;
+            line-height: 1.65;
+            -webkit-font-smoothing: antialiased;
+        }
+        
+        .page {
+            max-width: 920px;
+            margin: 0 auto;
+            padding: 56px 40px 80px;
+        }
+        /* ── Header ── */
+        
+        .header {
+            margin-bottom: 40px;
+        }
+        
+        .header h1 {
+            font-family: 'Fraunces', serif;
+            font-weight: 700;
+            font-size: 1.8rem;
+            color: var(--text-bright);
+            letter-spacing: -0.03em;
+            line-height: 1.2;
+            margin-bottom: 10px;
+        }
+        
+        .header .subtitle {
+            font-size: 0.92rem;
+            color: var(--text-muted);
+            max-width: 620px;
+            line-height: 1.6;
+        }
+
+        .header-nav {
+            margin-top: 14px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 18px;
+            align-items: center;
+        }
+
+        .header-nav a {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--shared);
+            text-decoration: none;
+            letter-spacing: 0.02em;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.15s ease, color 0.15s ease;
+        }
+
+        .header-nav a:hover {
+            color: var(--text-bright);
+            border-bottom-color: var(--shared-border);
+        }
+
+        .step-nav {
+            margin: -4px 0 12px 40px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+        }
+
+        .step-nav a {
+            color: var(--shared);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .step-nav a:hover {
+            text-decoration: underline;
+        }
+
+        /* Embedded model-training diagrams (steps 07 / 09) */
+        .model-training-diagram {
+            margin: 16px 0 22px 40px;
+            max-width: calc(100% - 40px);
+        }
+
+        .model-training-diagram-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 6px 14px;
+            margin-bottom: 10px;
+        }
+
+        .model-training-diagram-title {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--text-bright);
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .model-training-diagram-sub {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .diagram-nav-link {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.65rem;
+            font-weight: 500;
+            color: var(--shared);
+            text-decoration: none;
+            margin-left: auto;
+        }
+
+        .diagram-nav-link:hover {
+            text-decoration: underline;
+        }
+
+        .model-training-diagram-inner {
+            background: var(--surface);
+            border: 1.5px solid var(--border);
+            border-radius: 6px;
+            padding: 24px 20px;
+        }
+
+        .model-training-diagram-inner svg {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .model-training-diagram-inner .diagram-caption {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            margin-top: 10px;
+            text-align: center;
+            letter-spacing: 0.02em;
+        }
+
+        /* ── Mode switcher ── */
+        
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin: 28px 0 36px;
+        }
+        
+        .controls label {
+            font-size: 0.78rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        .pill-group {
+            display: flex;
+            gap: 0;
+            border: 1.5px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            background: var(--bg-warm);
+        }
+        
+        .pill {
+            padding: 7px 18px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-family: 'Source Sans 3', sans-serif;
+            font-size: 0.82rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-right: 1px solid var(--border);
+        }
+        
+        .pill:last-child {
+            border-right: none;
+        }
+        
+        .pill.active {
+            background: var(--text-bright);
+            color: #fff;
+        }
+        
+        .pill:hover:not(.active) {
+            background: rgba(0, 0, 0, 0.04);
+            color: var(--text);
+        }
+        /* ── Section scaffolding ── */
+        
+        .section {
+            margin-bottom: 4px;
+            opacity: 1;
+            transition: opacity 0.35s ease, transform 0.35s ease;
+        }
+        
+        .dimmed {
+            opacity: 0.12;
+            pointer-events: none;
+            transform: scale(0.985);
+        }
+        
+        .card.dimmed {
+            opacity: 0.12 !important;
+            transform: none;
+        }
+        
+        .card.entering {
+            opacity: 0;
+            transform: translateY(8px);
+        }
+        
+        .card {
+            transition: opacity 0.35s ease, transform 0.25s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        .step-label {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        
+        .step-num {
+            font-family: 'Fraunces', serif;
+            font-weight: 300;
+            font-size: 1.5rem;
+            color: var(--border);
+            min-width: 30px;
+        }
+        
+        .step-title {
+            font-family: 'Fraunces', serif;
+            font-weight: 500;
+            font-size: 1.05rem;
+            color: var(--text-bright);
+            letter-spacing: -0.01em;
+        }
+        /* ── Cards ── */
+        
+        .card-row {
+            display: grid;
+            align-items: start;
+            gap: 14px;
+            margin-bottom: 14px;
+        }
+        
+        .card-row.cols-2 {
+            grid-template-columns: 1fr 1fr;
+        }
+        
+        .card-row.cols-1 {
+            grid-template-columns: 1fr;
+        }
+        
+        .card {
+            background: var(--surface);
+            border: 1.5px solid var(--border);
+            border-radius: 5px;
+            padding: 16px 20px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+        
+        .card::after {
+            content: '';
+            position: absolute;
+            top: 8px;
+            left: 0;
+            width: 3px;
+            height: calc(100% - 16px);
+            border-radius: 0 2px 2px 0;
+            transition: opacity 0.2s;
+        }
+        
+        .card.t-video::after {
+            background: var(--video);
+        }
+        
+        .card.t-rp3::after {
+            background: var(--rp3);
+        }
+        
+        .card.t-shared::after {
+            background: var(--shared);
+        }
+        
+        .card.t-output::after {
+            background: var(--output);
+        }
+        
+        .card:hover {
+            border-color: var(--border-active);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+        
+        .card.open {
+            border-color: var(--border-active);
+        }
+        
+        .card-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        
+        .card-title {
+            font-weight: 600;
+            font-size: 0.88rem;
+            color: var(--text-bright);
+            line-height: 1.4;
+        }
+        
+        .card-chevron {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            margin-top: 3px;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+        
+        .card.open .card-chevron {
+            transform: rotate(90deg);
+        }
+        
+        .card-brief {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+            line-height: 1.55;
+        }
+        
+        .card-detail {
+            display: none;
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: var(--text);
+            line-height: 1.7;
+        }
+        
+        .card.open .card-detail {
+            display: block;
+            animation: reveal 0.25s ease;
+        }
+        
+        @keyframes reveal {
+            from {
+                opacity: 0;
+                transform: translateY(-6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .card-detail p {
+            margin-bottom: 8px;
+        }
+        
+        .card-detail strong {
+            font-weight: 600;
+            color: var(--text-bright);
+        }
+        
+        .schema {
+            background: var(--bg-warm);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 10px 14px;
+            margin-top: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            line-height: 1.9;
+            color: var(--text-muted);
+        }
+        
+        .schema .hl {
+            color: var(--video);
+            font-weight: 500;
+        }
+        
+        .schema .hl-rp3 {
+            color: var(--rp3);
+            font-weight: 500;
+        }
+        
+        .schema .hl-shared {
+            color: var(--shared);
+            font-weight: 500;
+        }
+        
+        .schema .dim {
+            opacity: 0.5;
+        }
+        
+        code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.76rem;
+            background: var(--shared-bg);
+            color: var(--shared);
+            padding: 1px 5px;
+            border-radius: 3px;
+        }
+        /* ── Connectors ── */
+        
+        .connector {
+            display: flex;
+            justify-content: center;
+            height: 28px;
+            position: relative;
+        }
+        
+        .connector .stem {
+            width: 1.5px;
+            height: 100%;
+            background: var(--border);
+        }
+        
+        .connector .stem::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid var(--border);
+        }
+        /* ── Merge badge ── */
+        
+        .merge-badge-wrap {
+            text-align: center;
+            padding: 4px 0 8px;
+        }
+        
+        .merge-badge {
+            display: inline-block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            font-weight: 500;
+            color: var(--shared);
+            background: var(--shared-bg);
+            border: 1px solid var(--shared-border);
+            padding: 5px 16px;
+            border-radius: 20px;
+            letter-spacing: 0.02em;
+        }
+        /* ── QC gate ── */
+        
+        .qc-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--qc-bg);
+            border: 1px solid var(--qc-border);
+            border-radius: 4px;
+            padding: 8px 16px;
+            margin: 6px 0 10px;
+            font-size: 0.76rem;
+            font-weight: 500;
+            color: var(--qc);
+        }
+        
+        .qc-bar svg {
+            flex-shrink: 0;
+            width: 14px;
+            height: 14px;
+        }
+        /* ── Phase divider ── */
+        
+        .phase-break {
+            position: relative;
+            border-top: 1px dashed var(--border);
+            margin: 32px 0;
+        }
+        
+        .phase-break-label {
+            position: absolute;
+            top: -9px;
+            right: 0;
+            background: var(--bg);
+            padding: 0 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            color: var(--text-muted);
+            opacity: 0.45;
+        }
+        /* ── Legend ── */
+        
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.76rem;
+            color: var(--text-muted);
+        }
+        
+        .legend-swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+        }
+        
+        .sw-video {
+            background: var(--video);
+        }
+        
+        .sw-rp3 {
+            background: var(--rp3);
+        }
+        
+        .sw-shared {
+            background: var(--shared);
+        }
+        
+        .sw-output {
+            background: var(--output);
+        }
+        
+        .sw-qc {
+            background: var(--qc);
+        }
+        
+        .footnote {
+            margin-top: 14px;
+            font-size: 0.76rem;
+            color: var(--text-muted);
+            opacity: 0.55;
+            font-style: italic;
+        }
+
+        .footnote .footnote-link {
+            font-style: normal;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            color: var(--shared);
+            text-decoration: none;
+            opacity: 1;
+        }
+
+        .footnote .footnote-link:hover {
+            text-decoration: underline;
+        }
+
+        /* ── Evidence images ── */
+        .evidence {
+            margin-top: 12px;
+        }
+
+        .evidence-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.65rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            opacity: 0.6;
+            margin-bottom: 6px;
+        }
+
+        .evidence-strip {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .evidence-fig {
+            flex: 1 1 180px;
+            max-width: 100%;
+        }
+
+        .evidence-fig img {
+            width: 100%;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+            cursor: zoom-in;
+            transition: border-color 0.2s;
+            display: block;
+        }
+
+        .evidence-fig img:hover {
+            border-color: var(--border-active);
+        }
+
+        .evidence-fig figcaption {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+
+        .evidence-before-after {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .evidence-before-after .ba-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.6rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 4px;
+        }
+
+        .evidence-before-after .ba-before .ba-label { color: var(--qc); }
+        .evidence-before-after .ba-after .ba-label { color: var(--output); }
+
+        /* ── S-domain SVG diagram ── */
+        .s-domain-diagram {
+            margin-top: 12px;
+            background: var(--bg-warm);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 16px;
+        }
+
+        .s-domain-diagram svg {
+            width: 100%;
+            height: auto;
+        }
+
+        /* ── Lightbox ── */
+        .lightbox {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 1000;
+            background: rgba(10, 8, 5, 0.88);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            cursor: zoom-out;
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+        }
+
+        .lightbox.active {
+            display: flex;
+            animation: lbFade 0.2s ease;
+        }
+
+        @keyframes lbFade {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .lightbox img {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 6px;
+            box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+        }
+
+        @media (max-width: 700px) {
+            .page {
+                padding: 32px 20px 60px;
+            }
+            .card-row.cols-2 {
+                grid-template-columns: 1fr;
+            }
+            .header h1 {
+                font-size: 1.4rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="page">
+
+        <div class="header">
+            <h1>Force Curve Inference Pipeline</h1>
+            <p class="subtitle">Predicting per-stroke force curves from video-only biomechanics. Two synchronized data streams converge during training; inference uses video alone. Click any stage to inspect data contracts.</p>
+            <nav class="header-nav" aria-label="Related pages">
+                <a href="model-training-stages.html">Model training &mdash; stage diagrams</a>
+            </nav>
+        </div>
+
+        <div class="controls">
+            <label>View</label>
+            <div class="pill-group">
+                <button class="pill active" data-mode="both">Full Pipeline</button>
+                <button class="pill" data-mode="inference">Inference Path</button>
+            </div>
+        </div>
+
+        <!-- ═══ 01 DATA SOURCES ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">01</span>
+                <span class="step-title">Data Sources</span>
+            </div>
+            <div class="card-row cols-2">
+                <div class="card open t-video" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Video Capture</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Monocular rowing video &rarr; Sports2D / MotionBERT pose estimation</div>
+                    <div class="card-detail">
+                        <p>The <code>sports2d_app</code> pipeline processes monocular video through MotionBERT 3D lifting to extract H3.6M skeleton landmarks and compute joint kinematics frame-by-frame.</p>
+                        <div class="evidence">
+                            <div class="evidence-strip">
+                                <figure class="evidence-fig">
+                                    <img src="journal/process-pics/erg-sports2d.png" alt="Sports2D pose overlay on erg video" onclick="openLightbox(this)">
+                                    <figcaption>Sports2D pose overlay: smooth keypoint trajectories under self-occlusion</figcaption>
+                                </figure>
+                                <figure class="evidence-fig">
+                                    <img src="journal/process-pics/tracked-handle.jpg" alt="Tracked handle and machine reference" onclick="openLightbox(this)">
+                                    <figcaption>Handle proxy (hand midpoint) and machine reference tracking</figcaption>
+                                </figure>
+                            </div>
+                        </div>
+                        <div class="schema">
+                            <div><span class="hl">angles_h36m.csv</span></div>
+                            <div>&ensp;frame_idx, time_s</div>
+                            <div>&ensp;left/right_knee_deg, hip_deg, elbow_deg</div>
+                            <div>&ensp;trunk_vs_horizontal_deg, spine_flexion_deg</div>
+                            <div>&ensp;head_vs_trunk_deg</div>
+                            <br>
+                            <div><span class="hl">stroke_signal.csv</span></div>
+                            <div>&ensp;frame_idx, time_s, handle_cx/cy_px</div>
+                            <div>&ensp;relative_axis_px, velocity_axis_px_s</div>
+                            <div>&ensp;stroke_idx, stroke_phase, is_drive</div>
+                            <div>&ensp;is_catch, is_finish</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card open t-rp3" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">RP3 Force Data</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Ergometer force exports &rarr; cleaned per-stroke force-at-distance bins</div>
+                    <div class="card-detail">
+                        <p>Raw RP3 exports are cleaned by <code>inference_cli.py</code> and expanded by <code>expand_rp3_curve_data.py</code> into spatially-sampled force bins at 2.2 cm intervals along the drive.</p>
+                        <div class="evidence">
+                            <div class="evidence-strip">
+                                <figure class="evidence-fig">
+                                    <img src="journal/process-pics/recreation.png" alt="Per-stroke RP3 force curve reconstruction" onclick="openLightbox(this)">
+                                    <figcaption>Per-stroke force curves reconstructed from cleaned RP3 data (2.2 cm distance bins)</figcaption>
+                                </figure>
+                            </div>
+                        </div>
+                        <div class="schema">
+                            <div><span class="hl-rp3">*-clean.csv (expanded)</span></div>
+                            <div>&ensp;stroke_number, time, stroke_length</div>
+                            <div>&ensp;peak_force, peak_force_pos, rel_peak_force_pos</div>
+                            <div>&ensp;drive_time, recover_time</div>
+                            <div>&ensp;force_at_2.2cm, force_at_4.4cm, &hellip; force_at_Ncm</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 02 STANDARDIZATION ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">02</span>
+                <span class="step-title">Unilateral Standardization</span>
+            </div>
+            <div class="card-row cols-1">
+                <div class="card open t-video" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Single-Side Biomechanics Mapping</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Camera-near side becomes the canonical limb chain; sign conventions normalized across sessions</div>
+                    <div class="card-detail">
+                        <p>Each session declares an <code>active_side</code> (left or right). Source angle columns are mapped to canonical names and mirror-normalized so that feature semantics are consistent regardless of camera placement.</p>
+                        <div class="schema">
+                            <div><span class="hl">Canonical features</span></div>
+                            <div>&ensp;knee_active_deg &larr; left <span class="dim">or</span> right_knee_deg</div>
+                            <div>&ensp;hip_active_deg &larr; left <span class="dim">or</span> right_hip_deg</div>
+                            <div>&ensp;elbow_active_deg &larr; left <span class="dim">or</span> right_elbow_deg</div>
+                            <div>&ensp;trunk_deg, spine_deg <span class="dim">(shared central)</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 03 SEGMENTATION ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">03</span>
+                <span class="step-title">Stroke Segmentation</span>
+            </div>
+            <div class="card-row cols-2">
+                <div class="card open t-video" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Video Stroke Segmentation</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Catch/finish boundary detection &rarr; isolate drive portions per stroke</div>
+                    <div class="card-detail">
+                        <p>Uses <code>stroke_signal.csv</code> flags: drive starts at catch, ends at finish. Only the drive portion is supervised against RP3 force curves.</p>
+                        <div class="evidence">
+                            <div class="evidence-strip">
+                                <figure class="evidence-fig">
+                                    <img src="journal/process-pics/angles_h36m_with_stroke_plot.png" alt="Angle traces with stroke events" onclick="openLightbox(this)">
+                                    <figcaption>Joint angles, handle position, and stroke-phase markers from a single video</figcaption>
+                                </figure>
+                            </div>
+                        </div>
+                        <div class="schema">
+                            <div><span class="hl">Per stroke</span></div>
+                            <div>&ensp;catch_frame, finish_frame</div>
+                            <div>&ensp;drive_frames[]: frame indices during drive</div>
+                            <div>&ensp;feature_curves[]: angle values at drive frames</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card open t-rp3" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">RP3 Stroke Structure</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Each RP3 row = one stroke; force sampled at 2.2 cm spatial bins along the drive</div>
+                    <div class="card-detail">
+                        <p>RP3 data is already per-stroke. Force values are sampled at fixed spatial intervals along the drive distance. The stroke length determines how many bins are valid.</p>
+                        <div class="evidence">
+                            <div class="evidence-strip">
+                                <figure class="evidence-fig">
+                                    <img src="journal/process-pics/cleaned-data.png" alt="Cleaned RP3 force curve data" onclick="openLightbox(this)">
+                                    <figcaption>Cleaned RP3 data: each sample at a fixed 2.2 cm step in stroke length</figcaption>
+                                </figure>
+                            </div>
+                        </div>
+                        <div class="schema">
+                            <div><span class="hl-rp3">Per stroke (RP3 row)</span></div>
+                            <div>&ensp;d_k = [2.2, 4.4, 6.6, &hellip;] cm</div>
+                            <div>&ensp;F(d_k) = force at each distance bin</div>
+                            <div>&ensp;stroke_length_cm &rarr; valid bin count</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- QC -->
+        <div class="qc-bar" data-role="shared">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <span>QC &mdash; stroke detection confidence, tracking completeness, physical plausibility, monotonic progression</span>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 04 SYNCHRONIZATION (training only) ═══ -->
+        <div class="section" data-role="training">
+            <div class="step-label">
+                <span class="step-num">04</span>
+                <span class="step-title">Session Pairing &amp; Synchronization</span>
+            </div>
+            <div class="card-row cols-1">
+                <div class="card open t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Cross-Modal Stroke Alignment</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Coarse sync via stroke-rate cross-correlation &rarr; fine sync via catch/finish boundary agreement</div>
+                    <div class="card-detail">
+                        <p><strong>Coarse:</strong> Align video and RP3 stroke streams using inter-stroke interval cross-correlation (stroke-rate matching).</p>
+                        <p><strong>Fine:</strong> Maximise catch/finish boundary agreement over a calibration window to lock the per-stroke mapping.</p>
+                        <p><strong>Acceptance:</strong> Reject if sustained stroke-rate mismatch &gt;1 spm or low boundary agreement. Reject rather than weakly align.</p>
+                        <div class="evidence">
+                            <div class="evidence-label">Alignment evolution</div>
+                            <div class="evidence-before-after">
+                                <figure class="evidence-fig ba-before">
+                                    <div class="ba-label">Before (position-max, 0.38s error)</div>
+                                    <img src="journal/process-pics/stroke-matching.png" alt="Initial stroke matching with large drift" onclick="openLightbox(this)">
+                                </figure>
+                                <figure class="evidence-fig ba-after">
+                                    <div class="ba-label">After (velocity-calibrated, 15ms error)</div>
+                                    <img src="journal/process-pics/matching-with-angles.png" alt="Calibrated stroke matching with angle overlay" onclick="openLightbox(this)">
+                                </figure>
+                            </div>
+                        </div>
+                        <div class="schema">
+                            <div><span class="hl-shared">Pairing manifest</span></div>
+                            <div>&ensp;session_id, athlete_id</div>
+                            <div>&ensp;temporal_offset, drift_estimate</div>
+                            <div>&ensp;accepted_stroke_ranges[]</div>
+                            <div>&ensp;qc: { spm_agreement, boundary_corr }</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="qc-bar" data-role="training">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span>QC &mdash; stroke-rate consistency, pairing drift rejection, inter-stroke timing agreement</span>
+            </div>
+        </div>
+
+        <div class="connector" data-role="training">
+            <div class="stem"></div>
+        </div>
+
+        <div class="merge-badge-wrap" data-role="training">
+            <span class="merge-badge">&#x21b3; Video + RP3 streams merge in normalized progress space</span>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 05 ALIGNMENT ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">05</span>
+                <span class="step-title">Drive-Domain Alignment</span>
+            </div>
+            <div class="card-row cols-1">
+                <div class="card open t-shared" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Normalized Progress Grid &nbsp; <code>s &isin; [0, 1]</code></span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">All signals mapped to normalized drive progress &mdash; not wall-clock time, not pixels</div>
+                    <div class="card-detail">
+                        <p>The master domain is normalized drive progress <code>s</code>. This decouples the representation from frame rate, stroke speed, and physical distance.</p>
+                        <p><strong>RP3 side:</strong> <code>s_force = d_k / stroke_length_cm</code></p>
+                        <p><strong>Video side:</strong> <code>s_video</code> from drive phase progression signal.</p>
+                        <p>Video features are interpolated from <code>s_video</code> to <code>s_force</code> grid. No pixel-to-cm calibration is needed in this iteration.</p>
+                        <div class="s-domain-diagram">
+                            <svg viewBox="0 0 560 220" xmlns="http://www.w3.org/2000/svg">
+                                <!-- Video timeline (top) -->
+                                <text x="8" y="18" font-family="JetBrains Mono, monospace" font-size="9" font-weight="500" fill="#2563eb" letter-spacing="0.05em">VIDEO (time domain)</text>
+                                <rect x="8" y="26" width="240" height="32" rx="3" fill="rgba(37,99,235,0.07)" stroke="#2563eb" stroke-width="1"/>
+                                <text x="18" y="46" font-family="JetBrains Mono, monospace" font-size="8" fill="#2563eb">frame 0</text>
+                                <text x="90" y="46" font-family="JetBrains Mono, monospace" font-size="8" fill="#2563eb">frame k</text>
+                                <text x="190" y="46" font-family="JetBrains Mono, monospace" font-size="8" fill="#2563eb">frame N</text>
+                                <!-- Tick marks for video frames (irregular in s-space) -->
+                                <line x1="18" y1="28" x2="18" y2="56" stroke="#2563eb" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="55" y1="28" x2="55" y2="56" stroke="#2563eb" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="95" y1="28" x2="95" y2="56" stroke="#2563eb" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="130" y1="28" x2="130" y2="56" stroke="#2563eb" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="160" y1="28" x2="160" y2="56" stroke="#2563eb" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="195" y1="28" x2="195" y2="56" stroke="#2563eb" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="238" y1="28" x2="238" y2="56" stroke="#2563eb" stroke-width="0.5" opacity="0.4"/>
+                                <!-- Sub-label -->
+                                <text x="78" y="72" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">uniform &Delta;t, non-uniform in s</text>
+
+                                <!-- RP3 distance bins (top-right) -->
+                                <text x="310" y="18" font-family="JetBrains Mono, monospace" font-size="9" font-weight="500" fill="#c2410c" letter-spacing="0.05em">RP3 (distance domain)</text>
+                                <rect x="310" y="26" width="240" height="32" rx="3" fill="rgba(194,65,12,0.06)" stroke="#c2410c" stroke-width="1"/>
+                                <text x="320" y="46" font-family="JetBrains Mono, monospace" font-size="8" fill="#c2410c">2.2cm</text>
+                                <text x="398" y="46" font-family="JetBrains Mono, monospace" font-size="8" fill="#c2410c">d_k cm</text>
+                                <text x="490" y="46" font-family="JetBrains Mono, monospace" font-size="8" fill="#c2410c">L cm</text>
+                                <!-- Tick marks for RP3 bins (uniform in distance) -->
+                                <line x1="320" y1="28" x2="320" y2="56" stroke="#c2410c" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="352" y1="28" x2="352" y2="56" stroke="#c2410c" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="384" y1="28" x2="384" y2="56" stroke="#c2410c" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="416" y1="28" x2="416" y2="56" stroke="#c2410c" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="448" y1="28" x2="448" y2="56" stroke="#c2410c" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="480" y1="28" x2="480" y2="56" stroke="#c2410c" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="510" y1="28" x2="510" y2="56" stroke="#c2410c" stroke-width="0.5" opacity="0.4"/>
+                                <line x1="540" y1="28" x2="540" y2="56" stroke="#c2410c" stroke-width="0.5" opacity="0.4"/>
+                                <!-- Sub-label -->
+                                <text x="375" y="72" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">uniform &Delta;d = 2.2 cm</text>
+
+                                <!-- Arrows converging down -->
+                                <path d="M128,80 C128,105 200,120 280,135" stroke="#2563eb" stroke-width="1.2" fill="none" stroke-dasharray="4,3" marker-end="url(#arrowBlue)"/>
+                                <path d="M430,80 C430,105 360,120 280,135" stroke="#c2410c" stroke-width="1.2" fill="none" stroke-dasharray="4,3" marker-end="url(#arrowOrange)"/>
+
+                                <!-- Normalize labels on arrows -->
+                                <text x="145" y="103" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb" transform="rotate(-18, 145, 103)">s = progress(t)</text>
+                                <text x="365" y="103" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#c2410c" transform="rotate(18, 365, 103)">s = d / L</text>
+
+                                <!-- Common s-grid (bottom, centered) -->
+                                <text x="180" y="148" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#6d28d9" letter-spacing="0.05em">COMMON GRID: s &isin; [0, 1]</text>
+                                <rect x="110" y="156" width="340" height="36" rx="3" fill="rgba(109,40,217,0.06)" stroke="#6d28d9" stroke-width="1.5"/>
+
+                                <!-- Evenly spaced s ticks -->
+                                <line x1="120" y1="158" x2="120" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="154" y1="158" x2="154" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="188" y1="158" x2="188" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="222" y1="158" x2="222" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="256" y1="158" x2="256" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="280" y1="158" x2="280" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="314" y1="158" x2="314" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="348" y1="158" x2="348" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="382" y1="158" x2="382" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="416" y1="158" x2="416" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+                                <line x1="440" y1="158" x2="440" y2="190" stroke="#6d28d9" stroke-width="0.7" opacity="0.5"/>
+
+                                <text x="116" y="179" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9">0.0</text>
+                                <text x="270" y="179" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9">0.5</text>
+                                <text x="432" y="179" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9">1.0</text>
+
+                                <!-- Output labels -->
+                                <text x="148" y="210" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#6d28d9">X(s): angles, derivatives</text>
+                                <text x="320" y="210" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#c2410c">Y(s): force (training)</text>
+
+                                <!-- Arrow markers -->
+                                <defs>
+                                    <marker id="arrowBlue" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                                        <path d="M0,0 L6,2 L0,4" fill="none" stroke="#2563eb" stroke-width="1"/>
+                                    </marker>
+                                    <marker id="arrowOrange" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                                        <path d="M0,0 L6,2 L0,4" fill="none" stroke="#c2410c" stroke-width="1"/>
+                                    </marker>
+                                </defs>
+                            </svg>
+                        </div>
+                        <div class="schema">
+                            <div><span class="hl-shared">Per stroke, aligned</span></div>
+                            <div>&ensp;s = [0.00, 0.02, 0.04, &hellip;, 1.00]</div>
+                            <div>&ensp;X(s): kinematic features at each s</div>
+                            <div>&ensp;Y(s): force at each s <span class="dim">(training only)</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 06 FEATURES ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">06</span>
+                <span class="step-title">Feature Engineering</span>
+            </div>
+            <div class="card-row cols-2">
+                <div class="card open t-shared" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Angle Curves &amp; Derivatives</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Smoothed angles &rarr; d&theta;/ds via chain rule &rarr; optional d&sup2;&theta;/ds&sup2;</div>
+                    <div class="card-detail">
+                        <p><strong>Smoothing:</strong> Fixed Savitzky-Golay kernel (small odd window, low polynomial order) applied to raw angle trajectories.</p>
+                        <p><strong>Chain rule:</strong> <code>d&theta;/ds = (d&theta;/dt) / (ds/dt + &epsilon;)</code></p>
+                        <p>Second derivatives included only if ablation shows clear gain. Strokes with <code>ds/dt &approx; 0</code> or non-physiological spikes are rejected.</p>
+                        <div class="evidence">
+                            <div class="evidence-strip">
+                                <figure class="evidence-fig">
+                                    <img src="journal/process-pics/graph-sports2d.png" alt="Smooth kinematic traces from Sports2D" onclick="openLightbox(this)">
+                                    <figcaption>High-precision kinematic traces: the raw angle signals before derivative computation</figcaption>
+                                </figure>
+                            </div>
+                        </div>
+                        <div class="schema">
+                            <div><span class="hl-shared">Primary features</span></div>
+                            <div>&ensp;knee(s), hip(s), elbow(s), trunk(s)</div>
+                            <div>&ensp;d_knee/ds, d_hip/ds, d_elbow/ds, d_trunk/ds</div>
+                            <div>&ensp;<span class="dim">[ablation]</span> d&sup2;knee/ds&sup2;, &hellip;</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card open t-shared" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Coordination &amp; Support</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Phase lags, angle ratios, handle kinematics; stroke rate &amp; drive ratio as context</div>
+                    <div class="card-detail">
+                        <p><strong>Coordination:</strong> Phase timing lags (legs &rarr; swing, swing &rarr; arms) and angle ratio features at key progress points.</p>
+                        <p><strong>Support:</strong> Handle velocity/acceleration projected onto the drive axis.</p>
+                        <p><strong>Context:</strong> Stroke rate, drive ratio as scalar conditioning variables.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Coordination</span></div>
+                            <div>&ensp;leg_swing_lag, swing_arm_lag</div>
+                            <div>&ensp;leg_trunk_ratio(s), trunk_arm_ratio(s)</div>
+                            <br>
+                            <div><span class="hl-shared">Support &amp; context</span></div>
+                            <div>&ensp;handle_vel_axis(s), handle_acc_axis(s)</div>
+                            <div>&ensp;stroke_rate, drive_ratio</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="qc-bar" data-role="shared">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <span>QC &mdash; denominator stability (ds/dt), derivative plausibility, reasonable stroke duration</span>
+        </div>
+
+        <!-- ═══ PHASE DIVIDER ═══ -->
+        <div class="phase-break">
+            <span class="phase-break-label">modeling &amp; prediction</span>
+        </div>
+
+        <!-- ═══ 07 MODELING (training) ═══ -->
+        <div class="section" data-role="training">
+            <div class="step-label">
+                <span class="step-num">07</span>
+                <span class="step-title">Model Training</span>
+            </div>
+
+            <p class="step-nav"><a href="model-training-stages.html">Model training page</a> (full walkthrough: <a href="model-training-stages.html#mt-target">target</a>, <a href="model-training-stages.html#mt-stage0">Stage 0</a>, <a href="model-training-stages.html#mt-stage-a">A</a>, <a href="model-training-stages.html#mt-stage-b">B</a>, <a href="model-training-stages.html#mt-eval">evaluation</a>, <a href="model-training-stages.html#mt-summary">summary</a>)</p>
+
+            <div class="model-training-diagram" id="pipeline-mt-target">
+                <div class="model-training-diagram-head">
+                    <span class="model-training-diagram-title">Target representation</span>
+                    <span class="model-training-diagram-sub">How force curves are encoded before training</span>
+                    <a class="diagram-nav-link" href="model-training-stages.html#mt-target">Same diagram on model training page</a>
+                </div>
+                <div class="model-training-diagram-inner">
+                    <svg viewBox="0 0 880 330" xmlns="http://www.w3.org/2000/svg">
+                                    <!-- Raw force curves (left) -->
+                                    <text x="30" y="24" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#c2410c" letter-spacing="0.05em">RAW FORCE CURVES</text>
+                                    <rect x="20" y="34" width="240" height="140" rx="4" fill="rgba(194,65,12,0.04)" stroke="#c2410c" stroke-width="1"/>
+
+                                    <!-- Fake overlapping curves -->
+                                    <path d="M40,155 Q80,140 110,90 Q130,65 155,60 Q180,58 200,80 Q220,105 240,150" stroke="#c2410c" stroke-width="1.5" fill="none" opacity="0.7"/>
+                                    <path d="M40,158 Q75,145 105,100 Q125,72 150,68 Q175,63 205,88 Q225,110 240,152" stroke="#c2410c" stroke-width="1.5" fill="none" opacity="0.45"/>
+                                    <path d="M40,160 Q85,148 115,95 Q135,70 160,62 Q185,60 210,85 Q230,108 240,155" stroke="#c2410c" stroke-width="1.5" fill="none" opacity="0.25"/>
+                                    <path d="M40,152 Q90,135 115,82 Q132,60 158,55 Q182,53 205,75 Q228,100 240,148" stroke="#c2410c" stroke-width="1.5" fill="none" opacity="0.15"/>
+
+                                    <text x="100" y="58" font-family="Source Sans 3, sans-serif" font-size="9" fill="#c2410c">F(s)</text>
+                                    <text x="38" y="170" font-family="JetBrains Mono, monospace" font-size="8" fill="#8a7e6e">s = 0.0</text>
+                                    <text x="205" y="170" font-family="JetBrains Mono, monospace" font-size="8" fill="#8a7e6e">s = 1.0</text>
+                                    <text x="60" y="192" font-family="Source Sans 3, sans-serif" font-size="9" fill="#8a7e6e">N strokes &times; 64 bins on s-grid</text>
+
+                                    <!-- Arrow: normalize -->
+                                    <line x1="270" y1="104" x2="318" y2="104" stroke="#8a7e6e" stroke-width="1.2" marker-end="url(#mtT_arrowGrey)"/>
+                                    <text x="273" y="96" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">peak-norm</text>
+
+                                    <!-- Peak-normalized -->
+                                    <rect x="325" y="34" width="200" height="140" rx="4" fill="rgba(109,40,217,0.04)" stroke="#6d28d9" stroke-width="1"/>
+                                    <text x="335" y="24" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#6d28d9" letter-spacing="0.05em">PEAK-NORMALIZED</text>
+
+                                    <path d="M345,155 Q385,138 410,82 Q428,56 450,52 Q472,48 495,72 Q510,92 515,150" stroke="#6d28d9" stroke-width="1.5" fill="none" opacity="0.7"/>
+                                    <path d="M345,157 Q380,140 405,90 Q425,62 448,58 Q470,55 498,78 Q512,96 515,152" stroke="#6d28d9" stroke-width="1.5" fill="none" opacity="0.4"/>
+                                    <path d="M345,153 Q390,132 412,78 Q430,53 455,50 Q478,48 500,68 Q514,88 515,148" stroke="#6d28d9" stroke-width="1.5" fill="none" opacity="0.2"/>
+
+                                    <text x="410" y="48" font-family="Source Sans 3, sans-serif" font-size="9" fill="#6d28d9">F(s) / max(F)</text>
+                                    <text x="370" y="192" font-family="Source Sans 3, sans-serif" font-size="9" fill="#8a7e6e">all curves scaled to [0, 1]</text>
+
+                                    <!-- Arrow: PCA -->
+                                    <line x1="535" y1="104" x2="583" y2="104" stroke="#8a7e6e" stroke-width="1.2" marker-end="url(#mtT_arrowGrey)"/>
+                                    <text x="548" y="96" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">PCA</text>
+
+                                    <!-- PCA components (right) -->
+                                    <rect x="590" y="34" width="270" height="140" rx="4" fill="rgba(109,40,217,0.04)" stroke="#6d28d9" stroke-width="1"/>
+                                    <text x="600" y="24" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#6d28d9" letter-spacing="0.05em">PCA DECOMPOSITION</text>
+
+                                    <!-- Component curves -->
+                                    <text x="608" y="58" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9" opacity="0.9">PC1</text>
+                                    <path d="M632,65 Q660,52 690,48 Q720,46 750,55 Q770,62 790,70" stroke="#6d28d9" stroke-width="1.8" fill="none" opacity="0.8"/>
+
+                                    <text x="608" y="88" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9" opacity="0.7">PC2</text>
+                                    <path d="M632,92 Q660,85 690,98 Q720,108 750,95 Q770,88 790,92" stroke="#6d28d9" stroke-width="1.4" fill="none" opacity="0.5"/>
+
+                                    <text x="608" y="118" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9" opacity="0.5">PC3</text>
+                                    <path d="M632,118 Q660,128 690,112 Q720,105 750,118 Q770,125 790,115" stroke="#6d28d9" stroke-width="1" fill="none" opacity="0.3"/>
+
+                                    <text x="620" y="148" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">...</text>
+
+                                    <text x="608" y="168" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9" opacity="0.3">PC20</text>
+
+                                    <!-- Coefficients -->
+                                    <rect x="815" y="50" width="35" height="105" rx="2" fill="rgba(109,40,217,0.08)" stroke="#6d28d9" stroke-width="0.8"/>
+                                    <text x="818" y="64" font-family="JetBrains Mono, monospace" font-size="7" fill="#6d28d9">c1</text>
+                                    <text x="818" y="82" font-family="JetBrains Mono, monospace" font-size="7" fill="#6d28d9">c2</text>
+                                    <text x="818" y="100" font-family="JetBrains Mono, monospace" font-size="7" fill="#6d28d9">c3</text>
+                                    <text x="822" y="118" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">..</text>
+                                    <text x="818" y="148" font-family="JetBrains Mono, monospace" font-size="7" fill="#6d28d9" opacity="0.4">c20</text>
+
+                                    <text x="618" y="192" font-family="Source Sans 3, sans-serif" font-size="9" fill="#8a7e6e">20 coefficients per stroke</text>
+
+                                    <!-- Reconstruction arrow (bottom) -->
+                                    <rect x="260" y="220" width="410" height="44" rx="4" fill="rgba(4,120,87,0.05)" stroke="#047857" stroke-width="1"/>
+                                    <text x="280" y="247" font-family="JetBrains Mono, monospace" font-size="9" fill="#047857">Reconstruction: F&#770;(s) = peak &times; &Sigma; c_k &middot; PC_k(s)</text>
+
+                                    <path d="M465,176 L465,218" stroke="#047857" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#mtT_arrowGreen)"/>
+                                    <path d="M465,266 L465,290" stroke="#047857" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#mtT_arrowGreen)"/>
+
+                                    <text x="325" y="310" font-family="Source Sans 3, sans-serif" font-size="9.5" fill="#047857" font-weight="500">Stage A predicts c_1 ... c_k &nbsp; &bull; &nbsp; Stage B predicts F(s) directly</text>
+
+                                    <!-- Arrowhead defs -->
+                                    <defs>
+                                        <marker id="mtT_arrowGrey" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#8a7e6e" stroke-width="1"/></marker>
+                                        <marker id="mtT_arrowGreen" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#047857" stroke-width="1"/></marker>
+                                        <marker id="mtT_arrowPurple" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#6d28d9" stroke-width="1"/></marker>
+                                        <marker id="mtT_arrowBlue" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#2563eb" stroke-width="1"/></marker>
+                                        <marker id="mtT_arrowOrange" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#c2410c" stroke-width="1"/></marker>
+                                        <marker id="mtT_arrowStage0" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#78716c" stroke-width="1"/></marker>
+                                    </defs>
+                                </svg>
+                    <p class="diagram-caption">Force curve target encoding: raw curves &rarr; peak-normalized &rarr; PCA coefficients (20 components)</p>
+                </div>
+            </div>
+
+            <div class="card-row cols-1">
+                <div class="card open t-shared" data-role="training" onclick="toggle(this)" style="border-left: 3px solid var(--text-muted);">
+                    <div class="card-head">
+                        <span class="card-title" style="color: var(--text-muted);">Stage 0 &mdash; Sanity Baselines</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Force reproducibility floor + metadata-only regression &mdash; the bar biomechanics models must clear</div>
+                    <div class="card-detail">
+                        <p><strong>Reproducibility floor:</strong> Quantify within-condition variability of force curves (same athlete, similar stroke rate/length bins). Median pairwise curve distance, coefficient of variation.</p>
+                        <p><strong>Metadata baseline:</strong> Regress force-curve PCA coefficients from scalar metadata only (stroke rate, length, drive time). Reconstruct predicted curves. Every biomechanics model must beat this.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Inputs</span>: stroke_rate, stroke_length, drive_time</div>
+                            <div><span class="hl-shared">Targets</span>: PCA coefficients &rarr; F&#770;(s)</div>
+                            <div><span class="hl-rp3">Gate</span>: biomechanics must improve on this</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="model-training-diagram" id="pipeline-mt-stage0">
+                <div class="model-training-diagram-head">
+                    <span class="model-training-diagram-title">Stage 0</span>
+                    <span class="model-training-diagram-sub">Reproducibility floor and metadata-only baseline</span>
+                    <a class="diagram-nav-link" href="model-training-stages.html#mt-stage0">Same diagram on model training page</a>
+                </div>
+                <div class="model-training-diagram-inner">
+                    <svg viewBox="0 0 880 360" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <marker id="mt0_arrowGrey" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#8a7e6e" stroke-width="1"/></marker>
+                                        <marker id="mt0_arrowGreen" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#047857" stroke-width="1"/></marker>
+                                        <marker id="mt0_arrowPurple" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#6d28d9" stroke-width="1"/></marker>
+                                        <marker id="mt0_arrowBlue" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#2563eb" stroke-width="1"/></marker>
+                                        <marker id="mt0_arrowOrange" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#c2410c" stroke-width="1"/></marker>
+                                        <marker id="mt0_arrowStage0" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#78716c" stroke-width="1"/></marker>
+                                    </defs>
+
+                                    <!-- 0a: Reproducibility floor -->
+                                    <text x="30" y="24" font-family="JetBrains Mono, monospace" font-size="11" font-weight="500" fill="#78716c" letter-spacing="0.05em">0a &mdash; FORCE REPRODUCIBILITY FLOOR</text>
+
+                                    <!-- Condition bin -->
+                                    <rect x="30" y="42" width="180" height="90" rx="4" fill="rgba(120,113,108,0.06)" stroke="#78716c" stroke-width="1"/>
+                                    <text x="44" y="62" font-family="JetBrains Mono, monospace" font-size="8" fill="#78716c">Condition bin</text>
+                                    <text x="44" y="78" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">same athlete</text>
+                                    <text x="44" y="92" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">similar stroke rate</text>
+                                    <text x="44" y="106" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">similar stroke length</text>
+                                    <text x="44" y="124" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">&rArr; group of comparable strokes</text>
+
+                                    <!-- Arrow -->
+                                    <line x1="220" y1="85" x2="268" y2="85" stroke="#78716c" stroke-width="1" marker-end="url(#mt0_arrowStage0)"/>
+
+                                    <!-- Pairwise comparison -->
+                                    <rect x="275" y="42" width="200" height="90" rx="4" fill="rgba(120,113,108,0.06)" stroke="#78716c" stroke-width="1"/>
+                                    <text x="290" y="62" font-family="JetBrains Mono, monospace" font-size="8" fill="#78716c">Pairwise comparison</text>
+
+                                    <!-- Mini overlapping curves -->
+                                    <path d="M300,115 Q325,100 350,80 Q370,70 390,72 Q410,78 430,95 Q445,105 460,115" stroke="#c2410c" stroke-width="1.2" fill="none" opacity="0.6"/>
+                                    <path d="M300,118 Q322,105 345,85 Q368,72 392,74 Q415,80 435,100 Q448,108 460,118" stroke="#c2410c" stroke-width="1.2" fill="none" opacity="0.35"/>
+                                    <text x="340" y="128" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">how much do they vary?</text>
+
+                                    <!-- Arrow to metrics -->
+                                    <line x1="485" y1="85" x2="533" y2="85" stroke="#78716c" stroke-width="1" marker-end="url(#mt0_arrowStage0)"/>
+
+                                    <!-- Metrics box -->
+                                    <rect x="540" y="42" width="310" height="90" rx="4" fill="rgba(120,113,108,0.06)" stroke="#78716c" stroke-width="1"/>
+                                    <text x="555" y="62" font-family="JetBrains Mono, monospace" font-size="8" fill="#78716c">Reproducibility metrics</text>
+                                    <text x="555" y="82" font-family="Source Sans 3, sans-serif" font-size="9" fill="#3d3529">median pairwise curve distance</text>
+                                    <text x="555" y="98" font-family="Source Sans 3, sans-serif" font-size="9" fill="#3d3529">coefficient of variation (peak force)</text>
+                                    <text x="555" y="114" font-family="Source Sans 3, sans-serif" font-size="9" fill="#3d3529">coefficient of variation (impulse)</text>
+                                    <text x="555" y="126" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#78716c">&rArr; this is the irreducible variability floor</text>
+
+                                    <!-- Separator -->
+                                    <line x1="30" y1="160" x2="850" y2="160" stroke="#d8d0c4" stroke-width="0.5" stroke-dasharray="4,4"/>
+
+                                    <!-- 0b: Metadata baseline -->
+                                    <text x="30" y="188" font-family="JetBrains Mono, monospace" font-size="11" font-weight="500" fill="#78716c" letter-spacing="0.05em">0b &mdash; METADATA-ONLY BASELINE</text>
+
+                                    <!-- Scalar metadata inputs -->
+                                    <rect x="30" y="204" width="155" height="110" rx="4" fill="rgba(120,113,108,0.06)" stroke="#78716c" stroke-width="1"/>
+                                    <text x="44" y="224" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#78716c">Scalar metadata</text>
+                                    <text x="44" y="244" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#3d3529">stroke_rate_spm</text>
+                                    <text x="44" y="260" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#3d3529">stroke_length_cm</text>
+                                    <text x="44" y="276" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#3d3529">drive_ratio</text>
+                                    <text x="44" y="306" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">no kinematics</text>
+
+                                    <!-- Arrow -->
+                                    <line x1="195" y1="258" x2="243" y2="258" stroke="#78716c" stroke-width="1.2" marker-end="url(#mt0_arrowStage0)"/>
+
+                                    <!-- Model box -->
+                                    <rect x="250" y="218" width="160" height="80" rx="4" fill="rgba(120,113,108,0.10)" stroke="#78716c" stroke-width="1.5"/>
+                                    <text x="277" y="252" font-family="JetBrains Mono, monospace" font-size="9" fill="#78716c" font-weight="500">Linear regression</text>
+                                    <text x="300" y="272" font-family="Source Sans 3, sans-serif" font-size="9" fill="#8a7e6e">Ridge / OLS</text>
+
+                                    <!-- Arrow -->
+                                    <line x1="420" y1="258" x2="468" y2="258" stroke="#78716c" stroke-width="1.2" marker-end="url(#mt0_arrowStage0)"/>
+
+                                    <!-- PCA target -->
+                                    <rect x="475" y="218" width="130" height="80" rx="4" fill="rgba(109,40,217,0.06)" stroke="#6d28d9" stroke-width="1"/>
+                                    <text x="495" y="242" font-family="JetBrains Mono, monospace" font-size="9" fill="#6d28d9">PCA c_1 ... c_k</text>
+                                    <text x="498" y="260" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">predicted coeffs</text>
+                                    <text x="502" y="290" font-family="Source Sans 3, sans-serif" font-size="8" fill="#6d28d9">&darr; reconstruct curve</text>
+
+                                    <!-- Arrow -->
+                                    <line x1="615" y1="258" x2="663" y2="258" stroke="#047857" stroke-width="1.2" marker-end="url(#mt0_arrowGreen)"/>
+
+                                    <!-- Reconstructed curve -->
+                                    <rect x="670" y="204" width="180" height="110" rx="4" fill="rgba(4,120,87,0.05)" stroke="#047857" stroke-width="1"/>
+                                    <text x="688" y="224" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#047857">Baseline prediction</text>
+                                    <path d="M695,295 Q725,275 750,245 Q765,230 780,228 Q795,226 810,242 Q825,258 835,295" stroke="#047857" stroke-width="1.5" fill="none" opacity="0.7"/>
+                                    <path d="M695,292 Q728,270 755,240 Q768,228 783,225 Q798,222 815,240 Q828,255 835,292" stroke="#c2410c" stroke-width="1" fill="none" opacity="0.3" stroke-dasharray="3,2"/>
+                                    <text x="732" y="306" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">predicted vs actual</text>
+
+                                    <!-- Gate -->
+                                    <rect x="190" y="334" width="500" height="24" rx="3" fill="rgba(185,28,28,0.05)" stroke="rgba(185,28,28,0.2)" stroke-width="1"/>
+                                    <text x="280" y="350" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#b91c1c" font-weight="500">GATE: all later models must beat 0b on curve error + rowing metrics</text>
+                                </svg>
+                    <p class="diagram-caption">Stage 0: establish the reproducibility floor (0a) and metadata-only prediction baseline (0b)</p>
+                </div>
+            </div>
+
+            <div class="connector" data-role="training">
+                <div class="stem"></div>
+            </div>
+
+            <div class="card-row cols-1">
+                <div class="card open t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Stage A &mdash; Interpretable Kinematic Models</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Stroke-level summary features + phase landmarks &rarr; regularized linear / tree ensembles &rarr; PCA coefficients</div>
+                    <div class="card-detail">
+                        <p>Verifies that kinematic features add value beyond metadata. Identifies dominant explanatory biomechanics features through feature importance analysis.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Inputs</span>: summary kinematics + phase landmarks</div>
+                            <div><span class="hl-shared">Models</span>: Ridge, Lasso, Random Forest, GBM</div>
+                            <div><span class="hl-shared">Targets</span>: force-curve PCA coefficients</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="model-training-diagram" id="pipeline-mt-stage-a">
+                <div class="model-training-diagram-head">
+                    <span class="model-training-diagram-title">Stage A</span>
+                    <span class="model-training-diagram-sub">Scalar features to PCA coefficients</span>
+                    <a class="diagram-nav-link" href="model-training-stages.html#mt-stage-a">Same diagram on model training page</a>
+                </div>
+                <div class="model-training-diagram-inner">
+                    <svg viewBox="0 0 880 380" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <marker id="mtA_arrowGrey" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#8a7e6e" stroke-width="1"/></marker>
+                                        <marker id="mtA_arrowGreen" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#047857" stroke-width="1"/></marker>
+                                        <marker id="mtA_arrowPurple" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#6d28d9" stroke-width="1"/></marker>
+                                        <marker id="mtA_arrowBlue" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#2563eb" stroke-width="1"/></marker>
+                                        <marker id="mtA_arrowOrange" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#c2410c" stroke-width="1"/></marker>
+                                        <marker id="mtA_arrowStage0" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#78716c" stroke-width="1"/></marker>
+                                    </defs>
+
+                                    <!-- Input feature groups -->
+                                    <text x="20" y="20" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#2563eb" letter-spacing="0.05em">INPUT: SCALAR FEATURES (per stroke)</text>
+
+                                    <!-- Feature column 1: kinematic summary -->
+                                    <rect x="20" y="32" width="195" height="168" rx="4" fill="rgba(37,99,235,0.05)" stroke="#2563eb" stroke-width="1"/>
+                                    <text x="34" y="52" font-family="JetBrains Mono, monospace" font-size="8" fill="#2563eb" font-weight="500">Kinematic summary</text>
+                                    <text x="34" y="70" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_active_deg_min</text>
+                                    <text x="34" y="84" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_active_deg_max</text>
+                                    <text x="34" y="98" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_active_deg_range</text>
+                                    <text x="34" y="112" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_active_deg_mean</text>
+                                    <text x="34" y="126" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_active_deg_s_at_max</text>
+                                    <text x="34" y="144" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">&hellip; &times;5 angles = 25 features</text>
+                                    <text x="34" y="162" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">min, max, range, mean,</text>
+                                    <text x="34" y="176" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">s-position of peak</text>
+                                    <text x="34" y="194" font-family="JetBrains Mono, monospace" font-size="7" fill="#2563eb">from _compute_scalar_summary</text>
+
+                                    <!-- Feature column 2: coordination -->
+                                    <rect x="228" y="32" width="195" height="168" rx="4" fill="rgba(37,99,235,0.05)" stroke="#2563eb" stroke-width="1"/>
+                                    <text x="242" y="52" font-family="JetBrains Mono, monospace" font-size="8" fill="#2563eb" font-weight="500">Coordination</text>
+                                    <text x="242" y="72" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">onset_knee_s</text>
+                                    <text x="242" y="86" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">onset_trunk_s</text>
+                                    <text x="242" y="100" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">onset_arms_s</text>
+                                    <text x="242" y="118" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">lag_knee_to_trunk_s</text>
+                                    <text x="242" y="132" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">lag_trunk_to_arms_s</text>
+                                    <text x="242" y="150" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_range_frac</text>
+                                    <text x="242" y="164" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">hip_range_frac</text>
+                                    <text x="242" y="178" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">elbow_range_frac</text>
+                                    <text x="242" y="194" font-family="JetBrains Mono, monospace" font-size="7" fill="#2563eb">from _compute_coordination_features</text>
+
+                                    <!-- Feature column 3: context -->
+                                    <rect x="436" y="32" width="150" height="168" rx="4" fill="rgba(37,99,235,0.05)" stroke="#2563eb" stroke-width="1"/>
+                                    <text x="450" y="52" font-family="JetBrains Mono, monospace" font-size="8" fill="#2563eb" font-weight="500">Context</text>
+                                    <text x="450" y="72" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">stroke_rate_spm</text>
+                                    <text x="450" y="86" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">stroke_length_cm</text>
+                                    <text x="450" y="100" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">drive_ratio</text>
+                                    <text x="450" y="124" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">same features as</text>
+                                    <text x="450" y="138" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">Stage 0 metadata</text>
+                                    <text x="450" y="156" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">baseline</text>
+
+                                    <!-- Concat arrow -->
+                                    <path d="M295,210 L295,234" stroke="#2563eb" stroke-width="1.2" marker-end="url(#mtA_arrowBlue)"/>
+
+                                    <!-- Feature vector -->
+                                    <rect x="175" y="240" width="250" height="30" rx="3" fill="rgba(37,99,235,0.08)" stroke="#2563eb" stroke-width="1.2"/>
+                                    <text x="218" y="260" font-family="JetBrains Mono, monospace" font-size="9" fill="#2563eb" font-weight="500">x &isin; R^~36 (per stroke)</text>
+
+                                    <!-- Arrow to models -->
+                                    <line x1="435" y1="255" x2="498" y2="255" stroke="#2563eb" stroke-width="1.2" marker-end="url(#mtA_arrowBlue)"/>
+
+                                    <!-- Model ensemble box -->
+                                    <rect x="505" y="224" width="170" height="110" rx="5" fill="rgba(37,99,235,0.08)" stroke="#2563eb" stroke-width="1.5"/>
+                                    <text x="530" y="248" font-family="JetBrains Mono, monospace" font-size="9" fill="#2563eb" font-weight="500">Models</text>
+                                    <text x="525" y="270" font-family="Source Sans 3, sans-serif" font-size="9" fill="#3d3529">Ridge regression</text>
+                                    <text x="525" y="286" font-family="Source Sans 3, sans-serif" font-size="9" fill="#3d3529">Lasso regression</text>
+                                    <text x="525" y="302" font-family="Source Sans 3, sans-serif" font-size="9" fill="#3d3529">Random Forest</text>
+                                    <text x="525" y="318" font-family="Source Sans 3, sans-serif" font-size="9" fill="#3d3529">Gradient Boosted Trees</text>
+
+                                    <!-- Arrow to PCA output -->
+                                    <line x1="685" y1="278" x2="718" y2="278" stroke="#6d28d9" stroke-width="1.2" marker-end="url(#mtA_arrowPurple)"/>
+
+                                    <!-- PCA coefficient prediction -->
+                                    <rect x="725" y="232" width="140" height="90" rx="4" fill="rgba(109,40,217,0.06)" stroke="#6d28d9" stroke-width="1.2"/>
+                                    <text x="740" y="256" font-family="JetBrains Mono, monospace" font-size="9" fill="#6d28d9" font-weight="500">PCA coefficients</text>
+                                    <text x="748" y="276" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9">c&#770;_1, c&#770;_2, &hellip; c&#770;_k</text>
+                                    <text x="748" y="296" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">&darr; reconstruct F&#770;(s)</text>
+                                    <text x="748" y="312" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">&darr; evaluate vs Stage 0</text>
+
+                                    <!-- Feature importance callout -->
+                                    <rect x="505" y="346" width="360" height="28" rx="3" fill="rgba(37,99,235,0.05)" stroke="#2563eb" stroke-width="0.8"/>
+                                    <text x="520" y="365" font-family="Source Sans 3, sans-serif" font-size="9" fill="#2563eb" font-weight="500">Key output: feature importance ranking &mdash; which biomechanics explain force?</text>
+                                </svg>
+                    <p class="diagram-caption">Stage A: stroke-level scalar features &rarr; classical ML &rarr; PCA force-curve coefficients</p>
+                </div>
+            </div>
+
+            <div class="connector" data-role="training">
+                <div class="stem"></div>
+            </div>
+
+            <div class="card-row cols-1">
+                <div class="card open t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Stage B &mdash; Sequence Models</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Full progress-aligned kinematic sequences &rarr; TCN / Transformer encoder &rarr; full force curve</div>
+                    <div class="card-detail">
+                        <p>Temporal convolutional network or transformer encoder operating on the full progress-aligned feature sequences. Captures nonlinear stroke dynamics and cross-joint interactions.</p>
+                        <p><strong>Loss:</strong> Masked pointwise force loss. Shape regularizers or derivative losses added only if errors show pathological curve behaviour.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Inputs</span>: X(s) [N_bins &times; N_features]</div>
+                            <div><span class="hl-shared">Models</span>: TCN, Transformer encoder</div>
+                            <div><span class="hl-shared">Targets</span>: F(s) [N_bins], masked loss</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="model-training-diagram" id="pipeline-mt-stage-b">
+                <div class="model-training-diagram-head">
+                    <span class="model-training-diagram-title">Stage B</span>
+                    <span class="model-training-diagram-sub">Full kinematic sequences to force curve</span>
+                    <a class="diagram-nav-link" href="model-training-stages.html#mt-stage-b">Same diagram on model training page</a>
+                </div>
+                <div class="model-training-diagram-inner">
+                    <svg viewBox="0 0 880 400" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <marker id="mtB_arrowGrey" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#8a7e6e" stroke-width="1"/></marker>
+                                        <marker id="mtB_arrowGreen" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#047857" stroke-width="1"/></marker>
+                                        <marker id="mtB_arrowPurple" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#6d28d9" stroke-width="1"/></marker>
+                                        <marker id="mtB_arrowBlue" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#2563eb" stroke-width="1"/></marker>
+                                        <marker id="mtB_arrowOrange" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#c2410c" stroke-width="1"/></marker>
+                                        <marker id="mtB_arrowStage0" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#78716c" stroke-width="1"/></marker>
+                                    </defs>
+
+                                    <!-- Input tensor -->
+                                    <text x="20" y="20" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#6d28d9" letter-spacing="0.05em">INPUT: KINEMATIC SEQUENCES ON s-GRID</text>
+
+                                    <!-- The sequence tensor visualization -->
+                                    <rect x="20" y="34" width="330" height="220" rx="4" fill="rgba(109,40,217,0.04)" stroke="#6d28d9" stroke-width="1"/>
+
+                                    <!-- Grid header -->
+                                    <text x="36" y="54" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9">s = 0.00  0.02  0.03  ...  0.98  1.00</text>
+                                    <text x="36" y="68" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;</text>
+
+                                    <!-- Channel rows -->
+                                    <text x="36" y="86" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb">knee(s)</text>
+                                    <path d="M112,82 Q145,78 175,74 Q200,72 225,76 Q250,80 280,84 Q300,86 330,80" stroke="#2563eb" stroke-width="1.2" fill="none" opacity="0.6"/>
+
+                                    <text x="36" y="106" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb">hip(s)</text>
+                                    <path d="M112,102 Q145,100 175,96 Q200,92 225,90 Q250,92 280,98 Q300,102 330,98" stroke="#2563eb" stroke-width="1.2" fill="none" opacity="0.6"/>
+
+                                    <text x="36" y="126" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb">elbow(s)</text>
+                                    <path d="M112,124 Q145,123 175,122 Q200,120 225,116 Q250,110 280,106 Q300,104 330,108" stroke="#2563eb" stroke-width="1.2" fill="none" opacity="0.6"/>
+
+                                    <text x="36" y="146" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb">trunk(s)</text>
+                                    <path d="M112,142 Q145,138 175,130 Q200,126 225,130 Q250,136 280,140 Q300,144 330,142" stroke="#2563eb" stroke-width="1.2" fill="none" opacity="0.6"/>
+
+                                    <text x="36" y="166" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb">spine(s)</text>
+                                    <path d="M112,162 Q145,160 175,158 Q200,157 225,158 Q250,160 280,162 Q300,163 330,162" stroke="#2563eb" stroke-width="1.2" fill="none" opacity="0.45"/>
+
+                                    <text x="36" y="182" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">d_knee/ds</text>
+                                    <text x="36" y="194" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">d_hip/ds  ...</text>
+                                    <text x="36" y="208" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">handle_vel(s)</text>
+                                    <text x="36" y="222" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">handle_acc(s)</text>
+
+                                    <text x="36" y="246" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9" font-weight="500">shape: (64, 12)</text>
+                                    <text x="36" y="260" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">64 s-grid points &times; 12 kinematic channels</text>
+
+                                    <!-- Arrow to model -->
+                                    <path d="M360,150 L420,150" stroke="#6d28d9" stroke-width="1.5" marker-end="url(#mtB_arrowPurple)"/>
+
+                                    <!-- Model architecture -->
+                                    <rect x="430" y="40" width="200" height="225" rx="6" fill="rgba(109,40,217,0.07)" stroke="#6d28d9" stroke-width="1.5"/>
+                                    <text x="470" y="68" font-family="JetBrains Mono, monospace" font-size="10" fill="#6d28d9" font-weight="500">SEQUENCE MODEL</text>
+
+                                    <!-- Architecture options -->
+                                    <rect x="450" y="84" width="160" height="36" rx="3" fill="rgba(109,40,217,0.08)" stroke="#6d28d9" stroke-width="0.8"/>
+                                    <text x="468" y="100" font-family="Source Sans 3, sans-serif" font-size="9.5" fill="#6d28d9" font-weight="500">Temporal Conv Network</text>
+                                    <text x="478" y="114" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">causal dilated convolutions</text>
+
+                                    <text x="518" y="136" font-family="Source Sans 3, sans-serif" font-size="9" fill="#8a7e6e">or</text>
+
+                                    <rect x="450" y="144" width="160" height="36" rx="3" fill="rgba(109,40,217,0.08)" stroke="#6d28d9" stroke-width="0.8"/>
+                                    <text x="468" y="160" font-family="Source Sans 3, sans-serif" font-size="9.5" fill="#6d28d9" font-weight="500">Transformer Encoder</text>
+                                    <text x="470" y="174" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">self-attention over s positions</text>
+
+                                    <!-- Conditioning -->
+                                    <rect x="450" y="194" width="160" height="30" rx="3" fill="rgba(37,99,235,0.06)" stroke="#2563eb" stroke-width="0.8"/>
+                                    <text x="462" y="214" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb">+ scalar conditioning</text>
+
+                                    <text x="452" y="248" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">stroke rate, length, ratios</text>
+
+                                    <!-- Arrow to output -->
+                                    <path d="M640,150 L700,150" stroke="#c2410c" stroke-width="1.5" marker-end="url(#mtB_arrowOrange)"/>
+
+                                    <!-- Output: full force curve -->
+                                    <rect x="710" y="40" width="155" height="225" rx="4" fill="rgba(194,65,12,0.05)" stroke="#c2410c" stroke-width="1.2"/>
+                                    <text x="720" y="20" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#c2410c" letter-spacing="0.05em">OUTPUT</text>
+
+                                    <text x="724" y="64" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#c2410c" font-weight="500">F&#770;(s) direct prediction</text>
+
+                                    <!-- Predicted force curve -->
+                                    <path d="M730,230 Q755,210 775,165 Q788,130 798,105 Q808,88 818,86 Q828,85 838,100 Q845,120 850,230" stroke="#c2410c" stroke-width="2" fill="none" opacity="0.7"/>
+
+                                    <!-- Target curve (dashed) -->
+                                    <path d="M730,228 Q758,205 778,158 Q790,125 800,100 Q810,82 822,80 Q832,82 840,98 Q848,118 850,228" stroke="#c2410c" stroke-width="1" fill="none" opacity="0.25" stroke-dasharray="3,2"/>
+
+                                    <text x="740" y="248" font-family="JetBrains Mono, monospace" font-size="8" fill="#c2410c" font-weight="500">shape: (64,)</text>
+                                    <text x="735" y="260" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">force at each s bin</text>
+
+                                    <!-- Loss function -->
+                                    <rect x="430" y="290" width="435" height="55" rx="4" fill="rgba(194,65,12,0.04)" stroke="#c2410c" stroke-width="1"/>
+                                    <text x="450" y="312" font-family="JetBrains Mono, monospace" font-size="9" fill="#c2410c" font-weight="500">Loss function</text>
+                                    <text x="450" y="330" font-family="Source Sans 3, sans-serif" font-size="9" fill="#3d3529">Masked pointwise MSE &mdash; bins beyond stroke length masked out.</text>
+                                    <text x="450" y="340" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">Shape regularizers / derivative losses only if validation shows pathological curves.</text>
+
+                                    <!-- Advantage callout -->
+                                    <rect x="20" y="286" width="395" height="60" rx="4" fill="rgba(109,40,217,0.04)" stroke="#6d28d9" stroke-width="0.8"/>
+                                    <text x="34" y="306" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9" font-weight="500">Why sequences &gt; scalars</text>
+                                    <text x="34" y="322" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#3d3529">Captures when and how joints interact during the drive.</text>
+                                    <text x="34" y="336" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#3d3529">Learns nonlinear dynamics that summary stats cannot encode.</text>
+
+                                    <!-- Comparison text -->
+                                    <rect x="20" y="362" width="845" height="28" rx="3" fill="rgba(109,40,217,0.04)" stroke="#6d28d9" stroke-width="0.8"/>
+                                    <text x="165" y="381" font-family="Source Sans 3, sans-serif" font-size="9.5" fill="#6d28d9" font-weight="500">Stage B predicts the full force curve &mdash; no PCA bottleneck &mdash; evaluated against same metrics as Stages 0 and A</text>
+                                </svg>
+                    <p class="diagram-caption">Stage B: full kinematic sequence (64&times;12) &rarr; temporal model &rarr; predicted force curve (64 bins)</p>
+                </div>
+            </div>
+
+            <div class="model-training-diagram" id="pipeline-mt-summary">
+                <div class="model-training-diagram-head">
+                    <span class="model-training-diagram-title">Stage progression</span>
+                    <span class="model-training-diagram-sub">Each stage must beat the previous on the same metrics</span>
+                    <a class="diagram-nav-link" href="model-training-stages.html#mt-summary">Same diagram on model training page</a>
+                </div>
+                <div class="model-training-diagram-inner">
+                    <svg viewBox="0 0 880 115" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <marker id="mtSum_arrowGrey" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#8a7e6e" stroke-width="1"/></marker>
+                                        <marker id="mtSum_arrowGreen" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#047857" stroke-width="1"/></marker>
+                                        <marker id="mtSum_arrowPurple" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#6d28d9" stroke-width="1"/></marker>
+                                        <marker id="mtSum_arrowBlue" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#2563eb" stroke-width="1"/></marker>
+                                        <marker id="mtSum_arrowOrange" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#c2410c" stroke-width="1"/></marker>
+                                        <marker id="mtSum_arrowStage0" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#78716c" stroke-width="1"/></marker>
+                                    </defs>
+
+                                    <!-- Stage 0 -->
+                                    <rect x="20" y="20" width="175" height="72" rx="5" fill="rgba(120,113,108,0.08)" stroke="#78716c" stroke-width="1.5"/>
+                                    <text x="54" y="48" font-family="Fraunces, serif" font-size="16" font-weight="300" fill="#78716c">0</text>
+                                    <text x="72" y="48" font-family="Source Sans 3, sans-serif" font-size="10.5" fill="#3d3529" font-weight="600">Sanity Baselines</text>
+                                    <text x="38" y="68" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">metadata &rarr; PCA coefficients</text>
+                                    <text x="38" y="82" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">= the floor to beat</text>
+
+                                    <!-- Arrow -->
+                                    <line x1="205" y1="56" x2="245" y2="56" stroke="#d8d0c4" stroke-width="1.5" marker-end="url(#mtSum_arrowGrey)"/>
+                                    <text x="208" y="48" font-family="JetBrains Mono, monospace" font-size="7" fill="#b91c1c">must beat</text>
+
+                                    <!-- Stage A -->
+                                    <rect x="255" y="20" width="215" height="72" rx="5" fill="rgba(37,99,235,0.06)" stroke="#2563eb" stroke-width="1.5"/>
+                                    <text x="289" y="48" font-family="Fraunces, serif" font-size="16" font-weight="300" fill="#2563eb">A</text>
+                                    <text x="307" y="48" font-family="Source Sans 3, sans-serif" font-size="10.5" fill="#3d3529" font-weight="600">Kinematic Baselines</text>
+                                    <text x="273" y="68" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">scalar features &rarr; PCA coefficients</text>
+                                    <text x="273" y="82" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">interpretable + feature importance</text>
+
+                                    <!-- Arrow -->
+                                    <line x1="480" y1="56" x2="520" y2="56" stroke="#d8d0c4" stroke-width="1.5" marker-end="url(#mtSum_arrowGrey)"/>
+                                    <text x="483" y="48" font-family="JetBrains Mono, monospace" font-size="7" fill="#b91c1c">must beat</text>
+
+                                    <!-- Stage B -->
+                                    <rect x="530" y="20" width="195" height="72" rx="5" fill="rgba(109,40,217,0.06)" stroke="#6d28d9" stroke-width="1.5"/>
+                                    <text x="564" y="48" font-family="Fraunces, serif" font-size="16" font-weight="300" fill="#6d28d9">B</text>
+                                    <text x="582" y="48" font-family="Source Sans 3, sans-serif" font-size="10.5" fill="#3d3529" font-weight="600">Sequence Models</text>
+                                    <text x="548" y="68" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">full sequences &rarr; full force curve</text>
+                                    <text x="548" y="82" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">captures nonlinear dynamics</text>
+
+                                    <!-- Arrow to result -->
+                                    <line x1="735" y1="56" x2="775" y2="56" stroke="#047857" stroke-width="1.5" marker-end="url(#mtSum_arrowGreen)"/>
+
+                                    <!-- Result -->
+                                    <rect x="785" y="20" width="80" height="72" rx="5" fill="rgba(4,120,87,0.08)" stroke="#047857" stroke-width="1.5"/>
+                                    <text x="798" y="52" font-family="JetBrains Mono, monospace" font-size="9" fill="#047857" font-weight="500">Best</text>
+                                    <text x="798" y="68" font-family="JetBrains Mono, monospace" font-size="9" fill="#047857" font-weight="500">model</text>
+
+                                    <!-- Bottom label -->
+                                    <text x="200" y="112" font-family="Source Sans 3, sans-serif" font-size="9.5" fill="#8a7e6e">Each stage strictly must beat all previous stages on curve error + rowing-relevant metrics</text>
+                                </svg>
+                    <p class="diagram-caption">Stage progression: each stage must beat the previous on the same metrics</p>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 08 PREDICTION ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">08</span>
+                <span class="step-title">Prediction &amp; Output</span>
+            </div>
+            <div class="card-row cols-1">
+                <div class="card open t-output" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Force Curve Prediction</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Trained model applied to video-derived features &rarr; predicted per-stroke force curve + derived metrics</div>
+                    <div class="card-detail">
+                        <p>At inference, <strong>no RP3 input is used</strong>. The trained model takes video-derived kinematic feature sequences and predicts the complete force curve for each stroke.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Outputs per stroke</span></div>
+                            <div>&ensp;force_at_&lt;distance&gt;cm table</div>
+                            <div>&ensp;predicted peak_force (N)</div>
+                            <div>&ensp;predicted peak_position (% drive)</div>
+                            <div>&ensp;predicted impulse (N&middot;s)</div>
+                            <div>&ensp;confidence / quality score</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connector" data-role="training">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 09 EVALUATION (training) ═══ -->
+        <div class="section" data-role="training">
+            <div class="step-label">
+                <span class="step-num">09</span>
+                <span class="step-title">Evaluation Protocol</span>
+            </div>
+
+            <p class="step-nav"><a href="model-training-stages.html#mt-eval">Evaluation diagram on model training page</a></p>
+
+            <div class="model-training-diagram" id="pipeline-mt-eval">
+                <div class="model-training-diagram-head">
+                    <span class="model-training-diagram-title">Evaluation protocol</span>
+                    <span class="model-training-diagram-sub">Splits and metrics (all stages, same held-out set)</span>
+                    <a class="diagram-nav-link" href="model-training-stages.html#mt-eval">Same diagram on model training page</a>
+                </div>
+                <div class="model-training-diagram-inner">
+                    <svg viewBox="0 0 880 340" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <marker id="mtE_arrowGrey" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#8a7e6e" stroke-width="1"/></marker>
+                                        <marker id="mtE_arrowGreen" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#047857" stroke-width="1"/></marker>
+                                        <marker id="mtE_arrowPurple" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#6d28d9" stroke-width="1"/></marker>
+                                        <marker id="mtE_arrowBlue" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#2563eb" stroke-width="1"/></marker>
+                                        <marker id="mtE_arrowOrange" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#c2410c" stroke-width="1"/></marker>
+                                        <marker id="mtE_arrowStage0" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#78716c" stroke-width="1"/></marker>
+                                    </defs>
+
+                                    <!-- Split strategy -->
+                                    <text x="20" y="20" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#047857" letter-spacing="0.05em">DATA SPLIT STRATEGY</text>
+
+                                    <!-- Current phase -->
+                                    <rect x="20" y="34" width="410" height="100" rx="4" fill="rgba(4,120,87,0.04)" stroke="#047857" stroke-width="1"/>
+                                    <text x="36" y="56" font-family="JetBrains Mono, monospace" font-size="9" fill="#047857" font-weight="500">Current phase (limited athletes)</text>
+
+                                    <!-- Timeline visualization -->
+                                    <rect x="44" y="68" width="360" height="24" rx="2" fill="rgba(4,120,87,0.06)"/>
+                                    <rect x="44" y="68" width="120" height="24" rx="2" fill="rgba(37,99,235,0.12)"/>
+                                    <rect x="168" y="68" width="120" height="24" rx="2" fill="rgba(37,99,235,0.12)"/>
+                                    <rect x="292" y="68" width="112" height="24" rx="2" fill="rgba(194,65,12,0.15)"/>
+                                    <text x="72" y="84" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb">train fold 1</text>
+                                    <text x="196" y="84" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb">train fold 2</text>
+                                    <text x="316" y="84" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#c2410c">held-out</text>
+
+                                    <text x="44" y="110" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#3d3529">Session-held-out or time-block splits within athlete.</text>
+                                    <text x="44" y="124" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">Results labeled as provisional; no generalization claims.</text>
+
+                                    <!-- Future phase -->
+                                    <rect x="450" y="34" width="410" height="100" rx="4" fill="rgba(4,120,87,0.04)" stroke="#047857" stroke-width="1" stroke-dasharray="4,3"/>
+                                    <text x="466" y="56" font-family="JetBrains Mono, monospace" font-size="9" fill="#047857" font-weight="500">Future phase (multi-athlete)</text>
+
+                                    <!-- Athlete blocks -->
+                                    <rect x="474" y="68" width="72" height="24" rx="2" fill="rgba(37,99,235,0.12)"/>
+                                    <rect x="550" y="68" width="72" height="24" rx="2" fill="rgba(37,99,235,0.12)"/>
+                                    <rect x="626" y="68" width="72" height="24" rx="2" fill="rgba(37,99,235,0.12)"/>
+                                    <rect x="702" y="68" width="72" height="24" rx="2" fill="rgba(194,65,12,0.15)"/>
+                                    <rect x="778" y="68" width="72" height="24" rx="2" fill="rgba(194,65,12,0.15)"/>
+                                    <text x="485" y="84" font-family="JetBrains Mono, monospace" font-size="7" fill="#2563eb">athlete A</text>
+                                    <text x="561" y="84" font-family="JetBrains Mono, monospace" font-size="7" fill="#2563eb">athlete B</text>
+                                    <text x="637" y="84" font-family="JetBrains Mono, monospace" font-size="7" fill="#2563eb">athlete C</text>
+                                    <text x="715" y="84" font-family="JetBrains Mono, monospace" font-size="7" fill="#c2410c">ath. D</text>
+                                    <text x="791" y="84" font-family="JetBrains Mono, monospace" font-size="7" fill="#c2410c">ath. E</text>
+
+                                    <text x="474" y="110" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#3d3529">Leave-one-athlete-out or grouped folds.</text>
+                                    <text x="474" y="124" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">True generalization test: unseen biomechanics.</text>
+
+                                    <!-- Separator -->
+                                    <line x1="20" y1="155" x2="860" y2="155" stroke="#d8d0c4" stroke-width="0.5" stroke-dasharray="4,4"/>
+
+                                    <!-- Metric groups -->
+                                    <text x="20" y="182" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#047857" letter-spacing="0.05em">EVALUATION METRICS (all stages, same held-out set)</text>
+
+                                    <!-- Curve-level metrics -->
+                                    <rect x="20" y="196" width="270" height="130" rx="4" fill="rgba(4,120,87,0.04)" stroke="#047857" stroke-width="1"/>
+                                    <text x="36" y="218" font-family="JetBrains Mono, monospace" font-size="9" fill="#047857" font-weight="500">Curve-level</text>
+
+                                    <text x="36" y="240" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#3d3529">RMSE(F, F&#770;)</text>
+                                    <text x="170" y="240" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">over all valid bins</text>
+                                    <text x="36" y="258" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#3d3529">MAE(F, F&#770;)</text>
+                                    <text x="170" y="258" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">over all valid bins</text>
+                                    <text x="36" y="276" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#3d3529">Pearson r</text>
+                                    <text x="170" y="276" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">per-stroke correlation</text>
+                                    <text x="36" y="296" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">Does the predicted curve match</text>
+                                    <text x="36" y="310" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">the overall shape and magnitude?</text>
+
+                                    <!-- Rowing-relevant metrics -->
+                                    <rect x="305" y="196" width="270" height="130" rx="4" fill="rgba(4,120,87,0.04)" stroke="#047857" stroke-width="1"/>
+                                    <text x="321" y="218" font-family="JetBrains Mono, monospace" font-size="9" fill="#047857" font-weight="500">Rowing-relevant</text>
+
+                                    <text x="321" y="240" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#3d3529">peak force error (N)</text>
+                                    <text x="321" y="258" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#3d3529">peak position error (%)</text>
+                                    <text x="321" y="276" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#3d3529">impulse error (N&middot;s)</text>
+                                    <text x="321" y="296" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">Downstream quantities that</text>
+                                    <text x="321" y="310" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">coaches use for technique feedback.</text>
+
+                                    <!-- Phase-specific -->
+                                    <rect x="590" y="196" width="270" height="130" rx="4" fill="rgba(4,120,87,0.04)" stroke="#047857" stroke-width="1"/>
+                                    <text x="606" y="218" font-family="JetBrains Mono, monospace" font-size="9" fill="#047857" font-weight="500">Phase-specific</text>
+
+                                    <rect x="616" y="232" width="70" height="18" rx="2" fill="rgba(37,99,235,0.1)"/>
+                                    <text x="625" y="245" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#2563eb">early drive</text>
+
+                                    <rect x="694" y="232" width="60" height="18" rx="2" fill="rgba(109,40,217,0.1)"/>
+                                    <text x="700" y="245" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#6d28d9">mid drive</text>
+
+                                    <rect x="762" y="232" width="62" height="18" rx="2" fill="rgba(194,65,12,0.1)"/>
+                                    <text x="768" y="245" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#c2410c">late drive</text>
+
+                                    <text x="616" y="274" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#3d3529">RMSE per phase segment</text>
+                                    <text x="616" y="296" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">Reveals where the model</text>
+                                    <text x="616" y="310" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">struggles: catch, peak, or finish.</text>
+                                </svg>
+                    <p class="diagram-caption">Evaluation: consistent splits and metrics across all stages for fair comparison</p>
+                </div>
+            </div>
+
+            <div class="card-row cols-2">
+                <div class="card open t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Curve-Level Metrics</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">RMSE / MAE over force bins, per-stroke curve correlation</div>
+                    <div class="card-detail">
+                        <p>Standard regression metrics over all valid force bins in the hold-out set.</p>
+                        <div class="schema">
+                            <div>&ensp;RMSE(F, F&#770;), MAE(F, F&#770;)</div>
+                            <div>&ensp;Pearson r per stroke</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card open t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Rowing-Relevant Metrics</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Peak force error, peak position error, impulse error, phase-specific errors</div>
+                    <div class="card-detail">
+                        <p>Metrics that matter to coaches and athletes &mdash; the downstream quantities that inform technique feedback.</p>
+                        <div class="schema">
+                            <div>&ensp;peak_force_error (N)</div>
+                            <div>&ensp;peak_position_error (% drive)</div>
+                            <div>&ensp;impulse_error (N&middot;s)</div>
+                            <div>&ensp;early / mid / late drive phase errors</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ LEGEND ═══ -->
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-swatch sw-video"></div> Video pipeline</div>
+            <div class="legend-item">
+                <div class="legend-swatch sw-rp3"></div> RP3 force data (training)</div>
+            <div class="legend-item">
+                <div class="legend-swatch sw-shared"></div> Shared processing</div>
+            <div class="legend-item">
+                <div class="legend-swatch sw-output"></div> Inference output</div>
+            <div class="legend-item">
+                <div class="legend-swatch sw-qc"></div> Quality control gate</div>
+        </div>
+
+        <p class="footnote">Click any card to toggle data contracts. Use the view switcher to focus on training or inference paths. For Stage 0&ndash;B training flows and evaluation metrics, see <a href="model-training-stages.html" class="footnote-link">model training diagrams</a>.</p>
+
+    </div>
+
+    <!-- Lightbox overlay -->
+    <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+        <img id="lightbox-img" src="" alt="">
+    </div>
+
+    <script>
+        function openLightbox(img) {
+            event.stopPropagation();
+            const lb = document.getElementById('lightbox');
+            document.getElementById('lightbox-img').src = img.src;
+            lb.classList.add('active');
+        }
+
+        function closeLightbox() {
+            document.getElementById('lightbox').classList.remove('active');
+        }
+
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') closeLightbox();
+        });
+
+        function toggle(el) {
+            el.classList.toggle('open');
+        }
+
+        const pills = document.querySelectorAll('.pill');
+        const roleEls = document.querySelectorAll('[data-role]');
+
+        pills.forEach(pill => {
+            pill.addEventListener('click', () => {
+                pills.forEach(p => p.classList.remove('active'));
+                pill.classList.add('active');
+                applyMode(pill.dataset.mode);
+            });
+        });
+
+        function applyMode(mode) {
+            roleEls.forEach(el => {
+                const role = el.dataset.role;
+                if (mode === 'both') {
+                    el.classList.remove('dimmed');
+                } else if (mode === 'training') {
+                    el.classList.toggle('dimmed', role === 'inference-only');
+                } else if (mode === 'inference') {
+                    el.classList.toggle('dimmed', role === 'training');
+                }
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const cards = document.querySelectorAll('.card');
+            cards.forEach((card, i) => {
+                card.classList.add('entering');
+                setTimeout(() => {
+                    card.classList.remove('entering');
+                }, 100 + i * 60);
+            });
+        });
+    </script>
+
+</body>
+
+</html>

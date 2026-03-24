@@ -53,11 +53,6 @@ Formally, given single- or multi-view video sequences $V(t)$ of a rowing athlete
 
 To understand the ideal frame rate, I will run an empirical check by recording the same motion at multiple frame rates (or by downsampling high-FPS recordings) and comparing: (i) pose stability/smoothness, (ii) stroke event timing consistency (catch/finish detection), and (iii) accuracy of the inferred stroke-length coordinate $s(t)$ (including derived velocity/acceleration proxies). The objective is to identify the lowest frame rate that preserves high-quality kinematics, enabling practical data collection without unnecessary storage/compute cost.
 
-\subsubsection*{Step 0.5: Data recording plan (frame rate study; planned)}
-\textbf{Goal:} now that the extraction pipeline is working, begin collecting new data under controlled conditions and determine an ``ideal'' recording frame rate for reliable pose/keypoint extraction and stroke-length alignment.
-
-To understand the ideal frame rate, I will run an empirical check by recording the same motion at multiple frame rates (or by downsampling high-FPS recordings) and comparing: (i) pose stability/smoothness, (ii) stroke event timing consistency (catch/finish detection), and (iii) accuracy of the inferred stroke-length coordinate $s(t)$ (including derived velocity/acceleration proxies). The objective is to identify the lowest frame rate that preserves high-quality kinematics, enabling practical data collection without unnecessary storage/compute cost.
-
 \paragraph{Converting spatial resolution $\rightarrow$ required sample rate (RP3 force curve).}
 As a first-principles guide, we can convert the RP3 force-curve spatial step into an equivalent sampling frequency during the drive. Using representative values:
 \begin{itemize}
@@ -90,39 +85,6 @@ In practice, a direct visual comparison supported this choice: $120$~fps looked 
 	\caption{Frame-rate comparison: 120~fps produces much smoother kinematics than 60~fps, while 240~fps yields smaller incremental gains relative to its added storage/compute cost.}
 	\label{fig:fps-comparison}
 \end{figure}
-
-\paragraph{Empirical comparison (60 vs.\ 120 vs.\ 240 fps).}
-In practice, a direct visual comparison supported this choice: $120$~fps looked noticeably smoother than $60$~fps for pose/keypoint trajectories, while the marginal return from $240$~fps was comparatively small.
-
-\begin{figure}[H]
-	\centering
-	\includegraphics[width=0.9\linewidth]{process-pics/fps_comparison.png}
-	\caption{Frame-rate comparison: 120~fps produces much smoother kinematics than 60~fps, while 240~fps yields smaller incremental gains relative to its added storage/compute cost.}
-	\label{fig:fps-comparison}
-\end{figure}
-
-\paragraph{Converting spatial resolution $\rightarrow$ required sample rate (RP3 force curve).}
-As a first-principles guide, we can convert the RP3 force-curve spatial step into an equivalent sampling frequency during the drive. Using representative values:
-\begin{itemize}
-	\item Drive time: $\approx 0.7$~s
-	\item Drive length: $\approx 130$--$150$~cm
-	\item Force curve step: $2.2$~cm
-\end{itemize}
-The number of force samples per drive is therefore approximately:
-\[
-	\frac{130}{2.2} \approx 59 \quad \text{to} \quad \frac{150}{2.2} \approx 68.
-\]
-Converting this to an equivalent sampling rate over the drive:
-\[
-	\frac{59}{0.7} \approx 84.4~\text{Hz} \quad \text{to} \quad \frac{68}{0.7} \approx 97.4~\text{Hz}.
-\]
-So, at this spatial step, the RP3 force curve corresponds to roughly $85$--$100$ samples per second during the drive.
-
-\paragraph{Sensible video frame rate.}
-If the goal is to align joint-angle sequences cleanly with the force samples without heavy interpolation, the video frame rate should be comparable to (or higher than) the $85$--$100$~Hz effective sampling rate implied above.
-
-\paragraph{Practical recommendation.}
-A sensible default target is \textbf{120~fps}: it exceeds the $85$--$100$~Hz requirement and provides buffer for catch timing accuracy, pose jitter, and small timing misalignment.
 
 \subsubsection*{Step 1: Pipeline decomposition and specification (completed)}
 \begin{itemize}
@@ -599,5 +561,24 @@ The \texttt{training\_dataset/} directory contains: \texttt{strokes.csv} (one ro
 
 \paragraph{Integration into the inference CLI.}
 The dataset builder is called automatically at the end of \texttt{inference\_cli.py} whenever a non-empty segment export is produced. No extra invocation is required: a full end-to-end run (video $\rightarrow$ pose extraction $\rightarrow$ stroke detection $\rightarrow$ RP3 matching $\rightarrow$ segment export $\rightarrow$ training dataset) now completes in a single CLI call. The step can be suppressed with \texttt{--no-build-dataset}, and its parameters (grid size, number of PCA components, QC mode, force column, output directory) are all configurable. The path to the resulting \texttt{training\_dataset/} directory is recorded in both the run summary JSON and the printed output.
+
+\subsubsection*{Progress update (March 17--24, 2026): biomechanics standardization, coordination features, and evaluation protocol wiring}
+
+This section records implementation progress that closes several open items in \texttt{inference/force-curve-inference-process.md} (Sections~6, 9, and~12) and tightens the path from matched segments to honest model evaluation.
+
+\paragraph{Mirror-normalized trunk angle (Section~6.4).}
+Unilateral feature construction already maps left/right columns to canonical \texttt{knee\_active}, \texttt{hip\_active}, and \texttt{elbow\_active} names. The trunk signal \texttt{trunk\_vs\_horizontal\_deg} is shared across sides but its sign convention can flip when the active oar side changes relative to the camera. The segment export in \texttt{inference\_cli.py} now applies mirror-normalization for this column when the active side and camera geometry imply a sign flip, so trunk orientation is comparable across sessions filmed from opposite sides of the athlete.
+
+\paragraph{Coordination scalars (Section~9).}
+\texttt{build\_training\_dataset.py} augments each stroke row with coordination features derived from the fixed-grid kinematic sequences: onset progress values for knee, trunk, and arms (using a configurable fraction of per-stroke peak $|d\theta/ds|$), inter-phase lags \texttt{lag\_knee\_to\_trunk\_s} and \texttt{lag\_trunk\_to\_arms\_s}, fractional contributions of knee/hip/elbow angle range to total range, and \texttt{drive\_ratio} from RP3 drive and cycle times. These support Stage~A baselines and interpretable analysis of leg--trunk--arm sequencing without expanding the primary per-bin sequence dimension unnecessarily.
+
+\paragraph{Athlete identity and alignment QC in the training dataset.}
+The builder can read \texttt{session\_registry.csv} to populate \texttt{athlete\_id} per run (matched by video stem). When pairing metadata include cumulative catch error and per-stroke cycle intervals, optional gates add \texttt{qc\_alignment\_drift} (cumulative catch error magnitude above threshold) and \texttt{qc\_rate\_mismatch} (video vs.\ RP3 stroke-rate disagreement). In hard QC mode, alignment-flagged strokes can be excluded alongside the existing tracking/derivative flags. Dataset summaries report counts of alignment-flagged strokes and thresholds used.
+
+\paragraph{Shared evaluation helpers (\texttt{eval\_metrics.py}; Section~12).}
+A single module now implements curve-level metrics (per-stroke RMSE, MAE, Pearson $r$), rowing-relevant scalars (peak force error, peak-force position error on $s$, impulse error), and early/mid/late drive MAE, with aggregation (median/mean/std). Cross-validation generators include time-block folds, session-held-out (\texttt{run\_name}), and athlete-held-out splits (requires at least two distinct non-unknown \texttt{athlete\_id} values). \texttt{compute\_alignment\_metrics} summarizes pairing integrity (cumulative catch error, interval error, video--RP3 stroke-rate consistency). \texttt{detect\_evaluation\_regime} labels whether a run is provisional (single athlete or within-athlete splits) vs.\ generalization-grade (athlete-held-out with multiple athletes), with an explicit disclaimer string for reporting.
+
+\paragraph{Documentation and visual summaries.}
+Static HTML in \texttt{docs/} (including an extended pipeline visualisation and a model-training-stages overview) document the end-to-end flow, stage gates, and evaluation regime semantics for quick onboarding and talks; they are companions to the Markdown process spec rather than a second source of truth.
 
 \end{document}

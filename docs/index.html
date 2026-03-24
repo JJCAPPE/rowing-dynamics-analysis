@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Force curve inference — diagrams</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700&family=Source+Sans+3:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #f6f2ec;
+            --text: #3d3529;
+            --text-muted: #8a7e6e;
+            --text-bright: #1a150e;
+            --shared: #6d28d9;
+            --border: #d8d0c4;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Source Sans 3', sans-serif;
+            font-weight: 400;
+            line-height: 1.65;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 48px 24px;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .wrap {
+            max-width: 520px;
+            width: 100%;
+        }
+
+        h1 {
+            font-family: 'Fraunces', serif;
+            font-weight: 700;
+            font-size: 1.75rem;
+            color: var(--text-bright);
+            letter-spacing: -0.03em;
+            margin-bottom: 8px;
+        }
+
+        p.lead {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            margin-bottom: 28px;
+        }
+
+        ul {
+            list-style: none;
+        }
+
+        li a {
+            display: block;
+            padding: 16px 18px;
+            margin-bottom: 10px;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            text-decoration: none;
+            color: var(--text-bright);
+            font-weight: 500;
+            font-size: 0.98rem;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        li a:hover {
+            border-color: var(--shared);
+            box-shadow: 0 2px 12px rgba(109, 40, 217, 0.08);
+        }
+
+        li a span {
+            display: block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            font-weight: 400;
+            color: var(--text-muted);
+            margin-top: 6px;
+            letter-spacing: 0.02em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <h1>Force curve inference</h1>
+        <p class="lead">Static diagrams for the pipeline and model training stages.</p>
+        <ul>
+            <li>
+                <a href="pipeline-visualisation.html">&rarr; Pipeline overview <span>End-to-end data flow and cards</span></a>
+            </li>
+            <li>
+                <a href="model-training-stages.html">&rarr; Model training stages <span>Stage 0&ndash;B and evaluation</span></a>
+            </li>
+        </ul>
+    </div>
+</body>
+
+</html>
