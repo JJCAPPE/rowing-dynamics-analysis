@@ -48,6 +48,7 @@ ONSET_FRAC_DEFAULT = 0.15
 
 SCALAR_METADATA_COLS = [
     "run_name",
+    "athlete_id",
     "rp3_clean_csv",
     "active_side",
     "rower_facing",
@@ -71,6 +72,38 @@ SCALAR_METADATA_COLS = [
 ]
 
 QC_HARD_DROP_FLAGS = {"qc_tracking_sparse", "qc_nonphysio_deriv"}
+QC_ALIGNMENT_FLAGS = {"qc_alignment_drift", "qc_rate_mismatch"}
+
+ALIGNMENT_MAX_CUM_ERR_S_DEFAULT = 1.5
+ALIGNMENT_MAX_RATE_DIFF_SPM_DEFAULT = 2.0
+
+
+def _load_athlete_map(registry_path: Path) -> dict[str, str]:
+    """Build a {video_file_stem: athlete_id} lookup from session_registry.csv."""
+    if not registry_path.exists():
+        print(f"Warning: session registry not found at {registry_path}; "
+              "athlete_id will be 'unknown'.")
+        return {}
+    reg = pd.read_csv(registry_path)
+    if "athlete_id" not in reg.columns or "video_run_dir" not in reg.columns:
+        print("Warning: session registry missing 'athlete_id' or 'video_run_dir' columns.")
+        return {}
+    mapping: dict[str, str] = {}
+    for _, row in reg.iterrows():
+        stem = Path(str(row["video_run_dir"])).stem
+        mapping[stem] = str(row["athlete_id"])
+    return mapping
+
+
+def _resolve_athlete_id(run_name: str, athlete_map: dict[str, str]) -> str:
+    """Match a run directory name to an athlete_id via video-stem prefix."""
+    best_stem = ""
+    best_id = "unknown"
+    for stem, aid in athlete_map.items():
+        if run_name.startswith(stem) and len(stem) > len(best_stem):
+            best_stem = stem
+            best_id = aid
+    return best_id
 
 
 # ---------------------------------------------------------------------------
@@ -95,11 +128,15 @@ def _load_segment_csvs(paths: list[Path]) -> pd.DataFrame:
 # Pivot to stroke-level
 # ---------------------------------------------------------------------------
 
-def _pivot_to_strokes(df: pd.DataFrame) -> list[dict[str, Any]]:
+def _pivot_to_strokes(
+    df: pd.DataFrame,
+    athlete_map: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     """Group the long-format dataframe into one record per stroke.
 
     Each record contains scalar metadata and per-bin arrays sorted by s_force.
     """
+    athlete_map = athlete_map or {}
     strokes: list[dict[str, Any]] = []
     group_cols = ["run_name", "match_seq_idx"]
     for (run_name, seq_idx), grp in df.groupby(group_cols, sort=False):
@@ -110,7 +147,10 @@ def _pivot_to_strokes(df: pd.DataFrame) -> list[dict[str, Any]]:
             "stroke_key": f"{run_name}__{int(seq_idx)}",
         }
         for col in SCALAR_METADATA_COLS:
-            record[col] = first[col] if col in grp.columns else float("nan")
+            if col == "athlete_id":
+                record[col] = _resolve_athlete_id(str(run_name), athlete_map)
+            else:
+                record[col] = first[col] if col in grp.columns else float("nan")
 
         record["stroke_rate_spm"] = (
             60.0 / float(first["rp3_cycle_s"])
@@ -139,19 +179,61 @@ def _pivot_to_strokes(df: pd.DataFrame) -> list[dict[str, Any]]:
 # QC filtering
 # ---------------------------------------------------------------------------
 
-def _apply_qc(strokes: list[dict[str, Any]], mode: str) -> list[dict[str, Any]]:
-    """Mark or drop strokes based on qc_flags.
+def _apply_qc(
+    strokes: list[dict[str, Any]],
+    mode: str,
+    max_cum_err_s: float = ALIGNMENT_MAX_CUM_ERR_S_DEFAULT,
+    max_rate_diff_spm: float = ALIGNMENT_MAX_RATE_DIFF_SPM_DEFAULT,
+) -> list[dict[str, Any]]:
+    """Mark or drop strokes based on qc_flags and alignment checks.
 
     soft: add qc_excluded bool; keep all strokes.
     hard: drop strokes with hard-drop flags; still mark soft-flagged ones.
+
+    Alignment gates (applied regardless of mode):
+      - qc_alignment_drift: |cum_catch_err_s| > max_cum_err_s
+      - qc_rate_mismatch: |video_spm - rp3_spm| > max_rate_diff_spm
     """
     n_before = len(strokes)
     kept: list[dict[str, Any]] = []
     n_hard_dropped = 0
+    n_alignment_flagged = 0
     for s in strokes:
         flags_str = str(s.get("qc_flags", "") or "")
         flags = {f.strip() for f in flags_str.split(",") if f.strip()}
-        hard_hit = flags & QC_HARD_DROP_FLAGS
+
+        cum_err = s.get("cum_catch_err_s", float("nan"))
+        if isinstance(cum_err, str):
+            try:
+                cum_err = float(cum_err)
+            except (ValueError, TypeError):
+                cum_err = float("nan")
+        if np.isfinite(cum_err) and abs(cum_err) > max_cum_err_s:
+            flags.add("qc_alignment_drift")
+
+        video_cycle = s.get("video_cycle_s", float("nan"))
+        rp3_cycle = s.get("rp3_cycle_s", float("nan"))
+        if isinstance(video_cycle, str):
+            try:
+                video_cycle = float(video_cycle)
+            except (ValueError, TypeError):
+                video_cycle = float("nan")
+        if isinstance(rp3_cycle, str):
+            try:
+                rp3_cycle = float(rp3_cycle)
+            except (ValueError, TypeError):
+                rp3_cycle = float("nan")
+        if (np.isfinite(video_cycle) and video_cycle > 0
+                and np.isfinite(rp3_cycle) and rp3_cycle > 0):
+            rate_diff = abs(60.0 / video_cycle - 60.0 / rp3_cycle)
+            if rate_diff > max_rate_diff_spm:
+                flags.add("qc_rate_mismatch")
+
+        alignment_hit = flags & QC_ALIGNMENT_FLAGS
+        if alignment_hit:
+            n_alignment_flagged += 1
+
+        hard_hit = flags & (QC_HARD_DROP_FLAGS | QC_ALIGNMENT_FLAGS)
         s["qc_excluded"] = bool(hard_hit)
         s["qc_flags_set"] = flags
         if mode == "hard" and hard_hit:
@@ -162,7 +244,8 @@ def _apply_qc(strokes: list[dict[str, Any]], mode: str) -> list[dict[str, Any]]:
     print(
         f"QC ({mode} mode): {n_before} strokes -> {len(kept)} kept "
         f"({n_hard_dropped} hard-dropped, "
-        f"{sum(1 for s in kept if s['qc_excluded'])} soft-flagged)."
+        f"{sum(1 for s in kept if s['qc_excluded'])} soft-flagged, "
+        f"{n_alignment_flagged} alignment-flagged)."
     )
     return kept
 
@@ -485,15 +568,28 @@ def build_training_dataset(
     n_pca_components: int = N_PCA_DEFAULT,
     force_col: str = "force_raw",
     onset_frac: float = ONSET_FRAC_DEFAULT,
+    session_registry: Path | None = None,
+    max_cum_err_s: float = ALIGNMENT_MAX_CUM_ERR_S_DEFAULT,
+    max_rate_diff_spm: float = ALIGNMENT_MAX_RATE_DIFF_SPM_DEFAULT,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    athlete_map: dict[str, str] = {}
+    if session_registry is not None:
+        athlete_map = _load_athlete_map(session_registry)
+        if athlete_map:
+            print(f"Loaded athlete map: {len(athlete_map)} entries from {session_registry}")
+
     # 1. Load and pivot
     df = _load_segment_csvs(segment_csvs)
-    strokes = _pivot_to_strokes(df)
+    strokes = _pivot_to_strokes(df, athlete_map=athlete_map)
 
-    # 2. QC filter
-    strokes = _apply_qc(strokes, qc_mode)
+    # 2. QC filter (includes alignment gates)
+    strokes = _apply_qc(
+        strokes, qc_mode,
+        max_cum_err_s=max_cum_err_s,
+        max_rate_diff_spm=max_rate_diff_spm,
+    )
     N = len(strokes)
     if N == 0:
         raise RuntimeError("No strokes remain after QC filtering.")
@@ -558,6 +654,8 @@ def build_training_dataset(
         n_strokes_before_qc=len(df.groupby(["run_name", "match_seq_idx"])),
         n_strokes_after_qc=N,
         strokes=strokes,
+        max_cum_err_s=max_cum_err_s,
+        max_rate_diff_spm=max_rate_diff_spm,
     )
     print(f"Done. Dataset written to: {output_dir}")
 
@@ -587,6 +685,8 @@ def _write_artifacts(
     n_strokes_before_qc: int,
     n_strokes_after_qc: int,
     strokes: list[dict[str, Any]],
+    max_cum_err_s: float = ALIGNMENT_MAX_CUM_ERR_S_DEFAULT,
+    max_rate_diff_spm: float = ALIGNMENT_MAX_RATE_DIFF_SPM_DEFAULT,
 ) -> None:
     strokes_df.to_csv(output_dir / "strokes.csv", index=False)
 
@@ -612,13 +712,21 @@ def _write_artifacts(
     pca_ev_df.to_csv(output_dir / "pca_explained_variance.csv", index=False)
 
     n_soft_flagged = sum(1 for s in strokes if s.get("qc_excluded", False))
+    n_alignment_flagged = sum(
+        1 for s in strokes
+        if s.get("qc_flags_set", set()) & QC_ALIGNMENT_FLAGS
+    )
     n_hard_dropped = n_strokes_before_qc - n_strokes_after_qc if qc_mode == "hard" else 0
+    athletes = sorted({s.get("athlete_id", "unknown") for s in strokes})
     summary = {
         "n_strokes_before_qc": n_strokes_before_qc,
         "n_strokes_after_qc": n_strokes_after_qc,
         "n_hard_dropped": n_hard_dropped,
         "n_soft_flagged": n_soft_flagged,
+        "n_alignment_flagged": n_alignment_flagged,
         "qc_mode": qc_mode,
+        "alignment_max_cum_err_s": max_cum_err_s,
+        "alignment_max_rate_diff_spm": max_rate_diff_spm,
         "force_col": force_col,
         "n_grid": n_grid,
         "max_bins": MAX_BINS,
@@ -632,6 +740,8 @@ def _write_artifacts(
         "coordination_feature_cols": _ONSET_NAMES + ["lag_knee_to_trunk_s", "lag_trunk_to_arms_s"] + _FRAC_NAMES + ["drive_ratio"],
         "source_files": [str(p) for p in segment_csvs],
         "runs_included": sorted({s["run_name"] for s in strokes}),
+        "athletes_included": athletes,
+        "n_athletes": len(athletes),
     }
     with open(output_dir / "dataset_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
@@ -713,6 +823,34 @@ def _parse_args() -> argparse.Namespace:
             f"for phase-lag features (default: {ONSET_FRAC_DEFAULT})."
         ),
     )
+    parser.add_argument(
+        "--session-registry",
+        type=Path,
+        default=None,
+        metavar="CSV",
+        help=(
+            "Path to session_registry.csv for athlete_id lookup. "
+            "Default: <repo_root>/session_registry.csv if it exists."
+        ),
+    )
+    parser.add_argument(
+        "--max-cum-err-s",
+        type=float,
+        default=ALIGNMENT_MAX_CUM_ERR_S_DEFAULT,
+        help=(
+            "Alignment QC: max |cumulative catch error| in seconds before "
+            f"flagging a stroke (default: {ALIGNMENT_MAX_CUM_ERR_S_DEFAULT})."
+        ),
+    )
+    parser.add_argument(
+        "--max-rate-diff-spm",
+        type=float,
+        default=ALIGNMENT_MAX_RATE_DIFF_SPM_DEFAULT,
+        help=(
+            "Alignment QC: max stroke-rate mismatch (video vs RP3) in spm "
+            f"before flagging a stroke (default: {ALIGNMENT_MAX_RATE_DIFF_SPM_DEFAULT})."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -743,6 +881,12 @@ def main() -> int:
 
     output_dir = Path(args.output_dir)
 
+    registry = args.session_registry
+    if registry is None:
+        default_registry = Path(__file__).resolve().parents[1] / "session_registry.csv"
+        if default_registry.exists():
+            registry = default_registry
+
     try:
         build_training_dataset(
             segment_csvs=resolved,
@@ -752,6 +896,9 @@ def main() -> int:
             n_pca_components=args.n_pca_components,
             force_col=args.force_col,
             onset_frac=args.onset_frac,
+            session_registry=registry,
+            max_cum_err_s=args.max_cum_err_s,
+            max_rate_diff_spm=args.max_rate_diff_spm,
         )
     except Exception as exc:
         print(f"Error: {exc}")
