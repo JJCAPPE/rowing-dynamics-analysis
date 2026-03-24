@@ -29,7 +29,10 @@ from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 
 from eval_metrics import (
+    athlete_held_out_split,
+    compute_alignment_metrics,
     compute_all_metrics,
+    detect_evaluation_regime,
     format_metrics_table,
     reconstruct_from_pca,
     rmse_per_stroke,
@@ -61,6 +64,8 @@ def _get_cv_splitter(
     method: str,
     n_splits: int,
 ) -> Generator[tuple[np.ndarray, np.ndarray], None, None]:
+    if method == "athlete_held_out":
+        return athlete_held_out_split(strokes_df)
     if method == "session_held_out":
         return session_held_out_split(strokes_df)
     return time_block_split(strokes_df, n_splits=n_splits)
@@ -712,6 +717,71 @@ def stageB_sequence_models(
 
 
 # ===================================================================
+# Unified Evaluation Report (Section 12)
+# ===================================================================
+
+
+def write_evaluation_report(
+    output_dir: Path,
+    *,
+    regime_info: dict[str, str],
+    alignment_metrics: dict[str, float],
+    all_results: list[dict[str, Any]],
+    cv_method: str,
+    n_splits: int,
+) -> None:
+    """Write a structured evaluation report as JSON and human-readable text."""
+    report: dict[str, Any] = {
+        "evaluation_regime": regime_info,
+        "cv_method": cv_method,
+        "n_splits": n_splits,
+        "alignment_integrity": alignment_metrics,
+        "model_results": all_results,
+    }
+
+    with open(output_dir / "evaluation_report.json", "w") as f:
+        json.dump(_serializable(report), f, indent=2)
+
+    lines: list[str] = []
+    lines.append("=" * 72)
+    lines.append("  EVALUATION REPORT (Section 12)")
+    lines.append("=" * 72)
+    lines.append("")
+    lines.append(f"  Regime:     {regime_info['regime']}")
+    lines.append(f"  CV method:  {cv_method} (n_splits={n_splits})")
+    lines.append(f"  Athletes:   {regime_info.get('n_athletes', '?')}")
+    lines.append("")
+    lines.append(f"  NOTE: {regime_info['disclaimer']}")
+    lines.append("")
+
+    lines.append("-" * 72)
+    lines.append("  ALIGNMENT INTEGRITY")
+    lines.append("-" * 72)
+    for k, v in alignment_metrics.items():
+        if isinstance(v, float):
+            lines.append(f"  {k:40s} {v:.4f}")
+        else:
+            lines.append(f"  {k:40s} {v}")
+    lines.append("")
+
+    lines.append("-" * 72)
+    lines.append("  MODEL COMPARISON")
+    lines.append("-" * 72)
+    if all_results:
+        lines.append(format_metrics_table(all_results))
+    else:
+        lines.append("  (no model results)")
+    lines.append("")
+    lines.append("=" * 72)
+
+    text = "\n".join(lines)
+    with open(output_dir / "evaluation_report.txt", "w") as f:
+        f.write(text + "\n")
+
+    print(text)
+
+
+# ===================================================================
 # CLI
 # ===================================================================
 
@@ -756,7 +826,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cv-method",
-        choices=["time_block", "session_held_out"],
+        choices=["time_block", "session_held_out", "athlete_held_out"],
         default="time_block",
         help="Cross-validation method (default: time_block).",
     )
@@ -840,6 +910,17 @@ def main() -> int:
     )
     print(f"Dataset: {force_curves.shape[0]} strokes, {int(valid_mask.sum())} valid.")
 
+    regime_info = detect_evaluation_regime(strokes_df, args.cv_method)
+    print(f"\nEvaluation regime: {regime_info['regime']}")
+    print(f"  {regime_info['disclaimer']}")
+
+    alignment_metrics = compute_alignment_metrics(strokes_df)
+    print(f"\nAlignment integrity:")
+    print(f"  mean |cum_catch_err|: {alignment_metrics.get('mean_abs_cum_catch_err_s', float('nan')):.4f} s")
+    print(f"  max  |cum_catch_err|: {alignment_metrics.get('max_abs_cum_catch_err_s', float('nan')):.4f} s")
+    print(f"  mean rate diff:       {alignment_metrics.get('mean_rate_diff_spm', float('nan')):.4f} spm")
+    print(f"  stroke-rate r:        {alignment_metrics.get('stroke_rate_pearson_r', float('nan')):.4f}")
+
     all_results: list[dict[str, Any]] = []
     gate_metrics: dict[str, float] | None = None
 
@@ -875,6 +956,7 @@ def main() -> int:
         print(f"  Correlation median: {gate_metrics.get('correlation_median', float('nan')):.4f}")
 
         s0_out = {
+            "evaluation_regime": regime_info["regime"],
             "overall_metrics": s0_result["overall_metrics"],
             "fold_metrics": s0_result["fold_metrics"],
             "feature_cols": s0_result["feature_cols"],
@@ -905,7 +987,7 @@ def main() -> int:
             n_pca_targets=args.n_pca_targets,
         )
 
-        sa_out: dict[str, Any] = {"feature_cols": sa_result["feature_cols"], "models": {}}
+        sa_out: dict[str, Any] = {"evaluation_regime": regime_info["regime"], "feature_cols": sa_result["feature_cols"], "models": {}}
         best_sa_name = None
         best_sa_rmse = float("inf")
 
@@ -984,6 +1066,7 @@ def main() -> int:
             all_results.append(m)
 
             sb_out = {
+                "evaluation_regime": regime_info["regime"],
                 "overall_metrics": sb_result["overall_metrics"],
                 "fold_metrics": sb_result["fold_metrics"],
                 "architecture": sb_result["architecture"],
@@ -1004,15 +1087,20 @@ def main() -> int:
             print(f"  FAILED: {exc}")
 
     # ------------------------------------------------------------------
-    # Comparison summary
+    # Comparison summary + unified evaluation report
     # ------------------------------------------------------------------
     if all_results:
-        print("\n=== Comparison Summary ===")
-        table = format_metrics_table(all_results)
-        print(table)
-
         with open(output_dir / "comparison_summary.json", "w") as f:
             json.dump(_serializable(all_results), f, indent=2)
+
+    write_evaluation_report(
+        output_dir,
+        regime_info=regime_info,
+        alignment_metrics=alignment_metrics,
+        all_results=all_results,
+        cv_method=args.cv_method,
+        n_splits=args.n_splits,
+    )
 
     print(f"\nResults written to: {output_dir}")
     return 0
