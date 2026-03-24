@@ -248,6 +248,156 @@ def session_held_out_split(
         yield train, test
 
 
+def athlete_held_out_split(
+    strokes_df: pd.DataFrame,
+) -> Generator[tuple[np.ndarray, np.ndarray], None, None]:
+    """Yield (train_idx, test_idx) leaving one athlete_id out per fold.
+
+    Requires an ``athlete_id`` column with at least two distinct non-"unknown"
+    values; raises ValueError otherwise.
+    """
+    if "athlete_id" not in strokes_df.columns:
+        raise ValueError("strokes_df must contain an 'athlete_id' column for athlete splits.")
+    athletes = [
+        a for a in strokes_df["athlete_id"].unique()
+        if str(a) != "unknown"
+    ]
+    if len(athletes) < 2:
+        raise ValueError(
+            f"Need >= 2 distinct athletes for athlete-held-out splits, "
+            f"found {len(athletes)}: {athletes}"
+        )
+    for held_out in athletes:
+        test = strokes_df.index[strokes_df["athlete_id"] == held_out].to_numpy()
+        train = strokes_df.index[strokes_df["athlete_id"] != held_out].to_numpy()
+        if train.size == 0 or test.size == 0:
+            continue
+        yield train, test
+
+
+# ---------------------------------------------------------------------------
+# Alignment integrity metrics (Section 12 pairing checks)
+# ---------------------------------------------------------------------------
+
+_ALIGNMENT_DRIFT_THRESHOLD_S = 1.5
+_ALIGNMENT_RATE_THRESHOLD_SPM = 2.0
+
+
+def compute_alignment_metrics(
+    strokes_df: pd.DataFrame,
+    drift_threshold_s: float = _ALIGNMENT_DRIFT_THRESHOLD_S,
+    rate_threshold_spm: float = _ALIGNMENT_RATE_THRESHOLD_SPM,
+) -> dict[str, float]:
+    """Compute pairing/alignment integrity statistics from matched strokes.
+
+    Uses ``cum_catch_err_s``, ``interval_err_s``, ``video_cycle_s``, and
+    ``rp3_cycle_s`` columns when present.
+    """
+    out: dict[str, float] = {}
+
+    if "cum_catch_err_s" in strokes_df.columns:
+        cum = pd.to_numeric(strokes_df["cum_catch_err_s"], errors="coerce")
+        abs_cum = cum.abs()
+        out["mean_abs_cum_catch_err_s"] = float(abs_cum.mean()) if abs_cum.notna().any() else float("nan")
+        out["max_abs_cum_catch_err_s"] = float(abs_cum.max()) if abs_cum.notna().any() else float("nan")
+        out["n_above_drift_threshold"] = int((abs_cum > drift_threshold_s).sum())
+    else:
+        out["mean_abs_cum_catch_err_s"] = float("nan")
+        out["max_abs_cum_catch_err_s"] = float("nan")
+        out["n_above_drift_threshold"] = 0
+
+    if "interval_err_s" in strokes_df.columns:
+        ie = pd.to_numeric(strokes_df["interval_err_s"], errors="coerce")
+        out["mean_abs_interval_err_s"] = float(ie.abs().mean()) if ie.notna().any() else float("nan")
+    else:
+        out["mean_abs_interval_err_s"] = float("nan")
+
+    has_cycles = (
+        "video_cycle_s" in strokes_df.columns
+        and "rp3_cycle_s" in strokes_df.columns
+    )
+    if has_cycles:
+        vc = pd.to_numeric(strokes_df["video_cycle_s"], errors="coerce")
+        rc = pd.to_numeric(strokes_df["rp3_cycle_s"], errors="coerce")
+        valid = (vc > 0) & (rc > 0) & vc.notna() & rc.notna()
+        if valid.any():
+            video_spm = 60.0 / vc[valid]
+            rp3_spm = 60.0 / rc[valid]
+            rate_diff = (video_spm - rp3_spm).abs()
+            out["mean_rate_diff_spm"] = float(rate_diff.mean())
+            out["max_rate_diff_spm"] = float(rate_diff.max())
+            out["n_above_rate_threshold"] = int((rate_diff > rate_threshold_spm).sum())
+
+            both_finite = video_spm.replace([np.inf, -np.inf], np.nan).dropna()
+            rp3_finite = rp3_spm.loc[both_finite.index]
+            if len(both_finite) >= 3:
+                out["stroke_rate_pearson_r"] = float(
+                    np.corrcoef(both_finite.to_numpy(), rp3_finite.to_numpy())[0, 1]
+                )
+            else:
+                out["stroke_rate_pearson_r"] = float("nan")
+        else:
+            out["mean_rate_diff_spm"] = float("nan")
+            out["max_rate_diff_spm"] = float("nan")
+            out["n_above_rate_threshold"] = 0
+            out["stroke_rate_pearson_r"] = float("nan")
+    else:
+        out["mean_rate_diff_spm"] = float("nan")
+        out["max_rate_diff_spm"] = float("nan")
+        out["n_above_rate_threshold"] = 0
+        out["stroke_rate_pearson_r"] = float("nan")
+
+    out["n_strokes_evaluated"] = len(strokes_df)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Evaluation regime detection (Section 12)
+# ---------------------------------------------------------------------------
+
+def detect_evaluation_regime(
+    strokes_df: pd.DataFrame,
+    cv_method: str,
+) -> dict[str, str]:
+    """Determine whether results are provisional or generalization-grade.
+
+    Returns a dict with ``regime`` (one of "provisional_within_athlete",
+    "provisional_mixed", "generalization") and a human-readable ``disclaimer``.
+    """
+    has_athlete = (
+        "athlete_id" in strokes_df.columns
+        and strokes_df["athlete_id"].nunique() > 1
+        and not (strokes_df["athlete_id"] == "unknown").all()
+    )
+    n_athletes = (
+        strokes_df["athlete_id"].nunique()
+        if "athlete_id" in strokes_df.columns
+        else 0
+    )
+
+    if cv_method == "athlete_held_out" and has_athlete:
+        regime = "generalization"
+        disclaimer = (
+            f"Athlete-held-out evaluation across {n_athletes} athletes. "
+            "Results reflect cross-athlete generalization."
+        )
+    elif has_athlete:
+        regime = "provisional_mixed"
+        disclaimer = (
+            f"Within-session or time-block splits over {n_athletes} athletes. "
+            "Results are provisional: the same athlete may appear in train and test. "
+            "Use --cv-method athlete_held_out for generalization claims."
+        )
+    else:
+        regime = "provisional_within_athlete"
+        disclaimer = (
+            "All data comes from a single athlete (or athlete_id is unknown). "
+            "Results are provisional and do not support generalization claims."
+        )
+
+    return {"regime": regime, "disclaimer": disclaimer, "n_athletes": str(n_athletes)}
+
+
 # ---------------------------------------------------------------------------
 # PCA reconstruction
 # ---------------------------------------------------------------------------
