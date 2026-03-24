@@ -76,7 +76,7 @@
             max-width: 620px;
             line-height: 1.6;
         }
-
+        
         .header-nav {
             margin-top: 14px;
             display: flex;
@@ -84,7 +84,7 @@
             gap: 10px 18px;
             align-items: center;
         }
-
+        
         .header-nav a {
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.72rem;
@@ -95,34 +95,61 @@
             border-bottom: 1px solid transparent;
             transition: border-color 0.15s ease, color 0.15s ease;
         }
-
+        
         .header-nav a:hover {
             color: var(--text-bright);
             border-bottom-color: var(--shared-border);
         }
-
+        
+        .header-author {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            line-height: 1.65;
+            max-width: 620px;
+        }
+        
+        .header-author strong {
+            color: var(--text);
+            font-weight: 500;
+        }
+        
+        .header-author a {
+            color: var(--shared);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.15s ease, color 0.15s ease;
+        }
+        
+        .header-author a:hover {
+            color: var(--text-bright);
+            border-bottom-color: var(--shared-border);
+        }
+        
         .step-nav {
             margin: -4px 0 12px 40px;
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.7rem;
         }
-
+        
         .step-nav a {
             color: var(--shared);
             text-decoration: none;
             font-weight: 500;
         }
-
+        
         .step-nav a:hover {
             text-decoration: underline;
         }
-
         /* Embedded model-training diagrams (steps 07 / 09) */
+        
         .model-training-diagram {
             margin: 16px 0 22px 40px;
             max-width: calc(100% - 40px);
         }
-
+        
         .model-training-diagram-head {
             display: flex;
             flex-wrap: wrap;
@@ -130,7 +157,7 @@
             gap: 6px 14px;
             margin-bottom: 10px;
         }
-
+        
         .model-training-diagram-title {
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.72rem;
@@ -139,12 +166,12 @@
             letter-spacing: 0.04em;
             text-transform: uppercase;
         }
-
+        
         .model-training-diagram-sub {
             font-size: 0.8rem;
             color: var(--text-muted);
         }
-
+        
         .diagram-nav-link {
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.65rem;
@@ -153,24 +180,24 @@
             text-decoration: none;
             margin-left: auto;
         }
-
+        
         .diagram-nav-link:hover {
             text-decoration: underline;
         }
-
+        
         .model-training-diagram-inner {
             background: var(--surface);
             border: 1.5px solid var(--border);
             border-radius: 6px;
             padding: 24px 20px;
         }
-
+        
         .model-training-diagram-inner svg {
             width: 100%;
             height: auto;
             display: block;
         }
-
+        
         .model-training-diagram-inner .diagram-caption {
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.68rem;
@@ -179,7 +206,6 @@
             text-align: center;
             letter-spacing: 0.02em;
         }
-
         /* ── Mode switcher ── */
         
         .controls {
@@ -591,7 +617,7 @@
             opacity: 0.55;
             font-style: italic;
         }
-
+        
         .footnote .footnote-link {
             font-style: normal;
             font-family: 'JetBrains Mono', monospace;
@@ -600,16 +626,16 @@
             text-decoration: none;
             opacity: 1;
         }
-
+        
         .footnote .footnote-link:hover {
             text-decoration: underline;
         }
-
         /* ── Evidence images ── */
+        
         .evidence {
             margin-top: 12px;
         }
-
+        
         .evidence-label {
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.65rem;
@@ -620,18 +646,18 @@
             opacity: 0.6;
             margin-bottom: 6px;
         }
-
+        
         .evidence-strip {
             display: flex;
             gap: 10px;
             flex-wrap: wrap;
         }
-
+        
         .evidence-fig {
             flex: 1 1 180px;
             max-width: 100%;
         }
-
+        
         .evidence-fig img {
             width: 100%;
             border-radius: 4px;
@@ -640,24 +666,24 @@
             transition: border-color 0.2s;
             display: block;
         }
-
+        
         .evidence-fig img:hover {
             border-color: var(--border-active);
         }
-
+        
         .evidence-fig figcaption {
             font-size: 0.68rem;
             color: var(--text-muted);
             margin-top: 4px;
             line-height: 1.4;
         }
-
+        
         .evidence-before-after {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 10px;
         }
-
+        
         .evidence-before-after .ba-label {
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.6rem;
@@ -666,11 +692,16 @@
             letter-spacing: 0.06em;
             margin-bottom: 4px;
         }
-
-        .evidence-before-after .ba-before .ba-label { color: var(--qc); }
-        .evidence-before-after .ba-after .ba-label { color: var(--output); }
-
+        
+        .evidence-before-after .ba-before .ba-label {
+            color: var(--qc);
+        }
+        
+        .evidence-before-after .ba-after .ba-label {
+            color: var(--output);
+        }
         /* ── S-domain SVG diagram ── */
+        
         .s-domain-diagram {
             margin-top: 12px;
             background: var(--bg-warm);
@@ -678,13 +709,13 @@
             border-radius: 4px;
             padding: 16px;
         }
-
+        
         .s-domain-diagram svg {
             width: 100%;
             height: auto;
         }
-
         /* ── Lightbox ── */
+        
         .lightbox {
             display: none;
             position: fixed;
@@ -698,24 +729,28 @@
             align-items: center;
             padding: 40px;
         }
-
+        
         .lightbox.active {
             display: flex;
             animation: lbFade 0.2s ease;
         }
-
+        
         @keyframes lbFade {
-            from { opacity: 0; }
-            to { opacity: 1; }
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
         }
-
+        
         .lightbox img {
             max-width: 100%;
             max-height: 100%;
             border-radius: 6px;
-            box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+            box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
         }
-
+        
         @media (max-width: 700px) {
             .page {
                 padding: 32px 20px 60px;
@@ -739,7 +774,13 @@
             <p class="subtitle">Predicting per-stroke force curves from video-only biomechanics. Two synchronized data streams converge during training; inference uses video alone. Click any stage to inspect data contracts.</p>
             <nav class="header-nav" aria-label="Related pages">
                 <a href="model-training-stages.html">Model training &mdash; stage diagrams</a>
+                <a href="https://github.com/JJCAPPE" rel="noopener noreferrer">GitHub</a>
+                <a href="https://www.linkedin.com/in/giacomo-cappelletto" rel="noopener noreferrer">LinkedIn</a>
             </nav>
+            <p class="header-author">
+                <strong>Giacomo Cappelletto</strong> &middot; <a href="mailto:giacomo.cappelletto@icloud.com">giacomo.cappelletto@icloud.com</a>
+                <br> Boston, MA &middot; Treviso, Italy &middot; +39 324 681 4985 &middot; +1 (857) 753-0133
+            </p>
         </div>
 
         <div class="controls">
@@ -1169,7 +1210,8 @@
                 <span class="step-title">Model Training</span>
             </div>
 
-            <p class="step-nav"><a href="model-training-stages.html">Model training page</a> (full walkthrough: <a href="model-training-stages.html#mt-target">target</a>, <a href="model-training-stages.html#mt-stage0">Stage 0</a>, <a href="model-training-stages.html#mt-stage-a">A</a>, <a href="model-training-stages.html#mt-stage-b">B</a>, <a href="model-training-stages.html#mt-eval">evaluation</a>, <a href="model-training-stages.html#mt-summary">summary</a>)</p>
+            <p class="step-nav"><a href="model-training-stages.html">Model training page</a> (full walkthrough: <a href="model-training-stages.html#mt-target">target</a>, <a href="model-training-stages.html#mt-stage0">Stage 0</a>, <a href="model-training-stages.html#mt-stage-a">A</a>,
+                <a href="model-training-stages.html#mt-stage-b">B</a>, <a href="model-training-stages.html#mt-eval">evaluation</a>, <a href="model-training-stages.html#mt-summary">summary</a>)</p>
 
             <div class="model-training-diagram" id="pipeline-mt-target">
                 <div class="model-training-diagram-head">
