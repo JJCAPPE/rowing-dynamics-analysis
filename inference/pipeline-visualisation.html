@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Force Curve Inference Pipeline</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700&family=Source+Sans+3:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+         :root {
+            --bg: #f6f2ec;
+            --bg-warm: #efe9e0;
+            --surface: #fff;
+            --surface-hover: #faf8f5;
+            --border: #d8d0c4;
+            --border-active: #8b7355;
+            --text: #3d3529;
+            --text-muted: #8a7e6e;
+            --text-bright: #1a150e;
+            --video: #2563eb;
+            --video-bg: rgba(37, 99, 235, 0.07);
+            --video-border: rgba(37, 99, 235, 0.2);
+            --rp3: #c2410c;
+            --rp3-bg: rgba(194, 65, 12, 0.06);
+            --rp3-border: rgba(194, 65, 12, 0.2);
+            --shared: #6d28d9;
+            --shared-bg: rgba(109, 40, 217, 0.06);
+            --shared-border: rgba(109, 40, 217, 0.18);
+            --output: #047857;
+            --output-bg: rgba(4, 120, 87, 0.06);
+            --output-border: rgba(4, 120, 87, 0.2);
+            --qc: #b91c1c;
+            --qc-bg: rgba(185, 28, 28, 0.05);
+            --qc-border: rgba(185, 28, 28, 0.15);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Source Sans 3', sans-serif;
+            font-weight: 400;
+            line-height: 1.65;
+            -webkit-font-smoothing: antialiased;
+        }
+        
+        .page {
+            max-width: 920px;
+            margin: 0 auto;
+            padding: 56px 40px 80px;
+        }
+        /* ── Header ── */
+        
+        .header {
+            margin-bottom: 40px;
+        }
+        
+        .header h1 {
+            font-family: 'Fraunces', serif;
+            font-weight: 700;
+            font-size: 1.8rem;
+            color: var(--text-bright);
+            letter-spacing: -0.03em;
+            line-height: 1.2;
+            margin-bottom: 10px;
+        }
+        
+        .header .subtitle {
+            font-size: 0.92rem;
+            color: var(--text-muted);
+            max-width: 620px;
+            line-height: 1.6;
+        }
+        /* ── Mode switcher ── */
+        
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin: 28px 0 36px;
+        }
+        
+        .controls label {
+            font-size: 0.78rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        .pill-group {
+            display: flex;
+            gap: 0;
+            border: 1.5px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            background: var(--bg-warm);
+        }
+        
+        .pill {
+            padding: 7px 18px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-family: 'Source Sans 3', sans-serif;
+            font-size: 0.82rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-right: 1px solid var(--border);
+        }
+        
+        .pill:last-child {
+            border-right: none;
+        }
+        
+        .pill.active {
+            background: var(--text-bright);
+            color: #fff;
+        }
+        
+        .pill:hover:not(.active) {
+            background: rgba(0, 0, 0, 0.04);
+            color: var(--text);
+        }
+        /* ── Section scaffolding ── */
+        
+        .section {
+            margin-bottom: 4px;
+            opacity: 1;
+            transition: opacity 0.35s ease, transform 0.35s ease;
+        }
+        
+        .dimmed {
+            opacity: 0.12;
+            pointer-events: none;
+            transform: scale(0.985);
+        }
+        
+        .card.dimmed {
+            opacity: 0.12 !important;
+            transform: none;
+        }
+        
+        .card.entering {
+            opacity: 0;
+            transform: translateY(8px);
+        }
+        
+        .card {
+            transition: opacity 0.35s ease, transform 0.25s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        .step-label {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        
+        .step-num {
+            font-family: 'Fraunces', serif;
+            font-weight: 300;
+            font-size: 1.5rem;
+            color: var(--border);
+            min-width: 30px;
+        }
+        
+        .step-title {
+            font-family: 'Fraunces', serif;
+            font-weight: 500;
+            font-size: 1.05rem;
+            color: var(--text-bright);
+            letter-spacing: -0.01em;
+        }
+        /* ── Cards ── */
+        
+        .card-row {
+            display: grid;
+            align-items: start;
+            gap: 14px;
+            margin-bottom: 14px;
+        }
+        
+        .card-row.cols-2 {
+            grid-template-columns: 1fr 1fr;
+        }
+        
+        .card-row.cols-1 {
+            grid-template-columns: 1fr;
+        }
+        
+        .card {
+            background: var(--surface);
+            border: 1.5px solid var(--border);
+            border-radius: 5px;
+            padding: 16px 20px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+        
+        .card::after {
+            content: '';
+            position: absolute;
+            top: 8px;
+            left: 0;
+            width: 3px;
+            height: calc(100% - 16px);
+            border-radius: 0 2px 2px 0;
+            transition: opacity 0.2s;
+        }
+        
+        .card.t-video::after {
+            background: var(--video);
+        }
+        
+        .card.t-rp3::after {
+            background: var(--rp3);
+        }
+        
+        .card.t-shared::after {
+            background: var(--shared);
+        }
+        
+        .card.t-output::after {
+            background: var(--output);
+        }
+        
+        .card:hover {
+            border-color: var(--border-active);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+        
+        .card.open {
+            border-color: var(--border-active);
+        }
+        
+        .card-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        
+        .card-title {
+            font-weight: 600;
+            font-size: 0.88rem;
+            color: var(--text-bright);
+            line-height: 1.4;
+        }
+        
+        .card-chevron {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            margin-top: 3px;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+        
+        .card.open .card-chevron {
+            transform: rotate(90deg);
+        }
+        
+        .card-brief {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+            line-height: 1.55;
+        }
+        
+        .card-detail {
+            display: none;
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: var(--text);
+            line-height: 1.7;
+        }
+        
+        .card.open .card-detail {
+            display: block;
+            animation: reveal 0.25s ease;
+        }
+        
+        @keyframes reveal {
+            from {
+                opacity: 0;
+                transform: translateY(-6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .card-detail p {
+            margin-bottom: 8px;
+        }
+        
+        .card-detail strong {
+            font-weight: 600;
+            color: var(--text-bright);
+        }
+        
+        .schema {
+            background: var(--bg-warm);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 10px 14px;
+            margin-top: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            line-height: 1.9;
+            color: var(--text-muted);
+        }
+        
+        .schema .hl {
+            color: var(--video);
+            font-weight: 500;
+        }
+        
+        .schema .hl-rp3 {
+            color: var(--rp3);
+            font-weight: 500;
+        }
+        
+        .schema .hl-shared {
+            color: var(--shared);
+            font-weight: 500;
+        }
+        
+        .schema .dim {
+            opacity: 0.5;
+        }
+        
+        code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.76rem;
+            background: var(--shared-bg);
+            color: var(--shared);
+            padding: 1px 5px;
+            border-radius: 3px;
+        }
+        /* ── Connectors ── */
+        
+        .connector {
+            display: flex;
+            justify-content: center;
+            height: 28px;
+            position: relative;
+        }
+        
+        .connector .stem {
+            width: 1.5px;
+            height: 100%;
+            background: var(--border);
+        }
+        
+        .connector .stem::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid var(--border);
+        }
+        /* ── Merge badge ── */
+        
+        .merge-badge-wrap {
+            text-align: center;
+            padding: 4px 0 8px;
+        }
+        
+        .merge-badge {
+            display: inline-block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            font-weight: 500;
+            color: var(--shared);
+            background: var(--shared-bg);
+            border: 1px solid var(--shared-border);
+            padding: 5px 16px;
+            border-radius: 20px;
+            letter-spacing: 0.02em;
+        }
+        /* ── QC gate ── */
+        
+        .qc-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--qc-bg);
+            border: 1px solid var(--qc-border);
+            border-radius: 4px;
+            padding: 8px 16px;
+            margin: 6px 0 10px;
+            font-size: 0.76rem;
+            font-weight: 500;
+            color: var(--qc);
+        }
+        
+        .qc-bar svg {
+            flex-shrink: 0;
+            width: 14px;
+            height: 14px;
+        }
+        /* ── Phase divider ── */
+        
+        .phase-break {
+            position: relative;
+            border-top: 1px dashed var(--border);
+            margin: 32px 0;
+        }
+        
+        .phase-break-label {
+            position: absolute;
+            top: -9px;
+            right: 0;
+            background: var(--bg);
+            padding: 0 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            color: var(--text-muted);
+            opacity: 0.45;
+        }
+        /* ── Legend ── */
+        
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.76rem;
+            color: var(--text-muted);
+        }
+        
+        .legend-swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+        }
+        
+        .sw-video {
+            background: var(--video);
+        }
+        
+        .sw-rp3 {
+            background: var(--rp3);
+        }
+        
+        .sw-shared {
+            background: var(--shared);
+        }
+        
+        .sw-output {
+            background: var(--output);
+        }
+        
+        .sw-qc {
+            background: var(--qc);
+        }
+        
+        .footnote {
+            margin-top: 14px;
+            font-size: 0.76rem;
+            color: var(--text-muted);
+            opacity: 0.55;
+            font-style: italic;
+        }
+        
+        @media (max-width: 700px) {
+            .page {
+                padding: 32px 20px 60px;
+            }
+            .card-row.cols-2 {
+                grid-template-columns: 1fr;
+            }
+            .header h1 {
+                font-size: 1.4rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="page">
+
+        <div class="header">
+            <h1>Force Curve Inference Pipeline</h1>
+            <p class="subtitle">Predicting per-stroke force curves from video-only biomechanics. Two synchronized data streams converge during training; inference uses video alone. Click any stage to inspect data contracts.</p>
+        </div>
+
+        <div class="controls">
+            <label>View</label>
+            <div class="pill-group">
+                <button class="pill active" data-mode="both">Full Pipeline</button>
+                <button class="pill" data-mode="inference">Inference Path</button>
+            </div>
+        </div>
+
+        <!-- ═══ 01 DATA SOURCES ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">01</span>
+                <span class="step-title">Data Sources</span>
+            </div>
+            <div class="card-row cols-2">
+                <div class="card t-video" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Video Capture</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Monocular rowing video &rarr; Sports2D / MotionBERT pose estimation</div>
+                    <div class="card-detail">
+                        <p>The <code>sports2d_app</code> pipeline processes monocular video through MotionBERT 3D lifting to extract H3.6M skeleton landmarks and compute joint kinematics frame-by-frame.</p>
+                        <div class="schema">
+                            <div><span class="hl">angles_h36m.csv</span></div>
+                            <div>&ensp;frame_idx, time_s</div>
+                            <div>&ensp;left/right_knee_deg, hip_deg, elbow_deg</div>
+                            <div>&ensp;trunk_vs_horizontal_deg, spine_flexion_deg</div>
+                            <div>&ensp;head_vs_trunk_deg</div>
+                            <br>
+                            <div><span class="hl">stroke_signal.csv</span></div>
+                            <div>&ensp;frame_idx, time_s, handle_cx/cy_px</div>
+                            <div>&ensp;relative_axis_px, velocity_axis_px_s</div>
+                            <div>&ensp;stroke_idx, stroke_phase, is_drive</div>
+                            <div>&ensp;is_catch, is_finish</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card t-rp3" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">RP3 Force Data</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Ergometer force exports &rarr; cleaned per-stroke force-at-distance bins</div>
+                    <div class="card-detail">
+                        <p>Raw RP3 exports are cleaned by <code>inference_cli.py</code> and expanded by <code>expand_rp3_curve_data.py</code> into spatially-sampled force bins at 2.2 cm intervals along the drive.</p>
+                        <div class="schema">
+                            <div><span class="hl-rp3">*-clean.csv (expanded)</span></div>
+                            <div>&ensp;stroke_number, time, stroke_length</div>
+                            <div>&ensp;peak_force, peak_force_pos, rel_peak_force_pos</div>
+                            <div>&ensp;drive_time, recover_time</div>
+                            <div>&ensp;force_at_2.2cm, force_at_4.4cm, &hellip; force_at_Ncm</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 02 STANDARDIZATION ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">02</span>
+                <span class="step-title">Unilateral Standardization</span>
+            </div>
+            <div class="card-row cols-1">
+                <div class="card t-video" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Single-Side Biomechanics Mapping</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Camera-near side becomes the canonical limb chain; sign conventions normalized across sessions</div>
+                    <div class="card-detail">
+                        <p>Each session declares an <code>active_side</code> (left or right). Source angle columns are mapped to canonical names and mirror-normalized so that feature semantics are consistent regardless of camera placement.</p>
+                        <div class="schema">
+                            <div><span class="hl">Canonical features</span></div>
+                            <div>&ensp;knee_active_deg &larr; left <span class="dim">or</span> right_knee_deg</div>
+                            <div>&ensp;hip_active_deg &larr; left <span class="dim">or</span> right_hip_deg</div>
+                            <div>&ensp;elbow_active_deg &larr; left <span class="dim">or</span> right_elbow_deg</div>
+                            <div>&ensp;trunk_deg, spine_deg <span class="dim">(shared central)</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 03 SEGMENTATION ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">03</span>
+                <span class="step-title">Stroke Segmentation</span>
+            </div>
+            <div class="card-row cols-2">
+                <div class="card t-video" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Video Stroke Segmentation</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Catch/finish boundary detection &rarr; isolate drive portions per stroke</div>
+                    <div class="card-detail">
+                        <p>Uses <code>stroke_signal.csv</code> flags: drive starts at catch, ends at finish. Only the drive portion is supervised against RP3 force curves.</p>
+                        <div class="schema">
+                            <div><span class="hl">Per stroke</span></div>
+                            <div>&ensp;catch_frame, finish_frame</div>
+                            <div>&ensp;drive_frames[]: frame indices during drive</div>
+                            <div>&ensp;feature_curves[]: angle values at drive frames</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card t-rp3" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">RP3 Stroke Structure</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Each RP3 row = one stroke; force sampled at 2.2 cm spatial bins along the drive</div>
+                    <div class="card-detail">
+                        <p>RP3 data is already per-stroke. Force values are sampled at fixed spatial intervals along the drive distance. The stroke length determines how many bins are valid.</p>
+                        <div class="schema">
+                            <div><span class="hl-rp3">Per stroke (RP3 row)</span></div>
+                            <div>&ensp;d_k = [2.2, 4.4, 6.6, &hellip;] cm</div>
+                            <div>&ensp;F(d_k) = force at each distance bin</div>
+                            <div>&ensp;stroke_length_cm &rarr; valid bin count</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- QC -->
+        <div class="qc-bar" data-role="shared">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <span>QC &mdash; stroke detection confidence, tracking completeness, physical plausibility, monotonic progression</span>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 04 SYNCHRONIZATION (training only) ═══ -->
+        <div class="section" data-role="training">
+            <div class="step-label">
+                <span class="step-num">04</span>
+                <span class="step-title">Session Pairing &amp; Synchronization</span>
+            </div>
+            <div class="card-row cols-1">
+                <div class="card t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Cross-Modal Stroke Alignment</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Coarse sync via stroke-rate cross-correlation &rarr; fine sync via catch/finish boundary agreement</div>
+                    <div class="card-detail">
+                        <p><strong>Coarse:</strong> Align video and RP3 stroke streams using inter-stroke interval cross-correlation (stroke-rate matching).</p>
+                        <p><strong>Fine:</strong> Maximise catch/finish boundary agreement over a calibration window to lock the per-stroke mapping.</p>
+                        <p><strong>Acceptance:</strong> Reject if sustained stroke-rate mismatch &gt;1 spm or low boundary agreement. Reject rather than weakly align.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Pairing manifest</span></div>
+                            <div>&ensp;session_id, athlete_id</div>
+                            <div>&ensp;temporal_offset, drift_estimate</div>
+                            <div>&ensp;accepted_stroke_ranges[]</div>
+                            <div>&ensp;qc: { spm_agreement, boundary_corr }</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="qc-bar" data-role="training">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span>QC &mdash; stroke-rate consistency, pairing drift rejection, inter-stroke timing agreement</span>
+            </div>
+        </div>
+
+        <div class="connector" data-role="training">
+            <div class="stem"></div>
+        </div>
+
+        <div class="merge-badge-wrap" data-role="training">
+            <span class="merge-badge">&#x21b3; Video + RP3 streams merge in normalized progress space</span>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 05 ALIGNMENT ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">05</span>
+                <span class="step-title">Drive-Domain Alignment</span>
+            </div>
+            <div class="card-row cols-1">
+                <div class="card t-shared" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Normalized Progress Grid &nbsp; <code>s &isin; [0, 1]</code></span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">All signals mapped to normalized drive progress &mdash; not wall-clock time, not pixels</div>
+                    <div class="card-detail">
+                        <p>The master domain is normalized drive progress <code>s</code>. This decouples the representation from frame rate, stroke speed, and physical distance.</p>
+                        <p><strong>RP3 side:</strong> <code>s_force = d_k / stroke_length_cm</code></p>
+                        <p><strong>Video side:</strong> <code>s_video</code> from drive phase progression signal.</p>
+                        <p>Video features are interpolated from <code>s_video</code> to <code>s_force</code> grid. No pixel-to-cm calibration is needed in this iteration.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Per stroke, aligned</span></div>
+                            <div>&ensp;s = [0.00, 0.02, 0.04, &hellip;, 1.00]</div>
+                            <div>&ensp;X(s): kinematic features at each s</div>
+                            <div>&ensp;Y(s): force at each s <span class="dim">(training only)</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 06 FEATURES ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">06</span>
+                <span class="step-title">Feature Engineering</span>
+            </div>
+            <div class="card-row cols-2">
+                <div class="card t-shared" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Angle Curves &amp; Derivatives</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Smoothed angles &rarr; d&theta;/ds via chain rule &rarr; optional d&sup2;&theta;/ds&sup2;</div>
+                    <div class="card-detail">
+                        <p><strong>Smoothing:</strong> Fixed Savitzky-Golay kernel (small odd window, low polynomial order) applied to raw angle trajectories.</p>
+                        <p><strong>Chain rule:</strong> <code>d&theta;/ds = (d&theta;/dt) / (ds/dt + &epsilon;)</code></p>
+                        <p>Second derivatives included only if ablation shows clear gain. Strokes with <code>ds/dt &approx; 0</code> or non-physiological spikes are rejected.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Primary features</span></div>
+                            <div>&ensp;knee(s), hip(s), elbow(s), trunk(s)</div>
+                            <div>&ensp;d_knee/ds, d_hip/ds, d_elbow/ds, d_trunk/ds</div>
+                            <div>&ensp;<span class="dim">[ablation]</span> d&sup2;knee/ds&sup2;, &hellip;</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card t-shared" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Coordination &amp; Support</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Phase lags, angle ratios, handle kinematics; stroke rate &amp; drive ratio as context</div>
+                    <div class="card-detail">
+                        <p><strong>Coordination:</strong> Phase timing lags (legs &rarr; swing, swing &rarr; arms) and angle ratio features at key progress points.</p>
+                        <p><strong>Support:</strong> Handle velocity/acceleration projected onto the drive axis.</p>
+                        <p><strong>Context:</strong> Stroke rate, drive ratio as scalar conditioning variables.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Coordination</span></div>
+                            <div>&ensp;leg_swing_lag, swing_arm_lag</div>
+                            <div>&ensp;leg_trunk_ratio(s), trunk_arm_ratio(s)</div>
+                            <br>
+                            <div><span class="hl-shared">Support &amp; context</span></div>
+                            <div>&ensp;handle_vel_axis(s), handle_acc_axis(s)</div>
+                            <div>&ensp;stroke_rate, drive_ratio</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="qc-bar" data-role="shared">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <span>QC &mdash; denominator stability (ds/dt), derivative plausibility, reasonable stroke duration</span>
+        </div>
+
+        <!-- ═══ PHASE DIVIDER ═══ -->
+        <div class="phase-break">
+            <span class="phase-break-label">modeling &amp; prediction</span>
+        </div>
+
+        <!-- ═══ 07 MODELING (training) ═══ -->
+        <div class="section" data-role="training">
+            <div class="step-label">
+                <span class="step-num">07</span>
+                <span class="step-title">Model Training</span>
+            </div>
+
+            <div class="card-row cols-1">
+                <div class="card t-shared" data-role="training" onclick="toggle(this)" style="border-left: 3px solid var(--text-muted);">
+                    <div class="card-head">
+                        <span class="card-title" style="color: var(--text-muted);">Stage 0 &mdash; Sanity Baselines</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Force reproducibility floor + metadata-only regression &mdash; the bar biomechanics models must clear</div>
+                    <div class="card-detail">
+                        <p><strong>Reproducibility floor:</strong> Quantify within-condition variability of force curves (same athlete, similar stroke rate/length bins). Median pairwise curve distance, coefficient of variation.</p>
+                        <p><strong>Metadata baseline:</strong> Regress force-curve PCA coefficients from scalar metadata only (stroke rate, length, drive time). Reconstruct predicted curves. Every biomechanics model must beat this.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Inputs</span>: stroke_rate, stroke_length, drive_time</div>
+                            <div><span class="hl-shared">Targets</span>: PCA coefficients &rarr; F&#770;(s)</div>
+                            <div><span class="hl-rp3">Gate</span>: biomechanics must improve on this</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="connector" data-role="training">
+                <div class="stem"></div>
+            </div>
+
+            <div class="card-row cols-1">
+                <div class="card t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Stage A &mdash; Interpretable Kinematic Models</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Stroke-level summary features + phase landmarks &rarr; regularized linear / tree ensembles &rarr; PCA coefficients</div>
+                    <div class="card-detail">
+                        <p>Verifies that kinematic features add value beyond metadata. Identifies dominant explanatory biomechanics features through feature importance analysis.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Inputs</span>: summary kinematics + phase landmarks</div>
+                            <div><span class="hl-shared">Models</span>: Ridge, Lasso, Random Forest, GBM</div>
+                            <div><span class="hl-shared">Targets</span>: force-curve PCA coefficients</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="connector" data-role="training">
+                <div class="stem"></div>
+            </div>
+
+            <div class="card-row cols-1">
+                <div class="card t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Stage B &mdash; Sequence Models</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Full progress-aligned kinematic sequences &rarr; TCN / Transformer encoder &rarr; full force curve</div>
+                    <div class="card-detail">
+                        <p>Temporal convolutional network or transformer encoder operating on the full progress-aligned feature sequences. Captures nonlinear stroke dynamics and cross-joint interactions.</p>
+                        <p><strong>Loss:</strong> Masked pointwise force loss. Shape regularizers or derivative losses added only if errors show pathological curve behaviour.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Inputs</span>: X(s) [N_bins &times; N_features]</div>
+                            <div><span class="hl-shared">Models</span>: TCN, Transformer encoder</div>
+                            <div><span class="hl-shared">Targets</span>: F(s) [N_bins], masked loss</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 08 PREDICTION ═══ -->
+        <div class="section" data-role="shared">
+            <div class="step-label">
+                <span class="step-num">08</span>
+                <span class="step-title">Prediction &amp; Output</span>
+            </div>
+            <div class="card-row cols-1">
+                <div class="card t-output" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Force Curve Prediction</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Trained model applied to video-derived features &rarr; predicted per-stroke force curve + derived metrics</div>
+                    <div class="card-detail">
+                        <p>At inference, <strong>no RP3 input is used</strong>. The trained model takes video-derived kinematic feature sequences and predicts the complete force curve for each stroke.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Outputs per stroke</span></div>
+                            <div>&ensp;force_at_&lt;distance&gt;cm table</div>
+                            <div>&ensp;predicted peak_force (N)</div>
+                            <div>&ensp;predicted peak_position (% drive)</div>
+                            <div>&ensp;predicted impulse (N&middot;s)</div>
+                            <div>&ensp;confidence / quality score</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connector" data-role="training">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 09 EVALUATION (training) ═══ -->
+        <div class="section" data-role="training">
+            <div class="step-label">
+                <span class="step-num">09</span>
+                <span class="step-title">Evaluation Protocol</span>
+            </div>
+            <div class="card-row cols-2">
+                <div class="card t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Curve-Level Metrics</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">RMSE / MAE over force bins, per-stroke curve correlation</div>
+                    <div class="card-detail">
+                        <p>Standard regression metrics over all valid force bins in the hold-out set.</p>
+                        <div class="schema">
+                            <div>&ensp;RMSE(F, F&#770;), MAE(F, F&#770;)</div>
+                            <div>&ensp;Pearson r per stroke</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Rowing-Relevant Metrics</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Peak force error, peak position error, impulse error, phase-specific errors</div>
+                    <div class="card-detail">
+                        <p>Metrics that matter to coaches and athletes &mdash; the downstream quantities that inform technique feedback.</p>
+                        <div class="schema">
+                            <div>&ensp;peak_force_error (N)</div>
+                            <div>&ensp;peak_position_error (% drive)</div>
+                            <div>&ensp;impulse_error (N&middot;s)</div>
+                            <div>&ensp;early / mid / late drive phase errors</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ LEGEND ═══ -->
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-swatch sw-video"></div> Video pipeline</div>
+            <div class="legend-item">
+                <div class="legend-swatch sw-rp3"></div> RP3 force data (training)</div>
+            <div class="legend-item">
+                <div class="legend-swatch sw-shared"></div> Shared processing</div>
+            <div class="legend-item">
+                <div class="legend-swatch sw-output"></div> Inference output</div>
+            <div class="legend-item">
+                <div class="legend-swatch sw-qc"></div> Quality control gate</div>
+        </div>
+
+        <p class="footnote">Click any card to expand data contracts. Use the view switcher to focus on training or inference paths.</p>
+
+    </div>
+
+    <script>
+        function toggle(el) {
+            el.classList.toggle('open');
+        }
+
+        const pills = document.querySelectorAll('.pill');
+        const roleEls = document.querySelectorAll('[data-role]');
+
+        pills.forEach(pill => {
+            pill.addEventListener('click', () => {
+                pills.forEach(p => p.classList.remove('active'));
+                pill.classList.add('active');
+                applyMode(pill.dataset.mode);
+            });
+        });
+
+        function applyMode(mode) {
+            roleEls.forEach(el => {
+                const role = el.dataset.role;
+                if (mode === 'both') {
+                    el.classList.remove('dimmed');
+                } else if (mode === 'training') {
+                    el.classList.toggle('dimmed', role === 'inference-only');
+                } else if (mode === 'inference') {
+                    el.classList.toggle('dimmed', role === 'training');
+                }
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const cards = document.querySelectorAll('.card');
+            cards.forEach((card, i) => {
+                card.classList.add('entering');
+                setTimeout(() => {
+                    card.classList.remove('entering');
+                }, 100 + i * 60);
+            });
+        });
+    </script>
+
+</body>
+
+</html>
