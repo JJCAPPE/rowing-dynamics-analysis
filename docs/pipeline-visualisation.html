@@ -1216,12 +1216,11 @@
                     <span class="model-training-diagram-sub">Each stroke passes through six independent checks producing flags and a composite score</span>
                 </div>
                 <div class="model-training-diagram-inner">
-                    <svg viewBox="0 0 880 620" xmlns="http://www.w3.org/2000/svg">
+                    <svg viewBox="0 0 880 640" xmlns="http://www.w3.org/2000/svg">
                         <defs>
                             <marker id="qc_arrowGrey" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#8a7e6e" stroke-width="1"/></marker>
                             <marker id="qc_arrowRed" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#b91c1c" stroke-width="1"/></marker>
                             <marker id="qc_arrowGreen" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#047857" stroke-width="1"/></marker>
-                            <marker id="qc_arrowPurple" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#6d28d9" stroke-width="1"/></marker>
                         </defs>
 
                         <!-- ══════════ INCOMING STROKE ══════════ -->
@@ -1230,165 +1229,168 @@
 
                         <line x1="440" y1="44" x2="440" y2="68" stroke="#8a7e6e" stroke-width="1.2" marker-end="url(#qc_arrowGrey)"/>
 
-                        <!-- ══════════ SIX GATE CHECKS ══════════ -->
+                        <!-- ══════════ HARD-DROP GATES ══════════ -->
                         <text x="20" y="82" font-family="JetBrains Mono, monospace" font-size="9" font-weight="500" fill="#b91c1c" letter-spacing="0.06em">HARD-DROP GATES</text>
 
-                        <!-- Gate 1: tracking sparse — signal with NaN gaps -->
-                        <rect x="20" y="94" width="270" height="80" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1.2"/>
-                        <circle cx="36" cy="112" r="8" fill="#b91c1c" opacity="0.15"/><text x="36" y="116" font-family="Fraunces, serif" font-size="10" fill="#b91c1c" text-anchor="middle" font-weight="500">1</text>
-                        <text x="50" y="115" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_tracking_sparse</text>
-                        <text x="220" y="115" font-family="JetBrains Mono, monospace" font-size="7" fill="rgba(185,28,28,0.5)">HARD</text>
-                        <!-- mini signal with gaps -->
-                        <path d="M32,148 L52,138 L62,142 L72,136" stroke="#2563eb" stroke-width="1.3" fill="none"/>
-                        <path d="M72,136 L92,140" stroke="#b91c1c" stroke-width="1.3" fill="none" stroke-dasharray="2,3" opacity="0.5"/>
-                        <path d="M92,140 L102,134 L112,140 L122,132" stroke="#2563eb" stroke-width="1.3" fill="none"/>
-                        <path d="M122,132 L152,138" stroke="#b91c1c" stroke-width="1.3" fill="none" stroke-dasharray="2,3" opacity="0.5"/>
-                        <path d="M152,138 L162,130 L172,136" stroke="#2563eb" stroke-width="1.3" fill="none"/>
-                        <text x="80" y="166" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">NaN gaps in angle tracking &gt; 30%</text>
+                        <!-- Gate 1: tracking sparse -->
+                        <rect x="20" y="94" width="270" height="84" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1.2"/>
+                        <circle cx="36" cy="110" r="8" fill="#b91c1c" opacity="0.15"/><text x="36" y="114" font-family="Fraunces, serif" font-size="10" fill="#b91c1c" text-anchor="middle" font-weight="500">1</text>
+                        <text x="50" y="113" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_tracking_sparse</text>
+                        <text x="248" y="113" font-family="JetBrains Mono, monospace" font-size="7" fill="rgba(185,28,28,0.5)">HARD</text>
+                        <!-- mini signal with NaN gaps -->
+                        <path d="M36,146 L56,136 L66,140 L76,134" stroke="#2563eb" stroke-width="1.3" fill="none"/>
+                        <path d="M76,134 L100,139" stroke="#b91c1c" stroke-width="1.3" fill="none" stroke-dasharray="2,3" opacity="0.5"/>
+                        <path d="M100,139 L112,132 L124,138 L136,130" stroke="#2563eb" stroke-width="1.3" fill="none"/>
+                        <path d="M136,130 L160,136" stroke="#b91c1c" stroke-width="1.3" fill="none" stroke-dasharray="2,3" opacity="0.5"/>
+                        <path d="M160,136 L172,128 L184,134" stroke="#2563eb" stroke-width="1.3" fill="none"/>
+                        <text x="36" y="170" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">NaN gaps in angle tracking &gt; 30%</text>
 
-                        <!-- Gate 2: nonphysio deriv — spiky derivative -->
-                        <rect x="305" y="94" width="270" height="80" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1.2"/>
-                        <circle cx="321" cy="112" r="8" fill="#b91c1c" opacity="0.15"/><text x="321" y="116" font-family="Fraunces, serif" font-size="10" fill="#b91c1c" text-anchor="middle" font-weight="500">2</text>
-                        <text x="335" y="115" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_nonphysio_deriv</text>
-                        <text x="505" y="115" font-family="JetBrains Mono, monospace" font-size="7" fill="rgba(185,28,28,0.5)">HARD</text>
-                        <!-- mini derivative with spike -->
-                        <path d="M317,154 Q330,150 345,148 Q360,146 375,145 Q385,144 390,120 L393,100 L396,144 Q410,146 430,148 Q450,150 460,154" stroke="#2563eb" stroke-width="1.3" fill="none"/>
-                        <line x1="317" y1="120" x2="460" y2="120" stroke="#b91c1c" stroke-width="0.7" stroke-dasharray="3,2" opacity="0.5"/>
-                        <text x="462" y="123" font-family="JetBrains Mono, monospace" font-size="6" fill="#b91c1c" opacity="0.6">600&deg;/s</text>
-                        <text x="365" y="166" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">tracking spike exceeds threshold</text>
+                        <!-- Gate 2: nonphysio deriv -->
+                        <rect x="305" y="94" width="270" height="84" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1.2"/>
+                        <circle cx="321" cy="110" r="8" fill="#b91c1c" opacity="0.15"/><text x="321" y="114" font-family="Fraunces, serif" font-size="10" fill="#b91c1c" text-anchor="middle" font-weight="500">2</text>
+                        <text x="335" y="113" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_nonphysio_deriv</text>
+                        <text x="533" y="113" font-family="JetBrains Mono, monospace" font-size="7" fill="rgba(185,28,28,0.5)">HARD</text>
+                        <!-- mini derivative with spike — pushed down, below title -->
+                        <line x1="317" y1="134" x2="558" y2="134" stroke="#b91c1c" stroke-width="0.6" stroke-dasharray="3,2" opacity="0.4"/>
+                        <text x="560" y="137" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#b91c1c" opacity="0.5">600&deg;/s</text>
+                        <path d="M317,158 Q340,154 365,152 Q385,150 405,149 Q415,148 422,134 L426,118 L430,148 Q445,150 465,152 Q490,155 520,158" stroke="#2563eb" stroke-width="1.3" fill="none"/>
+                        <text x="355" y="170" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">tracking spike exceeds threshold</text>
 
-                        <!-- Gate 3: duration implausible — timeline with bounds -->
-                        <rect x="590" y="94" width="270" height="80" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1.2"/>
-                        <circle cx="606" cy="112" r="8" fill="#b91c1c" opacity="0.15"/><text x="606" y="116" font-family="Fraunces, serif" font-size="10" fill="#b91c1c" text-anchor="middle" font-weight="500">3</text>
-                        <text x="620" y="115" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_duration_implausible</text>
-                        <text x="790" y="115" font-family="JetBrains Mono, monospace" font-size="7" fill="rgba(185,28,28,0.5)">HARD</text>
-                        <!-- timeline with ok/bad zones -->
-                        <rect x="610" y="136" width="230" height="18" rx="2" fill="rgba(185,28,28,0.06)"/>
-                        <rect x="641" y="136" width="138" height="18" rx="0" fill="rgba(4,120,87,0.10)"/>
-                        <text x="610" y="132" font-family="JetBrains Mono, monospace" font-size="6" fill="#b91c1c">0.4s</text>
-                        <text x="700" y="148" font-family="JetBrains Mono, monospace" font-size="7" fill="#047857" text-anchor="middle">plausible</text>
-                        <text x="779" y="132" font-family="JetBrains Mono, monospace" font-size="6" fill="#b91c1c">2.0s</text>
-                        <text x="725" y="166" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">drive or cycle outside physiological range</text>
+                        <!-- Gate 3: duration implausible -->
+                        <rect x="590" y="94" width="270" height="84" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1.2"/>
+                        <circle cx="606" cy="110" r="8" fill="#b91c1c" opacity="0.15"/><text x="606" y="114" font-family="Fraunces, serif" font-size="10" fill="#b91c1c" text-anchor="middle" font-weight="500">3</text>
+                        <text x="620" y="113" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_duration_implausible</text>
+                        <text x="818" y="113" font-family="JetBrains Mono, monospace" font-size="7" fill="rgba(185,28,28,0.5)">HARD</text>
+                        <!-- timeline bar with labelled zones -->
+                        <rect x="610" y="138" width="230" height="16" rx="2" fill="rgba(185,28,28,0.06)"/>
+                        <rect x="646" y="138" width="128" height="16" rx="0" fill="rgba(4,120,87,0.12)"/>
+                        <text x="618" y="134" font-family="JetBrains Mono, monospace" font-size="6" fill="#b91c1c">0.4s</text>
+                        <text x="710" y="150" font-family="JetBrains Mono, monospace" font-size="7" fill="#047857" text-anchor="middle">plausible</text>
+                        <text x="766" y="134" font-family="JetBrains Mono, monospace" font-size="6" fill="#b91c1c">2.0s</text>
+                        <text x="610" y="170" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">drive or cycle outside physiological range</text>
 
-                        <!-- SOFT label -->
-                        <text x="20" y="198" font-family="JetBrains Mono, monospace" font-size="9" font-weight="500" fill="#8a7e6e" letter-spacing="0.06em">SOFT FLAGS</text>
+                        <!-- ══════════ SOFT FLAGS ══════════ -->
+                        <text x="20" y="204" font-family="JetBrains Mono, monospace" font-size="9" font-weight="500" fill="#8a7e6e" letter-spacing="0.06em">SOFT FLAGS</text>
 
-                        <!-- Gate 4: ds/dt stall — flat region in progress signal -->
-                        <rect x="20" y="210" width="270" height="80" rx="4" fill="rgba(185,28,28,0.03)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="5,3"/>
-                        <circle cx="36" cy="228" r="8" fill="#8a7e6e" opacity="0.12"/><text x="36" y="232" font-family="Fraunces, serif" font-size="10" fill="#8a7e6e" text-anchor="middle" font-weight="500">4</text>
-                        <text x="50" y="231" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_ds_dt_stall</text>
-                        <text x="220" y="231" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">SOFT</text>
-                        <!-- mini progress with flat zone -->
-                        <path d="M32,272 Q52,268 72,258 Q82,252 92,248 L112,248 L132,248 Q142,244 152,232 L172,218" stroke="#2563eb" stroke-width="1.3" fill="none"/>
-                        <rect x="90" y="244" width="44" height="8" rx="1" fill="#b91c1c" opacity="0.12"/>
-                        <text x="100" y="282" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">handle progress stalls mid-drive</text>
+                        <!-- Gate 4: ds/dt stall -->
+                        <rect x="20" y="216" width="270" height="84" rx="4" fill="rgba(185,28,28,0.03)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="5,3"/>
+                        <circle cx="36" cy="232" r="8" fill="#8a7e6e" opacity="0.12"/><text x="36" y="236" font-family="Fraunces, serif" font-size="10" fill="#8a7e6e" text-anchor="middle" font-weight="500">4</text>
+                        <text x="50" y="235" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_ds_dt_stall</text>
+                        <text x="248" y="235" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">SOFT</text>
+                        <!-- progress signal with flat region -->
+                        <path d="M36,278 Q58,274 80,264 Q92,258 104,254 L124,254 L144,254 Q156,250 168,238 L188,224" stroke="#2563eb" stroke-width="1.3" fill="none"/>
+                        <rect x="102" y="250" width="44" height="8" rx="1" fill="#b91c1c" opacity="0.12"/>
+                        <text x="36" y="292" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">handle progress stalls mid-drive</text>
 
-                        <!-- Gate 5: progress nonmonotonic — sawtooth progress -->
-                        <rect x="305" y="210" width="270" height="80" rx="4" fill="rgba(185,28,28,0.03)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="5,3"/>
-                        <circle cx="321" cy="228" r="8" fill="#8a7e6e" opacity="0.12"/><text x="321" y="232" font-family="Fraunces, serif" font-size="10" fill="#8a7e6e" text-anchor="middle" font-weight="500">5</text>
-                        <text x="335" y="231" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_progress_nonmonotonic</text>
-                        <text x="530" y="231" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">SOFT</text>
-                        <!-- raw (backwards segments) vs repaired (monotone) -->
-                        <path d="M317,272 Q335,264 350,256 L360,262 L370,254 L380,260 Q400,242 420,234 L432,240 L440,232 L460,218" stroke="#b91c1c" stroke-width="1" fill="none" opacity="0.45" stroke-dasharray="2,2"/>
-                        <path d="M317,272 Q335,264 350,256 Q370,248 390,242 Q410,236 430,230 Q445,224 460,218" stroke="#047857" stroke-width="1.3" fill="none" opacity="0.6"/>
-                        <text x="468" y="224" font-family="JetBrains Mono, monospace" font-size="6" fill="#047857">repaired</text>
-                        <text x="468" y="260" font-family="JetBrains Mono, monospace" font-size="6" fill="#b91c1c" opacity="0.6">raw</text>
-                        <text x="388" y="282" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">&gt;15% of frames needed repair</text>
+                        <!-- Gate 5: progress nonmonotonic -->
+                        <rect x="305" y="216" width="270" height="84" rx="4" fill="rgba(185,28,28,0.03)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="5,3"/>
+                        <circle cx="321" cy="232" r="8" fill="#8a7e6e" opacity="0.12"/><text x="321" y="236" font-family="Fraunces, serif" font-size="10" fill="#8a7e6e" text-anchor="middle" font-weight="500">5</text>
+                        <text x="335" y="235" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_progress_nonmonotonic</text>
+                        <text x="543" y="235" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">SOFT</text>
+                        <!-- raw with backwards dips (dashed) vs repaired monotone (solid) -->
+                        <path d="M320,280 Q340,272 358,262 L368,268 L378,260 L388,266 Q410,250 432,242 L442,248 L450,240 L468,226" stroke="#b91c1c" stroke-width="1" fill="none" opacity="0.4" stroke-dasharray="2,2"/>
+                        <path d="M320,280 Q340,272 358,262 Q380,254 400,248 Q420,242 440,236 Q455,230 468,226" stroke="#047857" stroke-width="1.3" fill="none" opacity="0.6"/>
+                        <text x="476" y="232" font-family="JetBrains Mono, monospace" font-size="6" fill="#047857">repaired</text>
+                        <text x="476" y="270" font-family="JetBrains Mono, monospace" font-size="6" fill="#b91c1c" opacity="0.5">raw</text>
+                        <text x="320" y="292" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">&gt;15% of frames needed repair</text>
 
-                        <!-- Gate 6: weak detection — mushy vs sharp catch -->
-                        <rect x="590" y="210" width="270" height="80" rx="4" fill="rgba(185,28,28,0.03)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="5,3"/>
-                        <circle cx="606" cy="228" r="8" fill="#8a7e6e" opacity="0.12"/><text x="606" y="232" font-family="Fraunces, serif" font-size="10" fill="#8a7e6e" text-anchor="middle" font-weight="500">6</text>
-                        <text x="620" y="231" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_weak_detection</text>
-                        <text x="790" y="231" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">SOFT</text>
-                        <!-- sharp catch vs mushy catch -->
-                        <path d="M610,268 L628,268 L630,244 L632,268 L660,252 L680,264 L700,268" stroke="#047857" stroke-width="1.3" fill="none" opacity="0.5"/>
-                        <text x="642" y="278" font-family="JetBrains Mono, monospace" font-size="6" fill="#047857">sharp</text>
-                        <path d="M730,268 Q740,264 748,258 Q756,252 764,256 Q772,260 780,262 L800,258 L820,264 L840,268" stroke="#b91c1c" stroke-width="1.3" fill="none" opacity="0.5"/>
-                        <text x="775" y="278" font-family="JetBrains Mono, monospace" font-size="6" fill="#b91c1c" opacity="0.6">mushy</text>
-                        <text x="725" y="282" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e" text-anchor="middle">boundary velocity contrast &lt; 15%</text>
+                        <!-- Gate 6: weak detection -->
+                        <rect x="590" y="216" width="270" height="84" rx="4" fill="rgba(185,28,28,0.03)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="5,3"/>
+                        <circle cx="606" cy="232" r="8" fill="#8a7e6e" opacity="0.12"/><text x="606" y="236" font-family="Fraunces, serif" font-size="10" fill="#8a7e6e" text-anchor="middle" font-weight="500">6</text>
+                        <text x="620" y="235" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600" fill="#b91c1c">qc_weak_detection</text>
+                        <text x="818" y="235" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">SOFT</text>
+                        <!-- sharp catch (left) -->
+                        <path d="M612,272 L630,272 L632,250 L634,272 L656,258 L672,268 L688,272" stroke="#047857" stroke-width="1.3" fill="none" opacity="0.6"/>
+                        <text x="640" y="246" font-family="JetBrains Mono, monospace" font-size="6" fill="#047857">sharp</text>
+                        <!-- mushy catch (right) -->
+                        <path d="M726,272 Q738,268 748,262 Q758,256 766,258 Q774,262 782,264 L798,260 L814,266 L830,272" stroke="#b91c1c" stroke-width="1.3" fill="none" opacity="0.5"/>
+                        <text x="768" y="246" font-family="JetBrains Mono, monospace" font-size="6" fill="#b91c1c" opacity="0.6">mushy</text>
+                        <text x="610" y="292" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e">boundary velocity contrast &lt; 15% of peak</text>
 
-                        <!-- ══════════ CONVERGING ARROWS ══════════ -->
-                        <line x1="155" y1="175" x2="155" y2="310" stroke="#b91c1c" stroke-width="0.8" opacity="0.3"/>
-                        <line x1="440" y1="175" x2="440" y2="310" stroke="#b91c1c" stroke-width="0.8" opacity="0.3"/>
-                        <line x1="725" y1="175" x2="725" y2="310" stroke="#8a7e6e" stroke-width="0.8" opacity="0.3"/>
-                        <line x1="155" y1="290" x2="155" y2="310" stroke="#8a7e6e" stroke-width="0.8" opacity="0.3"/>
-                        <line x1="440" y1="290" x2="440" y2="310" stroke="#8a7e6e" stroke-width="0.8" opacity="0.3"/>
-                        <line x1="725" y1="290" x2="725" y2="310" stroke="#8a7e6e" stroke-width="0.8" opacity="0.3"/>
-
-                        <!-- horizontal collector line -->
-                        <line x1="155" y1="310" x2="725" y2="310" stroke="#8a7e6e" stroke-width="1"/>
-                        <!-- down arrow to classification -->
-                        <line x1="440" y1="310" x2="440" y2="340" stroke="#8a7e6e" stroke-width="1.2" marker-end="url(#qc_arrowGrey)"/>
+                        <!-- ══════════ CONVERGING FLOW ══════════ -->
+                        <!-- short stubs from each gate bottom to collector -->
+                        <line x1="155" y1="300" x2="155" y2="320" stroke="#8a7e6e" stroke-width="0.8" opacity="0.35"/>
+                        <line x1="440" y1="300" x2="440" y2="320" stroke="#8a7e6e" stroke-width="0.8" opacity="0.35"/>
+                        <line x1="725" y1="300" x2="725" y2="320" stroke="#8a7e6e" stroke-width="0.8" opacity="0.35"/>
+                        <!-- horizontal collector -->
+                        <line x1="155" y1="320" x2="725" y2="320" stroke="#8a7e6e" stroke-width="1"/>
+                        <!-- down to classification -->
+                        <line x1="440" y1="320" x2="440" y2="350" stroke="#8a7e6e" stroke-width="1.2" marker-end="url(#qc_arrowGrey)"/>
 
                         <!-- ══════════ CLASSIFICATION ══════════ -->
-                        <rect x="170" y="348" width="540" height="44" rx="22" fill="rgba(185,28,28,0.03)" stroke="#d8d0c4" stroke-width="1.2"/>
-                        <text x="440" y="375" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#3d3529" text-anchor="middle">CLASSIFY FLAGS</text>
+                        <rect x="200" y="358" width="480" height="40" rx="20" fill="rgba(185,28,28,0.03)" stroke="#d8d0c4" stroke-width="1.2"/>
+                        <text x="440" y="383" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#3d3529" text-anchor="middle">CLASSIFY FLAGS</text>
 
-                        <!-- split arrows -->
-                        <line x1="330" y1="392" x2="200" y2="425" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#qc_arrowRed)"/>
-                        <line x1="550" y1="392" x2="680" y2="425" stroke="#047857" stroke-width="1.2" marker-end="url(#qc_arrowGreen)"/>
+                        <!-- diverging arrows -->
+                        <line x1="330" y1="398" x2="215" y2="432" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#qc_arrowRed)"/>
+                        <line x1="550" y1="398" x2="665" y2="432" stroke="#047857" stroke-width="1.2" marker-end="url(#qc_arrowGreen)"/>
 
                         <!-- Hard drop outcome -->
-                        <rect x="48" y="430" width="310" height="70" rx="5" fill="rgba(185,28,28,0.06)" stroke="#b91c1c" stroke-width="1.5"/>
-                        <text x="68" y="452" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#b91c1c">HARD DROP</text>
-                        <text x="168" y="452" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">qc_excluded = True</text>
-                        <!-- rejected stroke visualization (X) -->
-                        <path d="M68,468 Q90,460 120,464 Q140,466 160,470 Q180,476 200,472 Q220,468 240,472 Q260,476 280,472 Q300,468 320,470" stroke="#b91c1c" stroke-width="1.5" fill="none" opacity="0.25"/>
-                        <line x1="152" y1="460" x2="200" y2="490" stroke="#b91c1c" stroke-width="2.5" opacity="0.4"/>
-                        <line x1="200" y1="460" x2="152" y2="490" stroke="#b91c1c" stroke-width="2.5" opacity="0.4"/>
-                        <text x="240" y="490" font-family="JetBrains Mono, monospace" font-size="6.5" fill="#8a7e6e">tracking | deriv | duration | alignment</text>
+                        <rect x="50" y="438" width="310" height="72" rx="5" fill="rgba(185,28,28,0.06)" stroke="#b91c1c" stroke-width="1.5"/>
+                        <text x="70" y="458" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#b91c1c">HARD DROP</text>
+                        <text x="166" y="458" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">qc_excluded = True</text>
+                        <!-- crossed-out curve -->
+                        <path d="M70,478 Q100,470 130,474 Q155,476 180,480 Q210,484 240,480 Q260,476 280,480 Q310,484 330,478" stroke="#b91c1c" stroke-width="1.5" fill="none" opacity="0.2"/>
+                        <line x1="168" y1="466" x2="218" y2="498" stroke="#b91c1c" stroke-width="2.5" opacity="0.35"/>
+                        <line x1="218" y1="466" x2="168" y2="498" stroke="#b91c1c" stroke-width="2.5" opacity="0.35"/>
+                        <text x="250" y="500" font-family="JetBrains Mono, monospace" font-size="6" fill="#8a7e6e">tracking | deriv | duration | alignment</text>
 
-                        <!-- Pass-through outcome -->
-                        <rect x="520" y="430" width="310" height="70" rx="5" fill="rgba(4,120,87,0.06)" stroke="#047857" stroke-width="1.5"/>
-                        <text x="540" y="452" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#047857">PASS</text>
-                        <text x="580" y="452" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">retained + soft flags recorded</text>
-                        <!-- surviving stroke visualization (clean curve) -->
-                        <path d="M540,488 Q570,478 600,464 Q620,458 640,456 Q660,454 680,462 Q700,472 720,478 Q740,482 760,488" stroke="#047857" stroke-width="1.8" fill="none" opacity="0.5"/>
-                        <text x="765" y="490" font-family="JetBrains Mono, monospace" font-size="7" fill="#047857" opacity="0.7">&checkmark;</text>
+                        <!-- Pass outcome -->
+                        <rect x="520" y="438" width="310" height="72" rx="5" fill="rgba(4,120,87,0.06)" stroke="#047857" stroke-width="1.5"/>
+                        <text x="540" y="458" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#047857">PASS</text>
+                        <text x="580" y="458" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">retained + soft flags recorded</text>
+                        <!-- clean curve with checkmark -->
+                        <path d="M540,496 Q572,486 604,472 Q624,466 644,464 Q664,462 684,470 Q704,478 724,484 Q744,488 764,496" stroke="#047857" stroke-width="1.8" fill="none" opacity="0.45"/>
+                        <text x="772" y="498" font-family="JetBrains Mono, monospace" font-size="8" fill="#047857" opacity="0.6">&checkmark;</text>
 
                         <!-- ══════════ QUALITY SCORE ══════════ -->
-                        <line x1="675" y1="500" x2="675" y2="524" stroke="#047857" stroke-width="1.2" marker-end="url(#qc_arrowGreen)"/>
+                        <line x1="675" y1="510" x2="675" y2="536" stroke="#047857" stroke-width="1.2" marker-end="url(#qc_arrowGreen)"/>
 
-                        <rect x="300" y="530" width="530" height="80" rx="5" fill="rgba(4,120,87,0.04)" stroke="#047857" stroke-width="1.2"/>
-                        <text x="316" y="552" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#047857">stroke_quality_score</text>
+                        <rect x="170" y="542" width="660" height="88" rx="5" fill="rgba(4,120,87,0.04)" stroke="#047857" stroke-width="1.2"/>
+                        <text x="186" y="562" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#047857">stroke_quality_score</text>
 
-                        <!-- sigmoid curve sketches — five small ones -->
-                        <g opacity="0.6">
-                            <!-- sig 1 -->
-                            <path d="M316,576 Q322,576 328,575 Q340,572 346,564 Q352,556 358,556 Q364,556 370,556" stroke="#047857" stroke-width="1.2" fill="none"/>
-                            <text x="316" y="590" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#8a7e6e">nan</text>
-                            <text x="354" y="590" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#047857">1</text>
-                            <!-- sig 2 -->
-                            <path d="M388,576 Q394,576 400,575 Q412,572 418,564 Q424,556 430,556 Q436,556 442,556" stroke="#047857" stroke-width="1.2" fill="none"/>
-                            <text x="388" y="590" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#8a7e6e">deriv</text>
-                            <!-- sig 3 -->
-                            <path d="M460,576 Q466,576 472,575 Q484,572 490,564 Q496,556 502,556 Q508,556 514,556" stroke="#047857" stroke-width="1.2" fill="none"/>
-                            <text x="460" y="590" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#8a7e6e">mono</text>
-                            <!-- sig 4 (inverted — higher is better) -->
-                            <path d="M532,556 Q538,556 544,556 Q550,556 556,564 Q562,572 568,575 Q574,576 580,576" stroke="#047857" stroke-width="1.2" fill="none"/>
-                            <text x="532" y="590" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#8a7e6e">detect</text>
-                            <!-- sig 5 (bump — range) -->
-                            <path d="M598,576 Q604,575 610,572 Q616,564 622,558 L640,558 Q646,558 652,564 Q658,572 664,575 Q670,576 676,576" stroke="#047857" stroke-width="1.2" fill="none"/>
-                            <text x="612" y="590" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#8a7e6e">duration</text>
+                        <!-- five sigmoid sketches — wider spacing -->
+                        <g opacity="0.65">
+                            <!-- sig 1: nan_frac (lower is better) -->
+                            <path d="M196,598 Q204,598 212,597 Q228,594 236,584 Q244,574 252,574 Q260,574 268,574" stroke="#047857" stroke-width="1.2" fill="none"/>
+                            <text x="218" y="610" font-family="JetBrains Mono, monospace" font-size="6" fill="#8a7e6e" text-anchor="middle">nan_frac</text>
+
+                            <!-- multiply -->
+                            <text x="282" y="590" font-family="Source Sans 3, sans-serif" font-size="12" fill="#047857" opacity="0.5">&times;</text>
+
+                            <!-- sig 2: max_deriv (lower is better) -->
+                            <path d="M298,598 Q306,598 314,597 Q330,594 338,584 Q346,574 354,574 Q362,574 370,574" stroke="#047857" stroke-width="1.2" fill="none"/>
+                            <text x="322" y="610" font-family="JetBrains Mono, monospace" font-size="6" fill="#8a7e6e" text-anchor="middle">max_deriv</text>
+
+                            <text x="384" y="590" font-family="Source Sans 3, sans-serif" font-size="12" fill="#047857" opacity="0.5">&times;</text>
+
+                            <!-- sig 3: mono_viol (lower is better) -->
+                            <path d="M400,598 Q408,598 416,597 Q432,594 440,584 Q448,574 456,574 Q464,574 472,574" stroke="#047857" stroke-width="1.2" fill="none"/>
+                            <text x="424" y="610" font-family="JetBrains Mono, monospace" font-size="6" fill="#8a7e6e" text-anchor="middle">mono_viol</text>
+
+                            <text x="486" y="590" font-family="Source Sans 3, sans-serif" font-size="12" fill="#047857" opacity="0.5">&times;</text>
+
+                            <!-- sig 4: detect_conf (higher is better — flipped) -->
+                            <path d="M502,574 Q510,574 518,574 Q524,574 530,584 Q536,594 542,597 Q550,598 558,598" stroke="#047857" stroke-width="1.2" fill="none"/>
+                            <text x="520" y="610" font-family="JetBrains Mono, monospace" font-size="6" fill="#8a7e6e" text-anchor="middle">detect_conf</text>
+
+                            <text x="572" y="590" font-family="Source Sans 3, sans-serif" font-size="12" fill="#047857" opacity="0.5">&times;</text>
+
+                            <!-- sig 5: duration (range — bump shape) -->
+                            <path d="M588,598 Q596,597 604,594 Q610,584 616,578 L638,578 Q644,578 650,584 Q656,594 662,597 Q668,598 676,598" stroke="#047857" stroke-width="1.2" fill="none"/>
+                            <text x="626" y="610" font-family="JetBrains Mono, monospace" font-size="6" fill="#8a7e6e" text-anchor="middle">drive_dur</text>
                         </g>
 
-                        <!-- multiply symbols between sigmoids -->
-                        <text x="378" y="570" font-family="Source Sans 3, sans-serif" font-size="11" fill="#047857" opacity="0.5">&times;</text>
-                        <text x="450" y="570" font-family="Source Sans 3, sans-serif" font-size="11" fill="#047857" opacity="0.5">&times;</text>
-                        <text x="522" y="570" font-family="Source Sans 3, sans-serif" font-size="11" fill="#047857" opacity="0.5">&times;</text>
-                        <text x="590" y="570" font-family="Source Sans 3, sans-serif" font-size="11" fill="#047857" opacity="0.5">&times;</text>
+                        <!-- equals and gauge -->
+                        <text x="696" y="590" font-family="Source Sans 3, sans-serif" font-size="12" fill="#047857" opacity="0.5">=</text>
 
-                        <!-- result -->
-                        <text x="694" y="570" font-family="Source Sans 3, sans-serif" font-size="11" fill="#047857" opacity="0.5">=</text>
+                        <rect x="716" y="578" width="100" height="16" rx="8" fill="rgba(185,28,28,0.06)"/>
+                        <rect x="716" y="578" width="78" height="16" rx="8" fill="rgba(4,120,87,0.2)"/>
+                        <text x="766" y="590" font-family="JetBrains Mono, monospace" font-size="8" fill="#047857" text-anchor="middle" font-weight="600">0.82</text>
+                        <text x="716" y="608" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#8a7e6e">0</text>
+                        <text x="810" y="608" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#8a7e6e">1</text>
 
-                        <!-- score gauge -->
-                        <rect x="712" y="556" width="100" height="14" rx="7" fill="rgba(185,28,28,0.08)"/>
-                        <rect x="712" y="556" width="78" height="14" rx="7" fill="rgba(4,120,87,0.25)"/>
-                        <text x="762" y="567" font-family="JetBrains Mono, monospace" font-size="8" fill="#047857" text-anchor="middle" font-weight="600">0.82</text>
-                        <text x="712" y="586" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#8a7e6e">0</text>
-                        <text x="806" y="586" font-family="JetBrains Mono, monospace" font-size="5.5" fill="#8a7e6e">1</text>
-
-                        <text x="565" y="608" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e" text-anchor="middle">confidence signal for video-only inference (&sect;13) &mdash; any single bad dimension drives score toward 0</text>
+                        <text x="500" y="628" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e" text-anchor="middle">confidence signal for video-only inference (&sect;13) &mdash; any single bad dimension drives score toward 0</text>
                     </svg>
                     <div class="diagram-caption">Stroke flows top-to-bottom through six checks; hard flags reject, soft flags record; five sigmoid penalties multiply into the composite score</div>
                 </div>
