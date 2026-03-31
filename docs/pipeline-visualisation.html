@@ -779,7 +779,7 @@
             </nav>
             <p class="header-author">
                 <strong>Giacomo Cappelletto</strong> &middot; <a href="mailto:giacomo.cappelletto@icloud.com">giacomo.cappelletto@icloud.com</a>
-                <br> Boston, MA &middot; Treviso, Italy &middot; +39 324 681 4985 &middot; +1 (857) 753-0133
+                <br> Boston, MA &middot; Treviso, Italy &middot;
             </p>
         </div>
 
@@ -1193,9 +1193,203 @@
             </div>
         </div>
 
-        <div class="qc-bar" data-role="shared">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-            <span>QC &mdash; denominator stability (ds/dt), derivative plausibility, reasonable stroke duration</span>
+        <div class="connector" data-role="shared">
+            <div class="stem"></div>
+        </div>
+
+        <!-- ═══ 06b QC GATES ═══ -->
+        <div class="section" data-role="shared" id="step-qc">
+            <div class="step-label">
+                <span class="step-num" style="font-size:1.1rem">QC</span>
+                <span class="step-title">Quality Control &amp; Failure Modes</span>
+            </div>
+
+            <div class="qc-bar" data-role="shared">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span>Six per-stroke flags &rarr; hard/soft classification &rarr; aggregate quality score</span>
+            </div>
+
+            <!-- QC gates diagram -->
+            <div class="model-training-diagram" id="pipeline-qc-gates">
+                <div class="model-training-diagram-head">
+                    <span class="model-training-diagram-title">QC Gate Pipeline</span>
+                    <span class="model-training-diagram-sub">Each stroke passes through six independent checks producing flags and a composite score</span>
+                </div>
+                <div class="model-training-diagram-inner">
+                    <svg viewBox="0 0 860 460" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <marker id="qc_arrowGrey" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#8a7e6e" stroke-width="1"/></marker>
+                            <marker id="qc_arrowRed" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#b91c1c" stroke-width="1"/></marker>
+                            <marker id="qc_arrowGreen" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#047857" stroke-width="1"/></marker>
+                        </defs>
+
+                        <!-- Title -->
+                        <text x="20" y="20" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#b91c1c" letter-spacing="0.05em">PER-STROKE QC FLAGS</text>
+
+                        <!-- Six flag boxes in 2x3 grid -->
+                        <!-- Row 1 -->
+                        <rect x="20" y="36" width="260" height="56" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1"/>
+                        <text x="32" y="54" font-family="JetBrains Mono, monospace" font-size="8.5" font-weight="600" fill="#b91c1c">qc_tracking_sparse</text>
+                        <text x="210" y="54" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">HARD</text>
+                        <text x="32" y="68" font-family="Source Sans 3, sans-serif" font-size="8" fill="#3d3529">NaN fraction across angle cols &gt; 30%</text>
+                        <text x="32" y="82" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">metric: nan_frac_angles</text>
+
+                        <rect x="300" y="36" width="260" height="56" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1"/>
+                        <text x="312" y="54" font-family="JetBrains Mono, monospace" font-size="8.5" font-weight="600" fill="#b91c1c">qc_nonphysio_deriv</text>
+                        <text x="490" y="54" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">HARD</text>
+                        <text x="312" y="68" font-family="Source Sans 3, sans-serif" font-size="8" fill="#3d3529">max |d&theta;/dt| exceeds 600 deg/s</text>
+                        <text x="312" y="82" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">metric: max_deriv_deg_s</text>
+
+                        <rect x="580" y="36" width="260" height="56" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1"/>
+                        <text x="592" y="54" font-family="JetBrains Mono, monospace" font-size="8.5" font-weight="600" fill="#b91c1c">qc_duration_implausible</text>
+                        <text x="770" y="54" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">HARD</text>
+                        <text x="592" y="68" font-family="Source Sans 3, sans-serif" font-size="8" fill="#3d3529">drive &notin; [0.4, 2.0]s or cycle &notin; [1.5, 4.0]s</text>
+                        <text x="592" y="82" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">metric: video_drive_s, video_cycle_s</text>
+
+                        <!-- Row 2 -->
+                        <rect x="20" y="106" width="260" height="56" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3"/>
+                        <text x="32" y="124" font-family="JetBrains Mono, monospace" font-size="8.5" font-weight="600" fill="#b91c1c">qc_ds_dt_stall</text>
+                        <text x="210" y="124" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">SOFT</text>
+                        <text x="32" y="138" font-family="Source Sans 3, sans-serif" font-size="8" fill="#3d3529">min(ds/dt) &lt; 5% of median ds/dt</text>
+                        <text x="32" y="152" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">metric: ds_dt_min</text>
+
+                        <rect x="300" y="106" width="260" height="56" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3"/>
+                        <text x="312" y="124" font-family="JetBrains Mono, monospace" font-size="8.5" font-weight="600" fill="#b91c1c">qc_progress_nonmonotonic</text>
+                        <text x="510" y="124" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">SOFT</text>
+                        <text x="312" y="138" font-family="Source Sans 3, sans-serif" font-size="8" fill="#3d3529">&gt;15% of frames needed monotonicity repair</text>
+                        <text x="312" y="152" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">metric: progress_mono_violation_frac</text>
+
+                        <rect x="580" y="106" width="260" height="56" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3"/>
+                        <text x="592" y="124" font-family="JetBrains Mono, monospace" font-size="8.5" font-weight="600" fill="#b91c1c">qc_weak_detection</text>
+                        <text x="770" y="124" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">SOFT</text>
+                        <text x="592" y="138" font-family="Source Sans 3, sans-serif" font-size="8" fill="#3d3529">boundary velocity contrast &lt; 15% of peak</text>
+                        <text x="592" y="152" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">metric: detection_confidence</text>
+
+                        <!-- Divider -->
+                        <line x1="20" y1="182" x2="840" y2="182" stroke="#d8d0c4" stroke-width="1" stroke-dasharray="4,3"/>
+
+                        <!-- Classification section -->
+                        <text x="20" y="206" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#b91c1c" letter-spacing="0.05em">CLASSIFICATION &amp; SCORING</text>
+
+                        <!-- Hard drop box -->
+                        <rect x="20" y="220" width="400" height="86" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1.5"/>
+                        <text x="32" y="240" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#b91c1c">Hard drop (qc_excluded = True)</text>
+                        <text x="32" y="258" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#3d3529">Stroke excluded from training. Flags that trigger hard drop:</text>
+                        <text x="32" y="274" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">qc_tracking_sparse | qc_nonphysio_deriv | qc_duration_implausible</text>
+                        <text x="32" y="290" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">qc_alignment_drift | qc_rate_mismatch</text>
+
+                        <!-- Soft flag box -->
+                        <rect x="440" y="220" width="400" height="86" rx="4" fill="rgba(185,28,28,0.04)" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3"/>
+                        <text x="452" y="240" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#b91c1c">Soft flag (informational)</text>
+                        <text x="452" y="258" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#3d3529">Stroke retained but flagged. Available for downstream weighting:</text>
+                        <text x="452" y="274" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">qc_ds_dt_stall | qc_progress_nonmonotonic | qc_weak_detection</text>
+                        <text x="452" y="290" font-family="Source Sans 3, sans-serif" font-size="8" fill="#8a7e6e">Soft mode keeps all strokes; hard mode drops hard-flagged ones.</text>
+
+                        <!-- Divider -->
+                        <line x1="20" y1="326" x2="840" y2="326" stroke="#d8d0c4" stroke-width="1" stroke-dasharray="4,3"/>
+
+                        <!-- Quality score section -->
+                        <text x="20" y="350" font-family="JetBrains Mono, monospace" font-size="10" font-weight="500" fill="#047857" letter-spacing="0.05em">AGGREGATE QUALITY SCORE</text>
+
+                        <!-- Score formula -->
+                        <rect x="20" y="364" width="820" height="86" rx="4" fill="rgba(4,120,87,0.04)" stroke="#047857" stroke-width="1"/>
+                        <text x="32" y="384" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#047857">stroke_quality_score = &prod; sigmoid_penalty(metric_i)</text>
+                        <text x="32" y="400" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#3d3529">Product of per-dimension sigmoid penalties &mdash; any single bad dimension drives score toward 0.</text>
+
+                        <!-- Penalty dimensions -->
+                        <text x="40" y="418" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">nan_frac: 1.0 &lt; 0.05, &rarr; 0 &gt; 0.3</text>
+                        <text x="250" y="418" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">max_deriv: 1.0 &lt; 300, &rarr; 0 &gt; 600</text>
+                        <text x="480" y="418" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">mono_viol: 1.0 &lt; 0.05, &rarr; 0 &gt; 0.15</text>
+                        <text x="40" y="436" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">detect_conf: 1.0 &gt; 0.30, &rarr; 0 &lt; 0.15</text>
+                        <text x="250" y="436" font-family="JetBrains Mono, monospace" font-size="7" fill="#8a7e6e">drive_dur: 1.0 in [0.6,1.5]s, &rarr; 0 outside [0.4,2.0]s</text>
+                        <text x="580" y="436" font-family="JetBrains Mono, monospace" font-size="7" fill="#047857">Range: [0, 1] &mdash; stored per stroke &amp; per bin</text>
+
+                        <text x="430" y="456" font-family="Source Sans 3, sans-serif" font-size="7.5" fill="#8a7e6e" text-anchor="middle">This is the confidence signal for video-only inference (&sect;13)</text>
+                    </svg>
+                    <div class="diagram-caption">Solid-bordered flags are hard drops; dashed-bordered flags are soft (informational only)</div>
+                </div>
+            </div>
+
+            <!-- Expandable cards for the three new QC additions -->
+            <div class="card-row cols-2">
+                <div class="card t-shared" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Progression Monotonicity</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Detects when handle progress required silent repair via <code>maximum.accumulate</code></div>
+                    <div class="card-detail">
+                        <p>The normalized progress signal <code>s_video</code> should be monotonically increasing during the drive. When the raw signal has backwards segments (tracking glitches), <code>np.maximum.accumulate</code> forces monotonicity &mdash;
+                            but this distorts the progress axis and corrupts chain-rule derivatives.</p>
+                        <p><strong>Metric:</strong> <code>progress_mono_violation_frac</code> &mdash; fraction of drive frames where the raw value was below the running maximum.</p>
+                        <p><strong>Threshold:</strong> &gt; 0.15 triggers <code>qc_progress_nonmonotonic</code> (soft flag).</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Implementation</span></div>
+                            <div>&ensp;raw_s = clip((dist - x0) / (x1 - x0), 0, 1)</div>
+                            <div>&ensp;s_video = maximum.accumulate(raw_s)</div>
+                            <div>&ensp;violations = sum(raw_s &lt; s_video - 1e-9)</div>
+                            <div>&ensp;frac = violations / len(raw_s)</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card t-shared" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Stroke Detection Confidence</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Measures boundary sharpness via velocity contrast at catch and finish</div>
+                    <div class="card-detail">
+                        <p>Strokes with mushy, ambiguous catch/finish boundaries have misplaced drive windows, directly corrupting the label alignment between video features and RP3 force curves.</p>
+                        <p><strong>Velocity contrast:</strong> computed as the difference in mean |slope| across a short window on each side of the boundary, normalized by peak drive velocity. High = sharp reversal, low = gradual transition.</p>
+                        <p><strong>Metric:</strong> <code>detection_confidence = min(catch_contrast, finish_contrast)</code></p>
+                        <p><strong>Threshold:</strong> &lt; 0.15 triggers <code>qc_weak_detection</code> (soft flag).</p>
+                        <p>Three new fields on <code>DriveEvent</code>: <code>catch_velocity_contrast</code>, <code>finish_velocity_contrast</code>, <code>drive_prominence</code>.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="card-row cols-2">
+                <div class="card t-shared" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Duration Plausibility</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Simple physiological range check on drive and cycle durations</div>
+                    <div class="card-detail">
+                        <p>If a detected drive is 0.15&thinsp;s or 3.5&thinsp;s, it cannot be a real rowing stroke &mdash; the detection failed. This trivial range check catches outliers that the velocity-based detector missed.</p>
+                        <p><strong>Drive range:</strong> [0.4, 2.0]&thinsp;s. <strong>Cycle range:</strong> [1.5, 4.0]&thinsp;s.</p>
+                        <p><strong>Classification:</strong> hard drop &mdash; implausible durations mean the label alignment is corrupted.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Constants (inference_cli.py)</span></div>
+                            <div>&ensp;DRIVE_DURATION_MIN_S = 0.4</div>
+                            <div>&ensp;DRIVE_DURATION_MAX_S = 2.0</div>
+                            <div>&ensp;CYCLE_DURATION_MIN_S = 1.5</div>
+                            <div>&ensp;CYCLE_DURATION_MAX_S = 4.0</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card t-output" data-role="shared" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Aggregate Quality Score</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">Product of per-dimension sigmoid penalties &rarr; single [0, 1] confidence value</div>
+                    <div class="card-detail">
+                        <p>Rather than just binary flags, a continuous score enables soft weighting during training and gives end-users a trust signal during inference.</p>
+                        <p><strong>Aggregation:</strong> multiplicative &mdash; any single bad dimension drives the composite score toward zero (AND-logic, not averaging).</p>
+                        <p><strong>Five penalty dimensions</strong> each mapped through a smooth sigmoid from "good" (penalty &asymp; 1) to "bad" (penalty &asymp; 0):</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">_compute_quality_score()</span></div>
+                            <div>&ensp;nan_frac &rarr; good &lt; 0.05, bad &gt; 0.3</div>
+                            <div>&ensp;max_deriv_deg_s &rarr; good &lt; 300, bad &gt; 600</div>
+                            <div>&ensp;mono_violation_frac &rarr; good &lt; 0.05, bad &gt; 0.15</div>
+                            <div>&ensp;detection_confidence &rarr; good &gt; 0.30, bad &lt; 0.15</div>
+                            <div>&ensp;drive_duration_s &rarr; good [0.6, 1.5], bad outside [0.4, 2.0]</div>
+                            <br>
+                            <div><span class="dim">score = &prod; sigmoid_penalty(dim_i)</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- ═══ PHASE DIVIDER ═══ -->
@@ -1763,7 +1957,7 @@
                             <div>&ensp;predicted peak_force (N)</div>
                             <div>&ensp;predicted peak_position (% drive)</div>
                             <div>&ensp;predicted impulse (N&middot;s)</div>
-                            <div>&ensp;confidence / quality score</div>
+                            <div>&ensp;<span class="hl-shared">stroke_quality_score</span> [0, 1]</div>
                         </div>
                     </div>
                 </div>
