@@ -74,6 +74,12 @@ CHAIN_RULE_EPS = 1e-6
 DS_DT_STALL_FRAC = 0.05
 MAX_ANGULAR_VEL_DEG_S = 600.0
 MAX_NAN_FRAC_ANGLES = 0.3
+PROGRESS_MONOTONICITY_VIOLATION_FRAC = 0.15
+DRIVE_DURATION_MIN_S = 0.4
+DRIVE_DURATION_MAX_S = 2.0
+CYCLE_DURATION_MIN_S = 1.5
+CYCLE_DURATION_MAX_S = 4.0
+MIN_DETECTION_CONFIDENCE = 0.15
 
 
 
@@ -550,6 +556,9 @@ def _events_to_dataframe(events: Iterable[DriveEvent]) -> pd.DataFrame:
                 "catch_distance_px",
                 "finish_distance_px",
                 "drive_displacement_px",
+                "catch_velocity_contrast",
+                "finish_velocity_contrast",
+                "drive_prominence",
             ]
         )
     return pd.DataFrame(rows)
@@ -641,6 +650,63 @@ def _write_drive_overlay_video(
         writer.release()
 
     return frame_idx, drive_frames
+
+
+def _sigmoid_penalty(
+    value: float, good: float, bad: float, *, k: float = 12.0,
+) -> float:
+    """Smooth penalty in [0, 1]: ~1.0 at *good*, ~0.0 at *bad*.
+
+    Works for both "lower is better" (good < bad) and "higher is better"
+    (good > bad) by flipping the sigmoid direction.
+    """
+    if not np.isfinite(value):
+        return 0.5
+    midpoint = (good + bad) / 2.0
+    scale = abs(bad - good)
+    if scale < 1e-12:
+        return 1.0 if abs(value - good) < abs(value - bad) else 0.0
+    x = (value - midpoint) / scale
+    if good < bad:
+        x = -x
+    return float(1.0 / (1.0 + np.exp(-k * x)))
+
+
+def _range_penalty(
+    value: float,
+    good_lo: float, good_hi: float,
+    bad_lo: float, bad_hi: float,
+    *, k: float = 12.0,
+) -> float:
+    """Penalty ~1.0 inside [good_lo, good_hi], dropping toward 0 outside [bad_lo, bad_hi]."""
+    if not np.isfinite(value):
+        return 0.5
+    if good_lo <= value <= good_hi:
+        return 1.0
+    if value < good_lo:
+        return _sigmoid_penalty(value, good=good_lo, bad=bad_lo, k=k)
+    return _sigmoid_penalty(value, good=good_hi, bad=bad_hi, k=k)
+
+
+def _compute_quality_score(
+    nan_frac: float,
+    max_deriv_deg_s: float,
+    mono_violation_frac: float,
+    detection_confidence: float,
+    drive_duration_s: float,
+) -> float:
+    """Aggregate stroke quality in [0, 1]. Product of per-dimension penalties."""
+    penalties = [
+        _sigmoid_penalty(nan_frac, good=0.05, bad=0.3),
+        _sigmoid_penalty(max_deriv_deg_s, good=300.0, bad=600.0),
+        _sigmoid_penalty(mono_violation_frac, good=0.05, bad=0.15),
+        _sigmoid_penalty(detection_confidence, good=0.30, bad=0.15),
+        _range_penalty(drive_duration_s, good_lo=0.6, good_hi=1.5, bad_lo=0.4, bad_hi=2.0),
+    ]
+    score = 1.0
+    for p in penalties:
+        score *= p
+    return score
 
 
 def _find_force_columns(rp3_df: pd.DataFrame) -> list[tuple[str, float]]:
@@ -830,9 +896,12 @@ def _build_force_pose_segments(
             status_rows.append(status_row)
             continue
 
-        s_video = (dist - x0) / (x1 - x0)
-        s_video = np.clip(s_video, 0.0, 1.0)
-        s_video = np.maximum.accumulate(s_video)
+        s_video_raw = (dist - x0) / (x1 - x0)
+        s_video_raw = np.clip(s_video_raw, 0.0, 1.0)
+        s_video = np.maximum.accumulate(s_video_raw)
+        mono_violations = int(np.sum(s_video_raw < s_video - 1e-9))
+        mono_violation_frac = mono_violations / max(len(s_video_raw), 1)
+        status_row["progress_mono_violation_frac"] = float(mono_violation_frac)
         if s_video[-1] > 1e-9:
             s_video = s_video / s_video[-1]
 
@@ -940,7 +1009,40 @@ def _build_force_pose_segments(
             if ds_dt_min < DS_DT_STALL_FRAC * ds_dt_median:
                 qc_flags.append("qc_ds_dt_stall")
 
+        if mono_violation_frac > PROGRESS_MONOTONICITY_VIOLATION_FRAC:
+            qc_flags.append("qc_progress_nonmonotonic")
+
+        catch_vc = float(ev["catch_velocity_contrast"]) if "catch_velocity_contrast" in ev.index else float("nan")
+        finish_vc = float(ev["finish_velocity_contrast"]) if "finish_velocity_contrast" in ev.index else float("nan")
+        if np.isfinite(catch_vc) and np.isfinite(finish_vc):
+            detection_confidence = min(catch_vc, finish_vc)
+        elif np.isfinite(catch_vc):
+            detection_confidence = catch_vc
+        elif np.isfinite(finish_vc):
+            detection_confidence = finish_vc
+        else:
+            detection_confidence = float("nan")
+        status_row["detection_confidence"] = float(detection_confidence)
+        if np.isfinite(detection_confidence) and detection_confidence < MIN_DETECTION_CONFIDENCE:
+            qc_flags.append("qc_weak_detection")
+
+        video_drive_s = float(mrow["video_drive_s"])
+        video_cycle_s = float(mrow["video_cycle_s"])
+        if not (DRIVE_DURATION_MIN_S <= video_drive_s <= DRIVE_DURATION_MAX_S):
+            qc_flags.append("qc_duration_implausible")
+        elif not (CYCLE_DURATION_MIN_S <= video_cycle_s <= CYCLE_DURATION_MAX_S):
+            qc_flags.append("qc_duration_implausible")
+
         status_row["qc_flags"] = ",".join(qc_flags) if qc_flags else ""
+
+        stroke_quality_score = _compute_quality_score(
+            nan_frac=nan_frac,
+            max_deriv_deg_s=max_angular_vel,
+            mono_violation_frac=mono_violation_frac,
+            detection_confidence=detection_confidence,
+            drive_duration_s=video_drive_s,
+        )
+        status_row["stroke_quality_score"] = float(stroke_quality_score)
 
         # -- Interpolate smoothed angles to s_targets --
         interp_features: dict[str, np.ndarray] = {}
@@ -1006,6 +1108,7 @@ def _build_force_pose_segments(
                 "force_raw": float(force_raw_arr[i]),
                 "force_n": float(force_pdf_arr[i]),
                 "qc_flags": status_row["qc_flags"],
+                "stroke_quality_score": float(stroke_quality_score),
                 "handle_velocity_px_s": float(handle_vel_on_s[i]) if np.isfinite(handle_vel_on_s[i]) else float("nan"),
                 "handle_accel_px_s2": float(handle_accel_on_s[i]) if np.isfinite(handle_accel_on_s[i]) else float("nan"),
             }

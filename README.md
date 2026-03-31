@@ -87,7 +87,8 @@ Within `runs/<run_name>/`:
 - `inference/rp3_match_manifest.csv`: video stroke to RP3 row mapping (if RP3 matching enabled).
 - `inference/rp3_pose_force_matched_segments.csv`: canonical pose features aligned to RP3 force bins.
   - `force_raw`: original RP3 Newton values; `force_n`: per-stroke PDF-normalized density.
-  - `qc_flags`: per-stroke quality flags (`qc_tracking_sparse`, `qc_nonphysio_deriv`, `qc_ds_dt_stall`).
+  - `qc_flags`: per-stroke quality flags (`qc_tracking_sparse`, `qc_nonphysio_deriv`, `qc_ds_dt_stall`, `qc_progress_nonmonotonic`, `qc_weak_detection`, `qc_duration_implausible`).
+  - `stroke_quality_score`: aggregate [0, 1] quality score (product of per-dimension sigmoid penalties).
   - All five angles have `*_ddeg_ds` chain-rule derivatives; `handle_velocity_px_s` and `handle_accel_px_s2` are included as support features.
 - `inference/rp3_pose_force_export_status.csv`: one-row-per-matched-stroke export/drop status with QC diagnostics.
 - `inference/training_dataset/`: training-ready artifacts built automatically after segment export.

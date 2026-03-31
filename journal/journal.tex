@@ -518,6 +518,20 @@ Three per-stroke QC checks are now computed and surfaced as a comma-separated \t
 \end{itemize}
 Strokes are \emph{not} silently dropped; QC flags are recorded so downstream filtering can be applied at modeling time.
 
+\paragraph{Extended QC gates (Section~14 implementation).}
+Three additional per-stroke QC checks complete the Section~14 mandatory gates:
+\begin{itemize}
+	\item \textbf{\texttt{qc\_progress\_nonmonotonic}}: fires when $>15\%$ of drive frames required monotonicity repair on the normalized progress signal (configurable via \texttt{PROGRESS\_MONOTONICITY\_VIOLATION\_FRAC}). The continuous metric \texttt{progress\_mono\_violation\_frac} is stored on the status row.
+	\item \textbf{\texttt{qc\_weak\_detection}}: fires when $\min(\text{catch velocity contrast}, \text{finish velocity contrast}) < 0.15$ of peak drive velocity (configurable via \texttt{MIN\_DETECTION\_CONFIDENCE}). Velocity contrast measures the sharpness of the velocity sign change at catch and finish boundaries; low values indicate ambiguous stroke detection. The continuous metric \texttt{detection\_confidence} is stored on the status row.
+	\item \textbf{\texttt{qc\_duration\_implausible}}: fires when drive duration falls outside $[0.4, 2.0]$\,s or cycle duration falls outside $[1.5, 4.0]$\,s (configurable via \texttt{DRIVE\_DURATION\_\{MIN,MAX\}\_S} and \texttt{CYCLE\_DURATION\_\{MIN,MAX\}\_S}). This flag is classified as a hard drop in \texttt{build\_training\_dataset.py} since implausible durations indicate fundamentally incorrect stroke detection.
+\end{itemize}
+
+\paragraph{Aggregate stroke quality score.}
+A new \texttt{stroke\_quality\_score} column (range $[0, 1]$) combines all continuous QC metrics via a product of per-dimension sigmoid penalties: NaN fraction, max angular velocity, monotonicity violation fraction, detection confidence, and drive duration plausibility. Each dimension maps through a smooth sigmoid so any single bad dimension drives the score toward zero. The score is stored on both segment bin rows and status rows, and propagated through to \texttt{strokes.csv} in the training dataset. This is the confidence signal required by Section~13 for video-only inference.
+
+\paragraph{DriveEvent confidence fields.}
+Three new fields were added to the \texttt{DriveEvent} dataclass in \texttt{drive\_detection.py}: \texttt{catch\_velocity\_contrast}, \texttt{finish\_velocity\_contrast} (normalized velocity sign-change magnitude at boundaries), and \texttt{drive\_prominence} (drive displacement relative to the minimum threshold). These flow through \texttt{drive\_events.csv} and are consumed by the QC pipeline.
+
 \paragraph{Handle velocity and acceleration as support features.}
 Two new columns are added to the segment export: \texttt{handle\_velocity\_px\_s} (interpolated from the recomputed handle velocity) and \texttt{handle\_accel\_px\_s2} (time-domain gradient of handle velocity, then interpolated). These correspond to the Section~9 secondary support features and are available at negligible additional cost since the underlying signals already exist in the stroke data.
 

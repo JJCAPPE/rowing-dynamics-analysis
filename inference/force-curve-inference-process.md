@@ -242,14 +242,21 @@ No RP3 input is used in this inference stage.
 
 ### Mandatory QC gates
 - Stroke detection confidence (valid catch/finish structure).
+  - Implemented: `qc_weak_detection` flag when min(catch, finish) velocity contrast < 0.15 of peak drive velocity. Continuous metric: `detection_confidence`.
 - Tracking completeness (minimal missing joint proportion).
+  - Implemented: `qc_tracking_sparse` flag when NaN fraction > 0.3. Continuous metric: `nan_frac_angles`.
 - Physical plausibility checks on angles and derivatives.
+  - Implemented: `qc_nonphysio_deriv` (max |dθ/dt| > 600 deg/s), `qc_ds_dt_stall` (ds/dt < 5% of median).
 - Reasonable stroke duration and progression monotonicity.
+  - Implemented: `qc_duration_implausible` flag for drive outside [0.4, 2.0] s or cycle outside [1.5, 4.0] s (hard drop). `qc_progress_nonmonotonic` flag when >15% of frames needed monotonicity repair. Continuous metric: `progress_mono_violation_frac`.
 - Post-pairing stroke-rate consistency between video and RP3.
+  - Implemented: `qc_rate_mismatch` and `qc_alignment_drift` in `build_training_dataset.py`.
 
 ### Failure handling
 - If QC fails, mark stroke as low confidence and skip or down-weight.
+  - Implemented: `qc_excluded` bool + soft/hard modes in `build_training_dataset.py`. Hard-drop flags: `qc_tracking_sparse`, `qc_nonphysio_deriv`, `qc_duration_implausible`, `qc_alignment_drift`, `qc_rate_mismatch`.
 - Never silently force predictions from invalid kinematics/alignment.
+  - Implemented: all flags preserved on exports; aggregate `stroke_quality_score` (0–1) available per stroke for inference confidence.
 
 ## 15) What We Are Specifically Testing Scientifically
 This process evaluates the broader research hypothesis:

@@ -32,6 +32,9 @@ class DriveEvent:
     catch_distance_px: float
     finish_distance_px: float
     drive_displacement_px: float
+    catch_velocity_contrast: float
+    finish_velocity_contrast: float
+    drive_prominence: float
 
 
 @dataclass(frozen=True)
@@ -288,6 +291,27 @@ def detect_drive_events(
             if drive_disp_px < min_drive_disp_px:
                 continue
 
+            drive_vel = slope_px_s[c0 : f0 + 1]
+            peak_drive_vel = float(np.nanmax(np.abs(drive_vel))) if drive_vel.size > 0 else 0.0
+            vel_norm = max(peak_drive_vel, 1e-9)
+
+            half_w = max(2, int(round(fps_estimate * 0.03)))
+            c_before = slope_px_s[max(0, c0 - half_w) : c0]
+            c_after = slope_px_s[c0 : min(len(slope_px_s), c0 + half_w)]
+            catch_vel_contrast = float(
+                (np.nanmean(np.abs(c_after)) if c_after.size else 0.0)
+                - (np.nanmean(np.abs(c_before)) if c_before.size else 0.0)
+            ) / vel_norm
+
+            f_before = slope_px_s[max(0, f0 - half_w) : f0]
+            f_after = slope_px_s[f0 : min(len(slope_px_s), f0 + half_w)]
+            finish_vel_contrast = float(
+                (np.nanmean(np.abs(f_before)) if f_before.size else 0.0)
+                - (np.nanmean(np.abs(f_after)) if f_after.size else 0.0)
+            ) / vel_norm
+
+            prominence = drive_disp_px / max(min_drive_disp_px, 1e-9)
+
             events.append(
                 DriveEvent(
                     stroke_idx=len(events),
@@ -303,6 +327,9 @@ def detect_drive_events(
                     catch_distance_px=float(signal_smooth_px[c0]),
                     finish_distance_px=float(signal_smooth_px[f0]),
                     drive_displacement_px=drive_disp_px,
+                    catch_velocity_contrast=catch_vel_contrast,
+                    finish_velocity_contrast=finish_vel_contrast,
+                    drive_prominence=prominence,
                 )
             )
 

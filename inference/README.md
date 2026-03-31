@@ -207,6 +207,10 @@ In `rp3_pose_force_matched_segments.csv`:
   - `qc_tracking_sparse`: >30% NaN angle values in the drive window.
   - `qc_nonphysio_deriv`: max |dθ/dt| exceeds 600 deg/s (tracking spike).
   - `qc_ds_dt_stall`: handle progress rate drops to <5% of its median (stall or tracking failure).
+  - `qc_progress_nonmonotonic`: >15% of drive frames required monotonicity repair on progress signal.
+  - `qc_weak_detection`: min(catch, finish) velocity contrast below 0.15 of peak drive velocity.
+  - `qc_duration_implausible`: drive duration outside [0.4, 2.0] s or cycle outside [1.5, 4.0] s.
+- `stroke_quality_score` — aggregate [0, 1] quality score combining NaN fraction, max derivative, monotonicity violations, detection confidence, and duration plausibility. Product of per-dimension sigmoid penalties; any single bad dimension tanks the score.
 - `rower_facing` — detected or overridden camera-side facing direction (`"right"` or `"left"`). When `"left"`, `trunk_vs_horizontal_deg` has been mirror-normalized (`180 - θ`) so that forward lean is consistently a small angle.
 - `handle_velocity_px_s`, `handle_accel_px_s2` — handle kinematics resampled to each force bin.
 - `*_ddeg_ds` — chain-rule progress-domain derivatives for all five angles (computed as `dθ/dt ÷ ds/dt` in time domain, then interpolated). Includes `spine_flexion_ddeg_ds`.
@@ -217,3 +221,4 @@ In `rp3_pose_force_matched_segments.csv`:
 - `segment_exported`, `segment_rows_written`, `drop_reason`
 - `raw_area_trapz`, `normalized_area_trapz`
 - `nan_frac_angles`, `max_deriv_deg_s`, `ds_dt_min`, `qc_flags`
+- `progress_mono_violation_frac`, `detection_confidence`, `stroke_quality_score`

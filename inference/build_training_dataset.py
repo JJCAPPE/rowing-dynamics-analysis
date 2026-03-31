@@ -69,9 +69,12 @@ SCALAR_METADATA_COLS = [
     "rp3_rows_skipped_since_prev",
     "stroke_length_cm",
     "qc_flags",
+    "stroke_quality_score",
+    "progress_mono_violation_frac",
+    "detection_confidence",
 ]
 
-QC_HARD_DROP_FLAGS = {"qc_tracking_sparse", "qc_nonphysio_deriv"}
+QC_HARD_DROP_FLAGS = {"qc_tracking_sparse", "qc_nonphysio_deriv", "qc_duration_implausible"}
 QC_ALIGNMENT_FLAGS = {"qc_alignment_drift", "qc_rate_mismatch"}
 
 ALIGNMENT_MAX_CUM_ERR_S_DEFAULT = 1.5
