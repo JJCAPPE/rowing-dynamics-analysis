@@ -13,9 +13,12 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
+from pair_session import auto_pair_run
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUNS_ROOT = REPO_ROOT / "runs"
+DEFAULT_SESSION_REGISTRY = REPO_ROOT / "session_registry.csv"
 
 
 @dataclass(frozen=True)
@@ -274,6 +277,11 @@ def _resolve_anchor_rp3_idx(
     anchor_rp3_row_idx: int | None,
     anchor_rp3_stroke_number: int | None,
     interactive: bool,
+    video_df: pd.DataFrame | None = None,
+    anchor_video_idx: int = 1,
+    use_xcorr: bool = True,
+    xcorr_max_cost: float = 0.35,
+    xcorr_result_ref: list[Any] | None = None,
 ) -> int:
     if anchor_rp3_row_idx is not None and anchor_rp3_stroke_number is not None:
         raise ValueError("Provide only one of --anchor-rp3-row-idx or --anchor-rp3-stroke-number.")
@@ -291,9 +299,43 @@ def _resolve_anchor_rp3_idx(
             raise ValueError(f"stroke_number {stroke_no} not found in RP3 CSV.")
         return int(row_idx)
 
+    if use_xcorr and video_df is not None:
+        from pair_session import coarse_sync_anchor
+        try:
+            result = coarse_sync_anchor(
+                video_df=video_df,
+                rp3_df=rp3_df,
+                anchor_video_idx=int(anchor_video_idx),
+            )
+        except ValueError as exc:
+            print(f"Cross-correlation coarse sync failed: {exc}")
+        else:
+            if xcorr_result_ref is not None:
+                xcorr_result_ref.append(result)
+            stroke_label = (
+                f"stroke_number={result.anchor_rp3_stroke_number}"
+                if result.anchor_rp3_stroke_number is not None
+                else f"row_idx={result.anchor_rp3_idx}"
+            )
+            print(
+                "Coarse xcorr anchor: video stroke "
+                f"{anchor_video_idx} -> RP3 {stroke_label} "
+                f"(offset={result.offset_strokes}, "
+                f"cost={result.best_cost:.3f}s, "
+                f"mean|rate diff|={result.mean_rate_diff_spm:.2f} spm, "
+                f"overlap={result.overlap_length})"
+            )
+            if result.best_cost <= xcorr_max_cost:
+                return int(result.anchor_rp3_idx)
+            print(
+                f"Coarse xcorr cost {result.best_cost:.3f}s exceeds threshold "
+                f"{xcorr_max_cost:.3f}s; falling back to explicit anchor."
+            )
+
     if not interactive:
         raise ValueError(
-            "Missing anchor. Use --anchor-rp3-stroke-number (recommended) or --anchor-rp3-row-idx."
+            "Missing anchor. Use --anchor-rp3-stroke-number (recommended) or --anchor-rp3-row-idx, "
+            "or enable --auto-pair / cross-correlation sync."
         )
 
     _, finite_strokes = _stroke_number_candidates(rp3_df)
@@ -460,25 +502,30 @@ def _build_match_manifest(
 
     manifest = pd.DataFrame(rows)
 
-    if not manifest.empty:
-        abs_cum = manifest["cum_catch_err_s"].abs()
-        max_abs_cum = float(abs_cum.max())
-        mean_abs_cum = float(abs_cum.mean())
-        warn_threshold = cfg.max_abs_cum_error_s * 0.8
-        if max_abs_cum > warn_threshold:
-            import logging
-            logging.warning(
-                "RP3 match cumulative drift is high: max |cum_err|=%.3fs, "
-                "mean |cum_err|=%.3fs (hard cap=%.1fs). Late strokes may be "
-                "misaligned. Consider tighter tolerances or re-anchoring.",
-                max_abs_cum, mean_abs_cum, cfg.max_abs_cum_error_s,
-            )
-
     return MatchResult(
         manifest=manifest,
         total_score=total_score,
         matched_rp3_indices=matched_rows,
     )
+
+
+def _drift_metrics(manifest: pd.DataFrame) -> dict[str, float]:
+    """Compute summary drift statistics from a match manifest."""
+    if manifest.empty:
+        return {
+            "max_abs_cum_err_s": float("nan"),
+            "mean_abs_cum_err_s": float("nan"),
+            "mean_abs_interval_err_s": float("nan"),
+            "max_abs_interval_err_s": float("nan"),
+        }
+    abs_cum = manifest["cum_catch_err_s"].abs()
+    abs_int = manifest["interval_err_s"].abs()
+    return {
+        "max_abs_cum_err_s": float(abs_cum.max()),
+        "mean_abs_cum_err_s": float(abs_cum.mean()),
+        "mean_abs_interval_err_s": float(abs_int.mean()),
+        "max_abs_interval_err_s": float(abs_int.max()),
+    }
 
 
 def _parse_args() -> argparse.Namespace:
@@ -505,6 +552,72 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--w-interval", type=float, default=1.0)
     parser.add_argument("--w-cumulative", type=float, default=1.0)
     parser.add_argument("--w-skip", type=float, default=0.08)
+    parser.add_argument(
+        "--auto-pair",
+        action="store_true",
+        help=(
+            "Resolve rp3_clean_csv and anchor_rp3_stroke_number from "
+            "session_registry.csv instead of prompting. Falls back to "
+            "interactive selection if the registry has no matching row."
+        ),
+    )
+    parser.add_argument(
+        "--session-registry",
+        type=Path,
+        default=None,
+        help="Path to session_registry.csv (default: <repo_root>/session_registry.csv).",
+    )
+    parser.add_argument(
+        "--no-xcorr-anchor",
+        dest="use_xcorr",
+        action="store_false",
+        default=True,
+        help="Disable cross-correlation based coarse anchor inference.",
+    )
+    parser.add_argument(
+        "--xcorr-max-cost",
+        type=float,
+        default=0.35,
+        help=(
+            "Reject cross-correlation anchor candidates whose mean |interval diff| "
+            "exceeds this value in seconds (default: 0.35)."
+        ),
+    )
+    parser.add_argument(
+        "--reject-on-drift",
+        dest="reject_on_drift",
+        action="store_true",
+        default=True,
+        help=(
+            "Treat excessive cumulative drift as a hard failure (default). "
+            "Manifest files are still emitted for diagnostics, but the CLI "
+            "exits with a non-zero status."
+        ),
+    )
+    parser.add_argument(
+        "--no-reject-on-drift",
+        dest="reject_on_drift",
+        action="store_false",
+        help="Demote drift hard-reject to a warning (legacy behaviour).",
+    )
+    parser.add_argument(
+        "--drift-reject-max-cum-err-s",
+        type=float,
+        default=3.0,
+        help=(
+            "Hard-reject threshold on max |cumulative catch error| in seconds "
+            "when --reject-on-drift is enabled (default: 3.0)."
+        ),
+    )
+    parser.add_argument(
+        "--drift-reject-mean-interval-err-s",
+        type=float,
+        default=0.5,
+        help=(
+            "Hard-reject threshold on mean |interval error| in seconds "
+            "when --reject-on-drift is enabled (default: 0.5)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -514,19 +627,51 @@ def main() -> int:
 
     try:
         run_dir = _resolve_run_dir(args.run_dir, args.runs_root)
+
+        anchor_rp3_stroke_number = args.anchor_rp3_stroke_number
+        rp3_clean_csv_arg = args.rp3_clean_csv
+        if args.auto_pair:
+            try:
+                ctx = auto_pair_run(
+                    run_dir=run_dir,
+                    registry_path=args.session_registry or DEFAULT_SESSION_REGISTRY,
+                )
+            except (FileNotFoundError, LookupError) as exc:
+                print(f"auto-pair failed: {exc}. Falling back to interactive mode.")
+            else:
+                if rp3_clean_csv_arg is None:
+                    rp3_clean_csv_arg = ctx.rp3_clean_csv
+                if (
+                    anchor_rp3_stroke_number is None
+                    and args.anchor_rp3_row_idx is None
+                    and ctx.anchor_rp3_stroke_number is not None
+                ):
+                    anchor_rp3_stroke_number = ctx.anchor_rp3_stroke_number
+                print(
+                    f"auto-pair: session_id={ctx.session_id} athlete={ctx.athlete_id} "
+                    f"active_side={ctx.active_side}"
+                )
+
         rp3_clean_csv = _resolve_rp3_csv(
             run_dir=run_dir,
-            rp3_clean_csv=args.rp3_clean_csv,
+            rp3_clean_csv=rp3_clean_csv_arg,
             interactive=interactive,
         )
         video_df = _load_video_events(run_dir)
         rp3_df = _load_rp3(rp3_clean_csv)
+        xcorr_ref: list[Any] = []
         anchor_rp3_idx = _resolve_anchor_rp3_idx(
             rp3_df,
             anchor_rp3_row_idx=args.anchor_rp3_row_idx,
-            anchor_rp3_stroke_number=args.anchor_rp3_stroke_number,
+            anchor_rp3_stroke_number=anchor_rp3_stroke_number,
             interactive=interactive,
+            video_df=video_df,
+            anchor_video_idx=int(args.anchor_video_stroke_idx),
+            use_xcorr=bool(args.use_xcorr),
+            xcorr_max_cost=float(args.xcorr_max_cost),
+            xcorr_result_ref=xcorr_ref,
         )
+        xcorr_result = xcorr_ref[0] if xcorr_ref else None
         cfg = MatchConfig(
             max_jump_rows=int(args.max_jump_rows),
             max_interval_error_s=float(args.max_interval_error_s),
@@ -555,6 +700,7 @@ def main() -> int:
     manifest_csv = out_dir / "rp3_match_manifest.csv"
     summary_json = out_dir / "rp3_match_summary.json"
     aligned_csv = out_dir / "rp3_video_aligned_strokes.csv"
+    pairing_manifest_json = out_dir / "pairing_manifest.json"
 
     result.manifest.to_csv(manifest_csv, index=False)
 
@@ -563,10 +709,12 @@ def main() -> int:
     aligned.to_csv(aligned_csv, index=False)
 
     skipped_total = int(result.manifest["rp3_rows_skipped_since_prev"].sum())
-    mean_abs_cum_err = float(result.manifest["cum_catch_err_s"].abs().mean())
-    mean_abs_interval_err = float(result.manifest["interval_err_s"].abs().mean())
-    mean_abs_drive_err = float(result.manifest["drive_err_s"].abs().mean())
-    mean_abs_recover_err = float(result.manifest["recover_err_s"].abs().mean())
+    drift = _drift_metrics(result.manifest)
+    mean_abs_cum_err = drift["mean_abs_cum_err_s"]
+    max_abs_cum_err = drift["max_abs_cum_err_s"]
+    mean_abs_interval_err = drift["mean_abs_interval_err_s"]
+    mean_abs_drive_err = float(result.manifest["drive_err_s"].abs().mean()) if not result.manifest.empty else float("nan")
+    mean_abs_recover_err = float(result.manifest["recover_err_s"].abs().mean()) if not result.manifest.empty else float("nan")
 
     summary = {
         "run_dir": str(run_dir),
@@ -580,6 +728,7 @@ def main() -> int:
         "total_skipped_rp3_rows": skipped_total,
         "total_score": float(result.total_score),
         "mean_abs_cum_catch_err_s": mean_abs_cum_err,
+        "max_abs_cum_catch_err_s": max_abs_cum_err,
         "mean_abs_interval_err_s": mean_abs_interval_err,
         "mean_abs_drive_err_s": mean_abs_drive_err,
         "mean_abs_recover_err_s": mean_abs_recover_err,
@@ -594,6 +743,95 @@ def main() -> int:
         json.dump(summary, f, indent=2, sort_keys=True)
         f.write("\n")
 
+    # ------------------------------------------------------------------
+    # Drift gate + pairing manifest
+    # ------------------------------------------------------------------
+    drift_reject_reasons: list[str] = []
+    cum_threshold = float(args.drift_reject_max_cum_err_s)
+    int_threshold = float(args.drift_reject_mean_interval_err_s)
+    if np.isfinite(max_abs_cum_err) and max_abs_cum_err > cum_threshold:
+        drift_reject_reasons.append(
+            f"max |cum_catch_err|={max_abs_cum_err:.3f}s > {cum_threshold:.3f}s"
+        )
+    if np.isfinite(mean_abs_interval_err) and mean_abs_interval_err > int_threshold:
+        drift_reject_reasons.append(
+            f"mean |interval_err|={mean_abs_interval_err:.3f}s > {int_threshold:.3f}s"
+        )
+
+    pairing_ctx: dict[str, Any] | None = None
+    if args.auto_pair:
+        try:
+            ctx = auto_pair_run(
+                run_dir=run_dir,
+                registry_path=args.session_registry or DEFAULT_SESSION_REGISTRY,
+            )
+            pairing_ctx = ctx.to_dict()
+        except (FileNotFoundError, LookupError):
+            pairing_ctx = None
+
+    accepted_ranges: list[list[int]] = []
+    if not result.manifest.empty:
+        stroke_ids = result.manifest["video_stroke_idx"].astype(int).tolist()
+        if stroke_ids:
+            start = stroke_ids[0]
+            prev = start
+            for s in stroke_ids[1:]:
+                if s == prev + 1:
+                    prev = s
+                    continue
+                accepted_ranges.append([int(start), int(prev)])
+                start = s
+                prev = s
+            accepted_ranges.append([int(start), int(prev)])
+
+    pairing_manifest: dict[str, Any] = {
+        "schema_version": 1,
+        "run_dir": str(run_dir),
+        "session_id": pairing_ctx.get("session_id") if pairing_ctx else None,
+        "athlete_id": pairing_ctx.get("athlete_id") if pairing_ctx else None,
+        "active_side": pairing_ctx.get("active_side") if pairing_ctx else None,
+        "rp3_clean_csv": str(rp3_clean_csv),
+        "anchor": {
+            "video_stroke_idx": int(args.anchor_video_stroke_idx),
+            "video_stroke_label": int(result.manifest.iloc[0]["video_stroke_idx"]),
+            "rp3_row_idx": int(result.manifest.iloc[0]["rp3_row_idx"]),
+            "rp3_stroke_number": int(result.manifest.iloc[0]["rp3_stroke_number"]),
+            "source": (
+                "coarse_xcorr"
+                if (xcorr_result is not None and args.anchor_rp3_row_idx is None and args.anchor_rp3_stroke_number is None)
+                else "explicit"
+            ),
+        },
+        "coarse_xcorr": (xcorr_result.to_dict() if xcorr_result is not None else None),
+        "drift_metrics": {
+            "mean_abs_cum_catch_err_s": mean_abs_cum_err,
+            "max_abs_cum_catch_err_s": max_abs_cum_err,
+            "mean_abs_interval_err_s": mean_abs_interval_err,
+            "max_abs_interval_err_s": drift["max_abs_interval_err_s"],
+        },
+        "drift_gate": {
+            "reject_on_drift": bool(args.reject_on_drift),
+            "max_cum_err_threshold_s": cum_threshold,
+            "mean_interval_err_threshold_s": int_threshold,
+            "rejected": bool(drift_reject_reasons and args.reject_on_drift),
+            "reasons": drift_reject_reasons,
+        },
+        "accepted_video_stroke_ranges": accepted_ranges,
+        "qc_summary": {
+            "matched_video_strokes": int(len(result.manifest)),
+            "total_skipped_rp3_rows": skipped_total,
+        },
+        "outputs": {
+            "manifest_csv": str(manifest_csv),
+            "aligned_csv": str(aligned_csv),
+            "summary_json": str(summary_json),
+        },
+    }
+
+    with pairing_manifest_json.open("w", encoding="utf-8") as f:
+        json.dump(pairing_manifest, f, indent=2, sort_keys=True)
+        f.write("\n")
+
     print(f"Run: {run_dir.name}")
     print(f"RP3 CSV: {rp3_clean_csv.name}")
     print(
@@ -603,7 +841,7 @@ def main() -> int:
     )
     print(
         "Match quality: "
-        f"mean |cum|={mean_abs_cum_err:.3f}s, "
+        f"mean |cum|={mean_abs_cum_err:.3f}s, max |cum|={max_abs_cum_err:.3f}s, "
         f"mean |interval|={mean_abs_interval_err:.3f}s, "
         f"skipped RP3 rows={skipped_total}"
     )
@@ -611,6 +849,19 @@ def main() -> int:
     print(f"  {manifest_csv}")
     print(f"  {aligned_csv}")
     print(f"  {summary_json}")
+    print(f"  {pairing_manifest_json}")
+
+    if drift_reject_reasons:
+        if args.reject_on_drift:
+            print("ERROR: pairing rejected due to excessive drift:")
+            for reason in drift_reject_reasons:
+                print(f"  - {reason}")
+            print("  (bypass with --no-reject-on-drift if you know what you're doing)")
+            return 2
+        print("WARNING: drift exceeds hard-reject thresholds (not enforced):")
+        for reason in drift_reject_reasons:
+            print(f"  - {reason}")
+
     return 0
 
 

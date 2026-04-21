@@ -81,17 +81,22 @@ Before modeling, each video session must be paired to the correct RP3 workout ex
 
 1. Pair by recording context:
    - date/time, athlete identity, and piece/workout identity.
+   - Implemented: `auto_pair_run` in `inference/pair_session.py` resolves `rp3_clean_csv`, `active_side`, and optional anchor/facing from `session_registry.csv`; exposed to CLIs via `match_rp3_cli.py --auto-pair`.
 2. Use stroke progression signal for boundary anchoring:
    - chain-insert-to-handle progression from `stroke_signal.csv` is the primary video-side stroke structure signal.
 3. Coarse synchronization:
    - align video and RP3 stroke streams using stroke-rate/inter-stroke interval cross-correlation.
+   - Implemented: `coarse_sync_anchor` in `inference/pair_session.py` minimizes mean |cycle-duration diff| across integer offsets; invoked by default in `match_rp3_cli.py` when no explicit anchor is provided.
 4. Fine synchronization:
    - align catch/finish sequences to maximize boundary agreement over a calibration window.
+   - Implemented: dynamic-programming catch matcher in `inference/match_rp3_cli.py::_build_match_manifest`.
 5. Acceptance tests:
    - sustained stroke-rate mismatch above threshold (for example ~1 spm) fails pairing.
    - low inter-stroke timing agreement fails pairing.
+   - Implemented: `--reject-on-drift` flag (default on) in `match_rp3_cli.py` hard-rejects pairings whose max |cum_catch_err| or mean |interval_err| exceed configurable thresholds.
 6. Lock mapping in a pairing manifest:
    - session ID, athlete ID, offset, drift estimate, accepted stroke index ranges, QC metrics.
+   - Implemented: `pairing_manifest.json` emitted by `match_rp3_cli.py` next to `rp3_match_manifest.csv` with session metadata, coarse-xcorr diagnostics, drift metrics, accepted ranges, and QC counts.
 
 If pairing drift exists, reject the segment rather than weakly aligning noisy labels.
 
@@ -103,7 +108,8 @@ Given the unilateral choice:
    - `knee_active_deg`, `hip_active_deg`, `elbow_active_deg`.
 3. Map from left/right source columns based on `active_side`.
 4. Mirror-normalize sign conventions so feature semantics are consistent across camera sides.
-5. Keep trunk and spine signals as shared central features.
+5. Keep trunk and spine signals as shared central features; add `head_vs_trunk_deg`.
+   - Implemented: canonical feature names, source-column mapping, and mirror-normalization policy live in `inference/feature_contract.py` (`build_side_map`, `apply_mirror_normalization`). Used by `inference_cli.py`, `segment_features.py`, and `predict_force_cli.py`. `head_vs_trunk_deg` is included in `ANGLE_COLS` of `build_training_dataset.py` and in `CANONICAL_CENTRAL`.
 
 ## 7) Drive-Domain Alignment
 
@@ -163,10 +169,12 @@ Use two target representations in parallel during research:
 1. **Direct curve bins**
    - model predicts force at each valid bin.
    - use masked loss for bins beyond actual stroke length.
+   - Implemented: Stage B predicts the full `s`-grid curve; `stageB_sequence_models` in `inference/modeling.py` now uses a masked MSE loss (`force_mask`) and an optional derivative regularizer (`--stageB-lambda-deriv`).
 
 2. **Low-dimensional curve shape**
    - start with standard PCA on normalized force curves.
    - optionally evaluate functional PCA as a follow-up if boundary/smoothness handling becomes limiting.
+   - Implemented: `inference/functional_pca.py` provides a B-spline-basis functional PCA drop-in for `sklearn.decomposition.PCA`. `build_training_dataset.py --target-representation {standard,fpca,both}` fits either/both decompositions and writes `fpca_model.joblib`, `fpca_coeffs.npy`, `fpca_explained_variance.csv`. `modeling.py --target-representation {pca,fpca}` selects which target columns Stage A consumes.
 
 ## 11) Modeling Path (with Stage 0 Sanity Baselines)
 
@@ -193,10 +201,12 @@ Purpose:
 - Inputs: aligned per-stroke feature sequences on `s` grid.
 - Targets: full force curve.
 - Models: temporal convolutional network or transformer encoder.
+  - Implemented: `_ForceCurveTCN` and `_ForceCurveTransformer` in `inference/modeling.py`. Architecture selected via `--stageB-arch {tcn,transformer}`. Coordination scalars (onsets, lags, range fractions, drive_ratio) can be broadcast as constant extra input channels via `--stageB-use-coordination` (default on).
 
 Loss strategy:
 - start with masked pointwise force loss.
 - add shape regularizers or derivative losses only if errors show pathological behavior and improvements are verified on held-out data.
+  - Implemented: masked MSE via `force_mask` and first-derivative penalty via `--stageB-lambda-deriv`.
 
 ## 12) Evaluation Protocol
 
@@ -237,6 +247,11 @@ Loss strategy:
    - confidence/quality score per stroke.
 
 No RP3 input is used in this inference stage.
+
+Implemented end-to-end:
+- Self-describing bundle: `inference/model_bundle.py` + `inference/export_model_bundle.py` package `s_grid.npy`, (f)PCA model, Stage A sklearn model, and Stage B state + `arch_config.json` + `feature_norm.npz` + `target_norm.npz` under `model_bundle/` with a `manifest.json`.
+- Shared feature extraction: `inference/segment_features.py` provides `build_stroke_feature_sequence` and a no-RP3 `build_pose_drive_segments` that both training (`inference_cli.py`) and inference consume.
+- Standalone CLI: `inference/predict_force_cli.py --run-dir <run> --model-dir <bundle>` runs drive detection, builds per-stroke feature sequences on the bundle `s_grid`, predicts force curves (Stage A PCA/fPCA coefficients or Stage B direct curve), and writes normalized curves, RP3-style `force_at_<d>cm` tables, and derived metrics (peak force, peak position, impulse) plus a per-stroke `stroke_quality_score`.
 
 ## 14) Quality Control and Failure Modes
 

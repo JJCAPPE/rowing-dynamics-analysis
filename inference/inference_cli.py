@@ -43,6 +43,11 @@ from match_rp3_cli import (
     _resolve_anchor_rp3_idx as _resolve_rp3_anchor_idx,
 )
 from build_training_dataset import build_training_dataset as _build_training_dataset
+from feature_contract import (
+    apply_mirror_normalization,
+    build_side_map,
+    canonical_columns,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -814,14 +819,13 @@ def _build_force_pose_segments(
 
     if active_side not in {"left", "right"}:
         raise ValueError("active_side must be 'left' or 'right'.")
-    side_map = {
-        "knee_active_deg": f"{active_side}_knee_deg",
-        "hip_active_deg": f"{active_side}_hip_deg",
-        "elbow_active_deg": f"{active_side}_elbow_deg",
-        "trunk_vs_horizontal_deg": "trunk_vs_horizontal_deg",
-        "spine_flexion_deg": "spine_flexion_deg",
-    }
-    missing = [src for src in side_map.values() if src not in merged.columns]
+    include_head = "head_vs_trunk_deg" in merged.columns
+    side_map = build_side_map(active_side, include_head=include_head)
+    required_sources = [
+        src for canonical, src in side_map.items()
+        if canonical != "head_vs_trunk_deg"
+    ]
+    missing = [src for src in required_sources if src not in merged.columns]
     if missing:
         raise ValueError(f"Missing angle columns for active side mapping: {missing}")
 
@@ -965,7 +969,7 @@ def _build_force_pose_segments(
         if nan_frac > MAX_NAN_FRAC_ANGLES:
             qc_flags.append("qc_tracking_sparse")
 
-        # -- Mirror-normalize trunk_vs_horizontal_deg (Section 6.4) --
+        # -- Detect rower facing from trunk posture at the catch --
         trunk_src = side_map["trunk_vs_horizontal_deg"]
         trunk_raw_for_detect = pd.to_numeric(
             drive[trunk_src], errors="coerce"
@@ -974,16 +978,18 @@ def _build_force_pose_segments(
             detected_facing = _detect_rower_facing(trunk_raw_for_detect)
         else:
             detected_facing = rower_facing
-        need_trunk_flip = detected_facing == "left"
+
+        # -- Mirror-normalize canonical angle chain (Section 6) --
+        mirrored_angles = apply_mirror_normalization(
+            drive, side_map, facing=detected_facing,
+        )
 
         # -- Savitzky-Golay smoothing + time-domain derivatives --
         smoothed_angles: dict[str, np.ndarray] = {}
         dtheta_dt_time: dict[str, np.ndarray] = {}
         max_angular_vel = 0.0
-        for out_col, src_col in side_map.items():
-            raw = pd.to_numeric(drive[src_col], errors="coerce").to_numpy(dtype=np.float64)
-            if need_trunk_flip and out_col == "trunk_vs_horizontal_deg":
-                raw = 180.0 - raw
+        for out_col in side_map.keys():
+            raw = mirrored_angles[out_col]
             smooth = _savgol_smooth(raw)
             smoothed_angles[out_col] = smooth
             if np.isfinite(smooth).sum() >= 2 and np.isfinite(time_arr).sum() >= 2:

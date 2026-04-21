@@ -106,6 +106,8 @@ Notes:
 | `--dataset-force-col` | `force_raw` | `force_raw` (Newtons) or `force_n` (PDF-normalized) as target |
 | `--dataset-onset-frac` | 0.15 | onset threshold fraction for phase-lag coordination features |
 
+`build_training_dataset.py` additionally accepts `--target-representation {standard,fpca,both}` (default `standard`). When `fpca` or `both`, a functional PCA (B-spline basis + PCA on coefficients) is fit on the peak-normalized curves and saved as `fpca_model.joblib` / `fpca_coeffs.npy` / `fpca_explained_variance.csv`. Use `--fpca-internal-knots` to tune the basis. `modeling.py --target-representation {pca,fpca}` selects which target columns Stage A/0 consume. Stage B (direct curve) is independent of this choice.
+
 ---
 
 ## `build_training_dataset.py`
@@ -172,11 +174,48 @@ Standalone matcher when `inference/drive_events.csv` already exists and you only
 
 If `--rp3-clean-csv` is omitted, auto-selects from `<run>/rp3/*-clean.csv`.
 
+### Auto-pairing and coarse sync
+
+- `--auto-pair` resolves `rp3_clean_csv` and `anchor_rp3_stroke_number` from `session_registry.csv` (optional columns: `rower_facing`, `anchor_rp3_stroke_number`, `anchor_video_stroke_idx`, `date`, `piece_id`).
+- When no explicit anchor is supplied the matcher runs a cross-correlation coarse sync on cycle-duration intervals (`coarse_sync_anchor` in `pair_session.py`). Disable with `--no-xcorr-anchor`.
+- `--reject-on-drift` (default on) hard-fails pairings whose max `|cum_catch_err|` exceeds `--drift-reject-max-cum-err-s` (default 3.0 s) or whose mean `|interval_err|` exceeds `--drift-reject-mean-interval-err-s` (default 0.5 s). Use `--no-reject-on-drift` to demote to warning.
+
 ### Outputs (`<run_dir>/inference/`)
 
 - `rp3_match_manifest.csv`
 - `rp3_video_aligned_strokes.csv`
 - `rp3_match_summary.json`
+- `pairing_manifest.json` — structured session/anchor/drift/QC summary including coarse-xcorr diagnostics and accepted video stroke ranges.
+
+---
+
+## `predict_force_cli.py`
+
+Video-only force-curve inference CLI. Loads a portable model bundle and predicts per-stroke force curves from a single run directory.
+
+```bash
+.venv/bin/python inference/predict_force_cli.py \
+  --run-dir runs/<run_name> \
+  --model-dir trained_models/<bundle>
+```
+
+Outputs (`<run_dir>/inference/predictions/`):
+
+- `force_curves_normalized.npy` — `(N, n_grid)` predictions on the bundle `s_grid`.
+- `force_at_cm.csv` — RP3-style `force_at_<d>cm` table.
+- `stroke_metrics.csv` — derived metrics (peak force, peak position, impulse, `stroke_quality_score`).
+
+See `inference/model_bundle.py` for the bundle layout (`s_grid.npy`, `pca_model.joblib` / `fpca_model.joblib`, `stageA/`, `stageB/`, `manifest.json`).
+
+Create a bundle from training outputs:
+
+```bash
+.venv/bin/python inference/export_model_bundle.py \
+  --dataset-dir training_dataset/ \
+  --modeling-dir modeling_results/ \
+  --bundle-dir trained_models/<bundle>/ \
+  --active-side-default right
+```
 
 ---
 

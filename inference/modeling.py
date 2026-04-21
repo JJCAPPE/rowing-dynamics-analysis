@@ -52,10 +52,22 @@ ANGLE_COLS = [
     "elbow_active_deg",
     "trunk_vs_horizontal_deg",
     "spine_flexion_deg",
+    "head_vs_trunk_deg",
 ]
 SUMMARY_SUFFIXES = ["_min", "_max", "_range", "_mean", "_s_at_max"]
 KINEMATIC_SUMMARY_COLS = [
     f"{a}{s}" for a in ANGLE_COLS for s in SUMMARY_SUFFIXES
+]
+COORDINATION_COLS = [
+    "onset_knee_s",
+    "onset_trunk_s",
+    "onset_arms_s",
+    "lag_knee_to_trunk_s",
+    "lag_trunk_to_arms_s",
+    "knee_range_frac",
+    "hip_range_frac",
+    "elbow_range_frac",
+    "drive_ratio",
 ]
 
 
@@ -80,6 +92,11 @@ def _load_dataset(dataset_dir: Path) -> dict[str, Any]:
     d["kinematic_sequences"] = np.load(dataset_dir / "kinematic_sequences.npy")
     d["s_grid"] = np.load(dataset_dir / "s_grid.npy")
     d["pca_model"] = joblib.load(dataset_dir / "pca_model.joblib")
+    fpca_path = dataset_dir / "fpca_model.joblib"
+    if fpca_path.exists():
+        d["fpca_model"] = joblib.load(fpca_path)
+    else:
+        d["fpca_model"] = None
     with open(dataset_dir / "feature_names.json") as f:
         d["feature_names"] = json.load(f)
     with open(dataset_dir / "dataset_summary.json") as f:
@@ -186,11 +203,15 @@ def stage0_reproducibility(
 def _extract_pca_targets(
     strokes_df: pd.DataFrame,
     n_pca_targets: int,
+    target_prefix: str = "pca",
 ) -> np.ndarray:
-    cols = [f"pca_{i}" for i in range(n_pca_targets)]
+    cols = [f"{target_prefix}_{i}" for i in range(n_pca_targets)]
     missing = [c for c in cols if c not in strokes_df.columns]
     if missing:
-        raise ValueError(f"Missing PCA target columns: {missing}")
+        raise ValueError(
+            f"Missing {target_prefix.upper()} target columns: {missing}. "
+            "Rebuild the dataset with a matching --target-representation."
+        )
     return strokes_df[cols].to_numpy(dtype=np.float64)
 
 
@@ -213,20 +234,24 @@ def _run_pca_regression_cv(
     *,
     strokes_df: pd.DataFrame,
     force_curves: np.ndarray,
-    pca_model: PCA,
+    pca_model: Any,
     s_grid: np.ndarray,
     feature_cols: list[str],
     n_pca_targets: int,
     cv_splitter: Generator[tuple[np.ndarray, np.ndarray], None, None],
     model_factory: Any,
     model_name: str,
+    target_prefix: str = "pca",
 ) -> dict[str, Any]:
     """Run a CV loop for a PCA-coefficient regression model.
 
     Returns per-fold and aggregated metrics, plus the model refitted on all data.
+    The ``pca_model`` may be either ``sklearn.decomposition.PCA`` or any duck-typed
+    object that exposes ``n_components_`` and ``inverse_transform`` (e.g.
+    :class:`inference.functional_pca.FunctionalPCA`).
     """
     X = _extract_features(strokes_df, feature_cols)
-    Y_pca = _extract_pca_targets(strokes_df, n_pca_targets)
+    Y_pca = _extract_pca_targets(strokes_df, n_pca_targets, target_prefix=target_prefix)
     peak_forces = _get_peak_forces(force_curves)
 
     N = X.shape[0]
@@ -296,11 +321,12 @@ def _run_pca_regression_cv(
 def stage0_metadata_baseline(
     strokes_df: pd.DataFrame,
     force_curves: np.ndarray,
-    pca_model: PCA,
+    pca_model: Any,
     s_grid: np.ndarray,
     cv_method: str = "time_block",
     n_splits: int = 5,
     n_pca_targets: int = 5,
+    target_prefix: str = "pca",
 ) -> dict[str, Any]:
     """Stage 0.2: metadata-only baseline (Ridge on stroke_rate, stroke_length, drive_time)."""
     feature_cols = [c for c in METADATA_FEATURE_COLS if c in strokes_df.columns]
@@ -321,6 +347,7 @@ def stage0_metadata_baseline(
         cv_splitter=cv,
         model_factory=_make_ridge,
         model_name="metadata_ridge",
+        target_prefix=target_prefix,
     )
 
 
@@ -355,11 +382,12 @@ def check_baseline_gate(
 def stageA_kinematic_baselines(
     strokes_df: pd.DataFrame,
     force_curves: np.ndarray,
-    pca_model: PCA,
+    pca_model: Any,
     s_grid: np.ndarray,
     cv_method: str = "time_block",
     n_splits: int = 5,
     n_pca_targets: int = 5,
+    target_prefix: str = "pca",
 ) -> dict[str, Any]:
     """Stage A: kinematic summary features -> PCA coefficients.
 
@@ -368,7 +396,8 @@ def stageA_kinematic_baselines(
     """
     meta_cols = [c for c in METADATA_FEATURE_COLS if c in strokes_df.columns]
     kin_cols = [c for c in KINEMATIC_SUMMARY_COLS if c in strokes_df.columns]
-    feature_cols = meta_cols + kin_cols
+    coord_cols = [c for c in COORDINATION_COLS if c in strokes_df.columns]
+    feature_cols = meta_cols + kin_cols + coord_cols
     if len(feature_cols) < 3:
         raise ValueError(f"Too few feature columns found ({len(feature_cols)}). "
                          "Ensure strokes.csv has scalar kinematic summaries.")
@@ -400,6 +429,7 @@ def stageA_kinematic_baselines(
             cv_splitter=cv,
             model_factory=factory,
             model_name=f"stageA_{name}",
+            target_prefix=target_prefix,
         )
         importance = _extract_importance(res["final_model"], feature_cols, name)
         res["feature_importance"] = importance
@@ -543,6 +573,106 @@ class _ForceCurveTCN:
         return self.model
 
 
+class _ForceCurveTransformer:
+    """Wrapper that builds and holds a Transformer encoder Stage B model.
+
+    Architecture: input projection -> sinusoidal positional encoding ->
+    ``n_layers`` of ``torch.nn.TransformerEncoderLayer`` (pre-norm) ->
+    linear head projecting to a single force value per grid step.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int = 128,
+        n_layers: int = 4,
+        n_heads: int = 4,
+        dropout: float = 0.1,
+        ff_dim: int | None = None,
+    ):
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.n_layers = n_layers
+        self.n_heads = n_heads
+        self.dropout = dropout
+        self.ff_dim = ff_dim if ff_dim is not None else 4 * hidden_channels
+        self.model = None
+
+    def build(self):
+        torch, nn = _import_torch()
+        import math as _math
+
+        class SinusoidalPosEncoding(nn.Module):
+            def __init__(self, d_model: int, max_len: int = 1024):
+                super().__init__()
+                pe = torch.zeros(max_len, d_model)
+                position = torch.arange(0, max_len, dtype=torch.float32).unsqueeze(1)
+                div_term = torch.exp(
+                    torch.arange(0, d_model, 2, dtype=torch.float32)
+                    * (-_math.log(10000.0) / d_model)
+                )
+                pe[:, 0::2] = torch.sin(position * div_term)
+                pe[:, 1::2] = torch.cos(position * div_term)
+                self.register_buffer("pe", pe.unsqueeze(0))
+
+            def forward(self, x):
+                return x + self.pe[:, : x.size(1)]
+
+        class ForceCurveTransformer(nn.Module):
+            def __init__(self, in_ch, hidden, n_layers, n_heads, dropout, ff_dim):
+                super().__init__()
+                self.input_proj = nn.Linear(in_ch, hidden)
+                self.pos_enc = SinusoidalPosEncoding(hidden)
+                layer = nn.TransformerEncoderLayer(
+                    d_model=hidden,
+                    nhead=n_heads,
+                    dim_feedforward=ff_dim,
+                    dropout=dropout,
+                    batch_first=True,
+                    norm_first=True,
+                    activation="gelu",
+                )
+                self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+                self.head = nn.Linear(hidden, 1)
+
+            def forward(self, x):
+                x = self.input_proj(x)
+                x = self.pos_enc(x)
+                x = self.encoder(x)
+                return self.head(x).squeeze(-1)
+
+        self.model = ForceCurveTransformer(
+            self.in_channels,
+            self.hidden_channels,
+            self.n_layers,
+            self.n_heads,
+            self.dropout,
+            self.ff_dim,
+        )
+        return self.model
+
+
+def _append_coordination_channels(
+    kinematic_sequences: np.ndarray,
+    strokes_df: pd.DataFrame,
+    cols: list[str],
+) -> tuple[np.ndarray, list[str]]:
+    """Broadcast each coordination scalar as a constant extra channel.
+
+    Returns ``(new_sequences, present_cols)`` so the caller can record
+    which columns were actually stacked.
+    """
+    present = [c for c in cols if c in strokes_df.columns]
+    if not present:
+        return kinematic_sequences, []
+    N, G, K = kinematic_sequences.shape
+    extra = np.full((N, G, len(present)), np.nan, dtype=np.float64)
+    for k, col in enumerate(present):
+        vals = pd.to_numeric(strokes_df[col], errors="coerce").to_numpy(dtype=np.float64)
+        extra[:, :, k] = vals[:, None]
+    return np.concatenate([kinematic_sequences, extra], axis=2), present
+
+
 def stageB_sequence_models(
     kinematic_sequences: np.ndarray,
     force_curves: np.ndarray,
@@ -560,15 +690,46 @@ def stageB_sequence_models(
     max_epochs: int = 300,
     patience: int = 20,
     batch_size: int = 32,
+    use_coordination: bool = True,
+    arch: str = "tcn",
+    lambda_deriv: float = 0.0,
+    transformer_layers: int = 4,
+    transformer_heads: int = 4,
+    transformer_hidden: int = 128,
+    force_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    """Stage B: TCN sequence model with CV evaluation."""
+    """Stage B: sequence model with CV evaluation.
+
+    ``arch`` selects between ``tcn`` and ``transformer``.  ``lambda_deriv``
+    adds a finite-difference derivative MSE regularizer to the loss.
+    ``force_mask`` is an optional ``(N, G)`` bool array used for masked
+    pointwise loss; when ``None`` the loss reduces to a standard MSE.
+    """
     torch, nn = _import_torch()
 
+    coord_cols_used: list[str] = []
+    if use_coordination:
+        kinematic_sequences, coord_cols_used = _append_coordination_channels(
+            kinematic_sequences, strokes_df, COORDINATION_COLS,
+        )
+
     N, G, K = kinematic_sequences.shape
+    if force_mask is None:
+        mask_array = np.ones_like(force_curves, dtype=bool)
+    else:
+        mask_array = np.asarray(force_mask, dtype=bool)
+        if mask_array.shape != force_curves.shape:
+            raise ValueError(
+                f"force_mask shape {mask_array.shape} does not match force_curves shape {force_curves.shape}"
+            )
     y_pred_all = np.full_like(force_curves, np.nan)
     fold_metrics: list[dict[str, Any]] = []
     best_state_dict = None
     best_fold_rmse = float("inf")
+    best_feat_mean: np.ndarray | None = None
+    best_feat_std: np.ndarray | None = None
+    best_force_mean: float | None = None
+    best_force_std: float | None = None
 
     cv = _get_cv_splitter(strokes_df, cv_method, n_splits)
     for fold_i, (train_idx, test_idx) in enumerate(cv):
@@ -583,6 +744,7 @@ def stageB_sequence_models(
         )
         X_train = X_train[finite_train]
         y_train = y_train[finite_train]
+        mask_train_full = mask_array[train_idx][finite_train]
         if X_train.shape[0] < 5:
             continue
 
@@ -591,6 +753,8 @@ def stageB_sequence_models(
         y_val = y_train[-val_size:]
         X_train = X_train[:-val_size]
         y_train = y_train[:-val_size]
+        mask_val = mask_train_full[-val_size:]
+        mask_tr = mask_train_full[:-val_size]
         if X_train.shape[0] < 3:
             continue
 
@@ -615,23 +779,48 @@ def stageB_sequence_models(
         np.nan_to_num(y_val_n, copy=False, nan=0.0)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        tcn_wrapper = _ForceCurveTCN(
-            in_channels=K,
-            hidden_channels=hidden_channels,
-            n_blocks=n_blocks,
-            kernel_size=kernel_size,
-            dropout=dropout,
-        )
-        model = tcn_wrapper.build().to(device)
+        if arch == "tcn":
+            tcn_wrapper = _ForceCurveTCN(
+                in_channels=K,
+                hidden_channels=hidden_channels,
+                n_blocks=n_blocks,
+                kernel_size=kernel_size,
+                dropout=dropout,
+            )
+            model = tcn_wrapper.build().to(device)
+        elif arch == "transformer":
+            tr_wrapper = _ForceCurveTransformer(
+                in_channels=K,
+                hidden_channels=transformer_hidden,
+                n_layers=transformer_layers,
+                n_heads=transformer_heads,
+                dropout=dropout,
+            )
+            model = tr_wrapper.build().to(device)
+        else:
+            raise ValueError(f"Unknown Stage B arch: {arch}")
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
-        loss_fn = nn.MSELoss()
 
         X_train_t = torch.tensor(X_train, dtype=torch.float32, device=device)
         y_train_t = torch.tensor(y_train_n, dtype=torch.float32, device=device)
+        m_train_t = torch.tensor(mask_tr, dtype=torch.float32, device=device)
         X_val_t = torch.tensor(X_val, dtype=torch.float32, device=device)
         y_val_t = torch.tensor(y_val_n, dtype=torch.float32, device=device)
+        m_val_t = torch.tensor(mask_val, dtype=torch.float32, device=device)
+
+        def _masked_mse(pred, target, mask):
+            diff = (pred - target) ** 2
+            if mask is None:
+                return diff.mean()
+            denom = mask.sum().clamp_min(1.0)
+            return (diff * mask).sum() / denom
+
+        def _deriv_loss(pred, target):
+            dpred = pred[:, 1:] - pred[:, :-1]
+            dtarget = target[:, 1:] - target[:, :-1]
+            return ((dpred - dtarget) ** 2).mean()
 
         best_val_loss = float("inf")
         epochs_no_improve = 0
@@ -646,9 +835,12 @@ def stageB_sequence_models(
                 idx = perm[start : start + batch_size]
                 xb = X_train_t[idx]
                 yb = y_train_t[idx]
+                mb = m_train_t[idx]
                 optimizer.zero_grad()
                 pred = model(xb)
-                loss = loss_fn(pred, yb)
+                loss = _masked_mse(pred, yb, mb)
+                if lambda_deriv > 0.0:
+                    loss = loss + lambda_deriv * _deriv_loss(pred, yb)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
@@ -659,7 +851,7 @@ def stageB_sequence_models(
             model.eval()
             with torch.no_grad():
                 val_pred = model(X_val_t)
-                val_loss = loss_fn(val_pred, y_val_t).item()
+                val_loss = _masked_mse(val_pred, y_val_t, m_val_t).item()
 
             if val_loss < best_val_loss - 1e-6:
                 best_val_loss = val_loss
@@ -691,6 +883,10 @@ def stageB_sequence_models(
         if fold_rmse < best_fold_rmse:
             best_fold_rmse = fold_rmse
             best_state_dict = best_epoch_state
+            best_feat_mean = feat_mean.astype(np.float64).copy()
+            best_feat_std = feat_std.astype(np.float64).copy()
+            best_force_mean = float(force_mean)
+            best_force_std = float(force_std)
 
     has_pred = np.any(np.isfinite(y_pred_all), axis=1)
     if has_pred.sum() > 0:
@@ -699,19 +895,44 @@ def stageB_sequence_models(
         )
     else:
         overall = {"rmse_median": float("nan")}
-    overall["model"] = "stageB_tcn"
+    model_name = f"stageB_{arch}"
+    overall["model"] = model_name
+
+    arch_config: dict[str, Any] = {
+        "arch": arch,
+        "in_channels": int(K),
+        "dropout": dropout,
+        "use_coordination": bool(use_coordination),
+        "coordination_cols": list(coord_cols_used),
+        "lambda_deriv": float(lambda_deriv),
+    }
+    if arch == "tcn":
+        arch_config.update(
+            hidden_channels=hidden_channels,
+            n_blocks=n_blocks,
+            kernel_size=kernel_size,
+        )
+    elif arch == "transformer":
+        arch_config.update(
+            hidden_channels=transformer_hidden,
+            n_layers=transformer_layers,
+            n_heads=transformer_heads,
+        )
 
     return {
-        "model_name": "stageB_tcn",
+        "model_name": model_name,
         "overall_metrics": overall,
         "fold_metrics": fold_metrics,
         "best_state_dict": best_state_dict,
         "cv_predictions": y_pred_all,
-        "architecture": {
-            "hidden_channels": hidden_channels,
-            "n_blocks": n_blocks,
-            "kernel_size": kernel_size,
-            "dropout": dropout,
+        "architecture": arch_config,
+        "feature_norm": {
+            "mean": best_feat_mean,
+            "std": best_feat_std,
+        },
+        "target_norm": {
+            "mean": best_force_mean,
+            "std": best_force_std,
         },
     }
 
@@ -729,6 +950,7 @@ def write_evaluation_report(
     all_results: list[dict[str, Any]],
     cv_method: str,
     n_splits: int,
+    target_representation: str = "pca",
 ) -> None:
     """Write a structured evaluation report as JSON and human-readable text."""
     report: dict[str, Any] = {
@@ -736,6 +958,7 @@ def write_evaluation_report(
         "cv_method": cv_method,
         "n_splits": n_splits,
         "alignment_integrity": alignment_metrics,
+        "target_representation": target_representation,
         "model_results": all_results,
     }
 
@@ -750,6 +973,7 @@ def write_evaluation_report(
     lines.append(f"  Regime:     {regime_info['regime']}")
     lines.append(f"  CV method:  {cv_method} (n_splits={n_splits})")
     lines.append(f"  Athletes:   {regime_info.get('n_athletes', '?')}")
+    lines.append(f"  Target:     {target_representation}")
     lines.append("")
     lines.append(f"  NOTE: {regime_info['disclaimer']}")
     lines.append("")
@@ -769,6 +993,41 @@ def write_evaluation_report(
     lines.append("-" * 72)
     if all_results:
         lines.append(format_metrics_table(all_results))
+
+        # Group side-by-side views for PCA vs fPCA and TCN vs Transformer.
+        targets_seen = sorted({r.get("target_representation", "unknown") for r in all_results})
+        archs_seen = sorted({
+            r.get("stage_b_arch") for r in all_results
+            if r.get("stage_b_arch") is not None
+        })
+        if len(targets_seen) > 1:
+            lines.append("")
+            lines.append("  Target-representation comparison (rmse_median):")
+            for t in targets_seen:
+                rmses = [
+                    r.get("rmse_median", float("nan"))
+                    for r in all_results
+                    if r.get("target_representation") == t
+                ]
+                rmses = [v for v in rmses if isinstance(v, (int, float)) and not np.isnan(v)]
+                if rmses:
+                    lines.append(f"    {t:12s}: best={min(rmses):.4f}  median={float(np.median(rmses)):.4f}  n={len(rmses)}")
+                else:
+                    lines.append(f"    {t:12s}: (no finite results)")
+        if len(archs_seen) > 1:
+            lines.append("")
+            lines.append("  Stage B architecture comparison (rmse_median):")
+            for a in archs_seen:
+                rmses = [
+                    r.get("rmse_median", float("nan"))
+                    for r in all_results
+                    if r.get("stage_b_arch") == a
+                ]
+                rmses = [v for v in rmses if isinstance(v, (int, float)) and not np.isnan(v)]
+                if rmses:
+                    lines.append(f"    {a:12s}: best={min(rmses):.4f}  median={float(np.median(rmses)):.4f}  n={len(rmses)}")
+                else:
+                    lines.append(f"    {a:12s}: (no finite results)")
     else:
         lines.append("  (no model results)")
     lines.append("")
@@ -877,6 +1136,41 @@ def _parse_args() -> argparse.Namespace:
         default=32,
         help="TCN batch size (default: 32).",
     )
+    parser.add_argument(
+        "--stageB-arch",
+        choices=["tcn", "transformer"],
+        default="tcn",
+        help="Stage B encoder architecture (default: tcn).",
+    )
+    parser.add_argument(
+        "--stageB-use-coordination",
+        dest="stageB_use_coordination",
+        action="store_true",
+        default=True,
+        help="Append coordination scalars as constant input channels (default: on).",
+    )
+    parser.add_argument(
+        "--no-stageB-use-coordination",
+        dest="stageB_use_coordination",
+        action="store_false",
+        help="Disable coordination scalar input channels.",
+    )
+    parser.add_argument(
+        "--stageB-lambda-deriv",
+        type=float,
+        default=0.0,
+        help="Weight of derivative regularizer in Stage B loss (default: 0.0 = off).",
+    )
+    parser.add_argument(
+        "--target-representation",
+        choices=["pca", "fpca"],
+        default="pca",
+        help=(
+            "Target curve representation for Stage A/B: 'pca' (default) uses "
+            "pca_0..pca_N columns; 'fpca' uses fpca_0..fpca_N columns when the "
+            "dataset was built with --target-representation fpca/both."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -901,8 +1195,24 @@ def main() -> int:
     strokes_df = ds["strokes_df"]
     force_curves = ds["force_curves"]
     pca_model = ds["pca_model"]
+    fpca_model = ds.get("fpca_model")
     s_grid = ds["s_grid"]
     kinematic_sequences = ds["kinematic_sequences"]
+
+    target_prefix = args.target_representation
+    if target_prefix == "fpca":
+        if fpca_model is None:
+            print(
+                "Error: --target-representation fpca requested but fpca_model.joblib "
+                "is missing. Rebuild the dataset with "
+                "build_training_dataset.py --target-representation fpca (or both)."
+            )
+            return 1
+        target_model = fpca_model
+        print(f"Target representation: fPCA ({fpca_model.n_components_} components)")
+    else:
+        target_model = pca_model
+        print(f"Target representation: PCA ({pca_model.n_components_} components)")
 
     valid_mask = (
         np.all(np.isfinite(force_curves), axis=1)
@@ -943,13 +1253,15 @@ def main() -> int:
         s0_result = stage0_metadata_baseline(
             strokes_df,
             force_curves,
-            pca_model,
+            target_model,
             s_grid,
             cv_method=args.cv_method,
             n_splits=args.n_splits,
             n_pca_targets=args.n_pca_targets,
+            target_prefix=target_prefix,
         )
         gate_metrics = s0_result["overall_metrics"]
+        gate_metrics["target_representation"] = target_prefix
         print(f"  RMSE median: {gate_metrics.get('rmse_median', float('nan')):.4f}")
         print(f"  Peak force err median: {gate_metrics.get('peak_force_err_median', float('nan')):.4f}")
         print(f"  Impulse err median: {gate_metrics.get('impulse_err_median', float('nan')):.4f}")
@@ -980,11 +1292,12 @@ def main() -> int:
         sa_result = stageA_kinematic_baselines(
             strokes_df,
             force_curves,
-            pca_model,
+            target_model,
             s_grid,
             cv_method=args.cv_method,
             n_splits=args.n_splits,
             n_pca_targets=args.n_pca_targets,
+            target_prefix=target_prefix,
         )
 
         sa_out: dict[str, Any] = {"evaluation_regime": regime_info["regime"], "feature_cols": sa_result["feature_cols"], "models": {}}
@@ -993,6 +1306,7 @@ def main() -> int:
 
         for name, res in sa_result["models"].items():
             m = res["overall_metrics"]
+            m["target_representation"] = target_prefix
             passed = "N/A"
             if gate_metrics is not None:
                 passed = "PASS" if check_baseline_gate(gate_metrics, m) else "FAIL"
@@ -1055,12 +1369,17 @@ def main() -> int:
                 max_epochs=args.tcn_epochs,
                 patience=args.tcn_patience,
                 batch_size=args.tcn_batch_size,
+                use_coordination=args.stageB_use_coordination,
+                arch=args.stageB_arch,
+                lambda_deriv=args.stageB_lambda_deriv,
             )
             m = sb_result["overall_metrics"]
+            m["target_representation"] = "direct_curve"
+            m["stage_b_arch"] = args.stageB_arch
             passed = "N/A"
             if gate_metrics is not None:
                 passed = "PASS" if check_baseline_gate(gate_metrics, m) else "FAIL"
-            print(f"  TCN: RMSE={m.get('rmse_median', float('nan')):.4f}  gate={passed}")
+            print(f"  {args.stageB_arch.upper()}: RMSE={m.get('rmse_median', float('nan')):.4f}  gate={passed}")
             print(f"  Peak force err: {m.get('peak_force_err_median', float('nan')):.4f}")
             print(f"  Correlation: {m.get('correlation_median', float('nan')):.4f}")
             all_results.append(m)
@@ -1075,11 +1394,30 @@ def main() -> int:
             with open(output_dir / "stageB_results.json", "w") as f:
                 json.dump(_serializable(sb_out), f, indent=2)
 
-            np.save(cv_pred_dir / "stageB_tcn_predictions.npy", sb_result["cv_predictions"])
+            np.save(cv_pred_dir / f"stageB_{args.stageB_arch}_predictions.npy", sb_result["cv_predictions"])
 
             if sb_result["best_state_dict"] is not None:
                 torch, _ = _import_torch()
+                # Always write the canonical `stageB_tcn_*` filenames used by
+                # model_bundle to avoid breaking downstream code, plus
+                # architecture-suffixed copies for side-by-side comparisons.
                 torch.save(sb_result["best_state_dict"], output_dir / "stageB_tcn_state.pt")
+                torch.save(sb_result["best_state_dict"], output_dir / f"stageB_{args.stageB_arch}_state.pt")
+                with open(output_dir / "stageB_tcn_arch.json", "w") as f:
+                    json.dump(sb_result["architecture"], f, indent=2, sort_keys=True)
+                with open(output_dir / f"stageB_{args.stageB_arch}_arch.json", "w") as f:
+                    json.dump(sb_result["architecture"], f, indent=2, sort_keys=True)
+                feat_norm = sb_result.get("feature_norm", {}) or {}
+                tgt_norm = sb_result.get("target_norm", {}) or {}
+                if feat_norm.get("mean") is not None and tgt_norm.get("mean") is not None:
+                    norm_payload = dict(
+                        feat_mean=np.asarray(feat_norm["mean"], dtype=np.float64),
+                        feat_std=np.asarray(feat_norm["std"], dtype=np.float64),
+                        force_mean=np.asarray(tgt_norm["mean"], dtype=np.float64),
+                        force_std=np.asarray(tgt_norm["std"], dtype=np.float64),
+                    )
+                    np.savez(output_dir / "stageB_tcn_norm.npz", **norm_payload)
+                    np.savez(output_dir / f"stageB_{args.stageB_arch}_norm.npz", **norm_payload)
 
         except ImportError:
             print("  SKIPPED: PyTorch not available. Install torch to run Stage B.")
@@ -1089,17 +1427,35 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Comparison summary + unified evaluation report
     # ------------------------------------------------------------------
+    # Merge any prior per-configuration results stored in this output_dir
+    # so the evaluation report can surface PCA-vs-fPCA / TCN-vs-Transformer
+    # side by side across separate modeling invocations.
+    prior_path = output_dir / "comparison_prior_runs.json"
+    prior_runs: list[dict[str, Any]] = []
+    if prior_path.exists():
+        try:
+            with prior_path.open() as f:
+                prior_runs = json.load(f)
+            if not isinstance(prior_runs, list):
+                prior_runs = []
+        except Exception:
+            prior_runs = []
+
+    merged_results = prior_runs + all_results
     if all_results:
         with open(output_dir / "comparison_summary.json", "w") as f:
             json.dump(_serializable(all_results), f, indent=2)
+        with prior_path.open("w") as f:
+            json.dump(_serializable(merged_results), f, indent=2)
 
     write_evaluation_report(
         output_dir,
         regime_info=regime_info,
         alignment_metrics=alignment_metrics,
-        all_results=all_results,
+        all_results=merged_results,
         cv_method=args.cv_method,
         n_splits=args.n_splits,
+        target_representation=target_prefix,
     )
 
     print(f"\nResults written to: {output_dir}")

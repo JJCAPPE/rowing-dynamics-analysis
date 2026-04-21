@@ -39,6 +39,7 @@ ANGLE_COLS = [
     "elbow_active_deg",
     "trunk_vs_horizontal_deg",
     "spine_flexion_deg",
+    "head_vs_trunk_deg",
 ]
 DERIV_COLS = [c.replace("_deg", "_ddeg_ds") for c in ANGLE_COLS]
 SUPPORT_COLS = ["handle_velocity_px_s", "handle_accel_px_s2"]
@@ -523,6 +524,7 @@ def _build_strokes_csv(
     scalar_summary_df: pd.DataFrame,
     coordination_df: pd.DataFrame,
     n_pca: int,
+    fpca_coeffs: np.ndarray | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for i, s in enumerate(strokes):
@@ -547,6 +549,13 @@ def _build_strokes_csv(
 
         for c in range(n_pca):
             row[f"pca_{c}"] = float(pca_coeffs[i, c]) if np.isfinite(pca_coeffs[i, c]) else float("nan")
+        if fpca_coeffs is not None:
+            for c in range(fpca_coeffs.shape[1]):
+                row[f"fpca_{c}"] = (
+                    float(fpca_coeffs[i, c])
+                    if np.isfinite(fpca_coeffs[i, c])
+                    else float("nan")
+                )
         rows.append(row)
 
     base_df = pd.DataFrame(rows)
@@ -574,6 +583,8 @@ def build_training_dataset(
     session_registry: Path | None = None,
     max_cum_err_s: float = ALIGNMENT_MAX_CUM_ERR_S_DEFAULT,
     max_rate_diff_spm: float = ALIGNMENT_MAX_RATE_DIFF_SPM_DEFAULT,
+    target_representation: str = "standard",
+    fpca_internal_knots: int = 10,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -621,6 +632,34 @@ def build_training_dataset(
     pca_model, pca_coeffs, force_peak_norm = _fit_pca(force_resampled, n_pca_components)
     actual_n_pca = pca_coeffs.shape[1]
 
+    # 6b. Optional functional PCA on the same peak-normalized curves.
+    fpca_model = None
+    fpca_coeffs: np.ndarray | None = None
+    if target_representation in {"fpca", "both"}:
+        from functional_pca import FunctionalPCA
+
+        print("Fitting functional PCA...")
+        finite_rows = np.all(np.isfinite(force_peak_norm), axis=1)
+        if finite_rows.sum() >= 2:
+            fpca_model = FunctionalPCA(
+                n_components=n_pca_components,
+                n_internal_knots=fpca_internal_knots,
+            )
+            fpca_model.fit(force_peak_norm[finite_rows], s_grid=s_grid)
+            fpca_coeffs = np.full(
+                (force_peak_norm.shape[0], fpca_model.n_components_),
+                np.nan,
+                dtype=np.float64,
+            )
+            fpca_coeffs[finite_rows] = fpca_model.transform(force_peak_norm[finite_rows])
+            print(
+                f"fPCA: {fpca_model.n_components_} components, "
+                f"cumulative variance = "
+                f"{fpca_model.explained_variance_ratio_.cumsum()[-1]:.3f}"
+            )
+        else:
+            print("fPCA skipped: not enough finite curves.")
+
     # 7. Scalar kinematic summary
     print("Computing scalar kinematic summary...")
     scalar_summary_df = _compute_scalar_summary(strokes, s_grid, kinematic_sequences)
@@ -633,7 +672,14 @@ def build_training_dataset(
 
     # 8. Assemble strokes.csv
     print("Assembling strokes.csv...")
-    strokes_df = _build_strokes_csv(strokes, pca_coeffs, scalar_summary_df, coordination_df, actual_n_pca)
+    strokes_df = _build_strokes_csv(
+        strokes,
+        pca_coeffs,
+        scalar_summary_df,
+        coordination_df,
+        actual_n_pca,
+        fpca_coeffs=fpca_coeffs,
+    )
 
     # 9. Write all artifacts
     print("Writing artifacts...")
@@ -659,6 +705,9 @@ def build_training_dataset(
         strokes=strokes,
         max_cum_err_s=max_cum_err_s,
         max_rate_diff_spm=max_rate_diff_spm,
+        target_representation=target_representation,
+        fpca_model=fpca_model,
+        fpca_coeffs=fpca_coeffs,
     )
     print(f"Done. Dataset written to: {output_dir}")
 
@@ -690,6 +739,9 @@ def _write_artifacts(
     strokes: list[dict[str, Any]],
     max_cum_err_s: float = ALIGNMENT_MAX_CUM_ERR_S_DEFAULT,
     max_rate_diff_spm: float = ALIGNMENT_MAX_RATE_DIFF_SPM_DEFAULT,
+    target_representation: str = "standard",
+    fpca_model: Any = None,
+    fpca_coeffs: np.ndarray | None = None,
 ) -> None:
     strokes_df.to_csv(output_dir / "strokes.csv", index=False)
 
@@ -714,6 +766,16 @@ def _write_artifacts(
     })
     pca_ev_df.to_csv(output_dir / "pca_explained_variance.csv", index=False)
 
+    if fpca_model is not None and fpca_coeffs is not None:
+        joblib.dump(fpca_model, output_dir / "fpca_model.joblib")
+        np.save(output_dir / "fpca_coeffs.npy", fpca_coeffs)
+        fpca_ev_df = pd.DataFrame({
+            "component": range(1, fpca_model.n_components_ + 1),
+            "explained_variance_ratio": fpca_model.explained_variance_ratio_,
+            "cumulative_explained_variance": fpca_model.explained_variance_ratio_.cumsum(),
+        })
+        fpca_ev_df.to_csv(output_dir / "fpca_explained_variance.csv", index=False)
+
     n_soft_flagged = sum(1 for s in strokes if s.get("qc_excluded", False))
     n_alignment_flagged = sum(
         1 for s in strokes
@@ -737,6 +799,13 @@ def _write_artifacts(
         "rp3_max_cm": RP3_MAX_CM,
         "n_pca_components": n_pca_components,
         "pca_total_explained_variance": float(pca_model.explained_variance_ratio_.sum()),
+        "target_representation": target_representation,
+        "fpca_n_components": int(fpca_model.n_components_) if fpca_model is not None else 0,
+        "fpca_total_explained_variance": (
+            float(fpca_model.explained_variance_ratio_.sum())
+            if fpca_model is not None else 0.0
+        ),
+        "fpca_internal_knots": fpca_internal_knots if fpca_model is not None else 0,
         "kinematic_feature_cols": KINEMATIC_FEATURE_COLS,
         "n_kinematic_features": len(KINEMATIC_FEATURE_COLS),
         "onset_frac": onset_frac,
@@ -854,6 +923,22 @@ def _parse_args() -> argparse.Namespace:
             f"before flagging a stroke (default: {ALIGNMENT_MAX_RATE_DIFF_SPM_DEFAULT})."
         ),
     )
+    parser.add_argument(
+        "--target-representation",
+        choices=["standard", "fpca", "both"],
+        default="standard",
+        help=(
+            "Force-curve target representation. 'standard' fits only PCA; "
+            "'fpca' additionally fits functional PCA (B-spline basis); "
+            "'both' fits PCA and fPCA. (default: standard)"
+        ),
+    )
+    parser.add_argument(
+        "--fpca-internal-knots",
+        type=int,
+        default=10,
+        help="Number of internal knots for the B-spline basis used by fPCA (default: 10).",
+    )
     return parser.parse_args()
 
 
@@ -902,6 +987,8 @@ def main() -> int:
             session_registry=registry,
             max_cum_err_s=args.max_cum_err_s,
             max_rate_diff_spm=args.max_rate_diff_spm,
+            target_representation=args.target_representation,
+            fpca_internal_knots=args.fpca_internal_knots,
         )
     except Exception as exc:
         print(f"Error: {exc}")
