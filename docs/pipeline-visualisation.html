@@ -879,13 +879,14 @@
                     </div>
                     <div class="card-brief">Camera-near side becomes the canonical limb chain; sign conventions normalized across sessions</div>
                     <div class="card-detail">
-                        <p>Each session declares an <code>active_side</code> (left or right). Source angle columns are mapped to canonical names and mirror-normalized so that feature semantics are consistent regardless of camera placement.</p>
+                        <p>Each session declares an <code>active_side</code> (left or right) and a <code>rower_facing</code> (left or right). The canonical mirror policy lives in <code>inference/feature_contract.py</code> and is shared by training and video-only inference: unsigned flexion angles (<code>knee_active_deg</code>, <code>hip_active_deg</code>, <code>elbow_active_deg</code>, <code>spine_flexion_deg</code>, <code>head_vs_trunk_deg</code>) are facing-invariant; only <code>trunk_vs_horizontal_deg</code> is flipped (<code>180&minus;&theta;</code>) when facing left.</p>
                         <div class="schema">
-                            <div><span class="hl">Canonical features</span></div>
+                            <div><span class="hl">Canonical features</span> <span class="dim">(feature_contract.canonical_columns)</span></div>
                             <div>&ensp;knee_active_deg &larr; left <span class="dim">or</span> right_knee_deg</div>
                             <div>&ensp;hip_active_deg &larr; left <span class="dim">or</span> right_hip_deg</div>
                             <div>&ensp;elbow_active_deg &larr; left <span class="dim">or</span> right_elbow_deg</div>
-                            <div>&ensp;trunk_deg, spine_deg <span class="dim">(shared central)</span></div>
+                            <div>&ensp;trunk_vs_horizontal_deg <span class="dim">(facing-flipped)</span></div>
+                            <div>&ensp;spine_flexion_deg, head_vs_trunk_deg <span class="dim">(central)</span></div>
                         </div>
                     </div>
                 </div>
@@ -976,11 +977,12 @@
                         <span class="card-title">Cross-Modal Stroke Alignment</span>
                         <span class="card-chevron">&#9654;</span>
                     </div>
-                    <div class="card-brief">Coarse sync via stroke-rate cross-correlation &rarr; fine sync via catch/finish boundary agreement</div>
+                    <div class="card-brief">Auto-pair from session registry &rarr; cross-correlation coarse anchor &rarr; DP fine sync &rarr; drift-gated pairing manifest</div>
                     <div class="card-detail">
-                        <p><strong>Coarse:</strong> Align video and RP3 stroke streams using inter-stroke interval cross-correlation (stroke-rate matching).</p>
-                        <p><strong>Fine:</strong> Maximise catch/finish boundary agreement over a calibration window to lock the per-stroke mapping.</p>
-                        <p><strong>Acceptance:</strong> Reject if sustained stroke-rate mismatch &gt;1 spm or low boundary agreement. Reject rather than weakly align.</p>
+                        <p><strong>Auto-pair:</strong> <code>inference/pair_session.auto_pair_run</code> resolves <code>active_side</code>, <code>rower_facing</code>, athlete ID, RP3 clean CSV, and (optional) registry-provided anchor from <code>session_registry.csv</code>, so <code>match_rp3_cli.py --auto-pair</code> does not need per-run flags.</p>
+                        <p><strong>Coarse:</strong> <code>coarse_sync_anchor</code> cross-correlates video and RP3 cycle-duration sequences and proposes the RP3 row that pairs with a reference video stroke. This is the default anchor resolver when no explicit anchor is given (disable with <code>--no-xcorr-anchor</code>; trust gated by <code>--xcorr-max-cost</code>).</p>
+                        <p><strong>Fine:</strong> Dynamic-programming stroke match over catch/finish boundaries with the coarse anchor locked.</p>
+                        <p><strong>Drift gate:</strong> <code>--reject-on-drift</code> (default on) hard-fails pairings whose cumulative or mean per-stroke interval error exceeds <code>--drift-reject-max-cum-err-s</code> / <code>--drift-reject-mean-interval-err-s</code> &mdash; reject rather than emit silently-misaligned labels.</p>
                         <div class="evidence">
                             <div class="evidence-label">Alignment evolution</div>
                             <div class="evidence-before-after">
@@ -995,11 +997,13 @@
                             </div>
                         </div>
                         <div class="schema">
-                            <div><span class="hl-shared">Pairing manifest</span></div>
-                            <div>&ensp;session_id, athlete_id</div>
-                            <div>&ensp;temporal_offset, drift_estimate</div>
-                            <div>&ensp;accepted_stroke_ranges[]</div>
-                            <div>&ensp;qc: { spm_agreement, boundary_corr }</div>
+                            <div><span class="hl-shared">pairing_manifest.json</span> <span class="dim">(emitted by match_rp3_cli)</span></div>
+                            <div>&ensp;session_id, athlete_id, date, piece_id</div>
+                            <div>&ensp;rower_facing, active_side</div>
+                            <div>&ensp;coarse_sync: { offset_strokes, normalized_cost, mean_rate_diff_spm }</div>
+                            <div>&ensp;drift: { cum_err_s, mean_interval_err_s, accepted }</div>
+                            <div>&ensp;accepted_video_stroke_ranges[]</div>
+                            <div>&ensp;qc_summary: { hard_drop_n, soft_flag_counts }</div>
                         </div>
                     </div>
                 </div>
@@ -1153,6 +1157,7 @@
                         <p><strong>Smoothing:</strong> Fixed Savitzky-Golay kernel (small odd window, low polynomial order) applied to raw angle trajectories.</p>
                         <p><strong>Chain rule:</strong> <code>d&theta;/ds = (d&theta;/dt) / (ds/dt + &epsilon;)</code></p>
                         <p>Second derivatives included only if ablation shows clear gain. Strokes with <code>ds/dt &approx; 0</code> or non-physiological spikes are rejected.</p>
+                        <p>The per-stroke feature sequence builder (<code>inference/segment_features.py</code>) is shared by the training-side <code>inference_cli.py</code> and the video-only <code>predict_force_cli.py</code>. The no-RP3 variant <code>build_pose_drive_segments</code> emits features on the bundle's <code>s_grid</code> without needing any force data.</p>
                         <div class="evidence">
                             <div class="evidence-strip">
                                 <figure class="evidence-fig">
@@ -1162,9 +1167,10 @@
                             </div>
                         </div>
                         <div class="schema">
-                            <div><span class="hl-shared">Primary features</span></div>
-                            <div>&ensp;knee(s), hip(s), elbow(s), trunk(s)</div>
-                            <div>&ensp;d_knee/ds, d_hip/ds, d_elbow/ds, d_trunk/ds</div>
+                            <div><span class="hl-shared">Primary features</span> <span class="dim">(6 canonical angles)</span></div>
+                            <div>&ensp;knee(s), hip(s), elbow(s), trunk(s), spine(s), head_vs_trunk(s)</div>
+                            <div>&ensp;d_knee/ds, d_hip/ds, d_elbow/ds, d_trunk/ds, d_spine/ds, d_head_vs_trunk/ds</div>
+                            <div>&ensp;handle_velocity_px_s, handle_accel_px_s2</div>
                             <div>&ensp;<span class="dim">[ablation]</span> d&sup2;knee/ds&sup2;, &hellip;</div>
                         </div>
                     </div>
@@ -1496,7 +1502,7 @@
             <div class="model-training-diagram" id="pipeline-mt-target">
                 <div class="model-training-diagram-head">
                     <span class="model-training-diagram-title">Target representation</span>
-                    <span class="model-training-diagram-sub">How force curves are encoded before training</span>
+                    <span class="model-training-diagram-sub">Standard PCA or functional PCA (B-spline + PCA) &mdash; selected via <code>--target-representation</code></span>
                     <a class="diagram-nav-link" href="model-training-stages.html#mt-target">Same diagram on model training page</a>
                 </div>
                 <div class="model-training-diagram-inner">
@@ -1715,13 +1721,13 @@
                         <span class="card-title">Stage A &mdash; Interpretable Kinematic Models</span>
                         <span class="card-chevron">&#9654;</span>
                     </div>
-                    <div class="card-brief">Stroke-level summary features + phase landmarks &rarr; regularized linear / tree ensembles &rarr; PCA coefficients</div>
+                    <div class="card-brief">Stroke-level summary features + coordination scalars &rarr; regularized linear / tree ensembles &rarr; PCA or fPCA coefficients</div>
                     <div class="card-detail">
-                        <p>Verifies that kinematic features add value beyond metadata. Identifies dominant explanatory biomechanics features through feature importance analysis.</p>
+                        <p>Verifies that kinematic features add value beyond metadata. Identifies dominant explanatory biomechanics features through feature importance analysis. Target representation is selected per-run (<code>--target-representation standard|fpca</code>); both families can coexist in the same dataset directory.</p>
                         <div class="schema">
-                            <div><span class="hl-shared">Inputs</span>: summary kinematics + phase landmarks</div>
+                            <div><span class="hl-shared">Inputs</span>: 6 canonical angle summaries (30) + coordination scalars (onsets, lags, range fractions, drive_ratio) + context (stroke rate, length)</div>
                             <div><span class="hl-shared">Models</span>: Ridge, Lasso, Random Forest, GBM</div>
-                            <div><span class="hl-shared">Targets</span>: force-curve PCA coefficients</div>
+                            <div><span class="hl-shared">Targets</span>: PCA or fPCA coefficients &rarr; reconstructed F&#770;(s)</div>
                         </div>
                     </div>
                 </div>
@@ -1755,10 +1761,10 @@
                                     <text x="34" y="98" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_active_deg_range</text>
                                     <text x="34" y="112" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_active_deg_mean</text>
                                     <text x="34" y="126" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_active_deg_s_at_max</text>
-                                    <text x="34" y="144" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">&hellip; &times;5 angles = 25 features</text>
+                                    <text x="34" y="144" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#8a7e6e">&hellip; &times;6 angles = 30 features</text>
                                     <text x="34" y="162" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">min, max, range, mean,</text>
                                     <text x="34" y="176" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">s-position of peak</text>
-                                    <text x="34" y="194" font-family="JetBrains Mono, monospace" font-size="7" fill="#2563eb">from _compute_scalar_summary</text>
+                                    <text x="34" y="194" font-family="JetBrains Mono, monospace" font-size="7" fill="#2563eb">build_training_dataset.py</text>
 
                                     <!-- Feature column 2: coordination -->
                                     <rect x="228" y="32" width="195" height="168" rx="4" fill="rgba(37,99,235,0.05)" stroke="#2563eb" stroke-width="1"/>
@@ -1771,7 +1777,7 @@
                                     <text x="242" y="150" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">knee_range_frac</text>
                                     <text x="242" y="164" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">hip_range_frac</text>
                                     <text x="242" y="178" font-family="JetBrains Mono, monospace" font-size="7.5" fill="#3d3529">elbow_range_frac</text>
-                                    <text x="242" y="194" font-family="JetBrains Mono, monospace" font-size="7" fill="#2563eb">from _compute_coordination_features</text>
+                                    <text x="242" y="194" font-family="JetBrains Mono, monospace" font-size="7" fill="#2563eb">_compute_coordination_features</text>
 
                                     <!-- Feature column 3: context -->
                                     <rect x="436" y="32" width="150" height="168" rx="4" fill="rgba(37,99,235,0.05)" stroke="#2563eb" stroke-width="1"/>
@@ -1788,7 +1794,7 @@
 
                                     <!-- Feature vector -->
                                     <rect x="175" y="240" width="250" height="30" rx="3" fill="rgba(37,99,235,0.08)" stroke="#2563eb" stroke-width="1.2"/>
-                                    <text x="218" y="260" font-family="JetBrains Mono, monospace" font-size="9" fill="#2563eb" font-weight="500">x &isin; R^~36 (per stroke)</text>
+                                    <text x="218" y="260" font-family="JetBrains Mono, monospace" font-size="9" fill="#2563eb" font-weight="500">x &isin; R^~41 (per stroke)</text>
 
                                     <!-- Arrow to models -->
                                     <line x1="435" y1="255" x2="498" y2="255" stroke="#2563eb" stroke-width="1.2" marker-end="url(#mtA_arrowBlue)"/>
@@ -1806,7 +1812,7 @@
 
                                     <!-- PCA coefficient prediction -->
                                     <rect x="725" y="232" width="140" height="90" rx="4" fill="rgba(109,40,217,0.06)" stroke="#6d28d9" stroke-width="1.2"/>
-                                    <text x="740" y="256" font-family="JetBrains Mono, monospace" font-size="9" fill="#6d28d9" font-weight="500">PCA coefficients</text>
+                                    <text x="740" y="256" font-family="JetBrains Mono, monospace" font-size="9" fill="#6d28d9" font-weight="500">PCA / fPCA coeffs</text>
                                     <text x="748" y="276" font-family="JetBrains Mono, monospace" font-size="8" fill="#6d28d9">c&#770;_1, c&#770;_2, &hellip; c&#770;_k</text>
                                     <text x="748" y="296" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">&darr; reconstruct F&#770;(s)</text>
                                     <text x="748" y="312" font-family="Source Sans 3, sans-serif" font-size="8.5" fill="#8a7e6e">&darr; evaluate vs Stage 0</text>
@@ -1831,12 +1837,14 @@
                     </div>
                     <div class="card-brief">Full progress-aligned kinematic sequences &rarr; TCN / Transformer encoder &rarr; full force curve</div>
                     <div class="card-detail">
-                        <p>Temporal convolutional network or transformer encoder operating on the full progress-aligned feature sequences. Captures nonlinear stroke dynamics and cross-joint interactions.</p>
-                        <p><strong>Loss:</strong> Masked pointwise force loss. Shape regularizers or derivative losses added only if errors show pathological curve behaviour.</p>
+                        <p>Temporal convolutional network or transformer encoder operating on the full progress-aligned feature sequences. Architecture selected via <code>--stageB-arch {tcn, transformer}</code>; captures nonlinear stroke dynamics and cross-joint interactions.</p>
+                        <p><strong>Conditioning:</strong> Coordination scalars (onsets, lags, range fractions, drive_ratio) are broadcast as constant extra input channels when <code>--stageB-use-coordination</code> is set &mdash; no separate scalar head.</p>
+                        <p><strong>Loss:</strong> Masked pointwise MSE using the per-stroke <code>force_mask</code>; optional derivative regularizer gated by <code>--stageB-lambda-deriv</code>.</p>
+                        <p><strong>Artifacts:</strong> Each run saves <code>state.pt</code>, <code>arch_config.json</code>, <code>feature_norm.npz</code>, and <code>target_norm.npz</code> from the best CV fold, plus architecture-suffixed copies for cross-arch comparison.</p>
                         <div class="schema">
-                            <div><span class="hl-shared">Inputs</span>: X(s) [N_bins &times; N_features]</div>
-                            <div><span class="hl-shared">Models</span>: TCN, Transformer encoder</div>
-                            <div><span class="hl-shared">Targets</span>: F(s) [N_bins], masked loss</div>
+                            <div><span class="hl-shared">Inputs</span>: X(s) [N_bins &times; N_features] (+ optional coord channels)</div>
+                            <div><span class="hl-shared">Models</span>: TCN (<code>_ForceCurveTCN</code>), Transformer (<code>_ForceCurveTransformer</code>)</div>
+                            <div><span class="hl-shared">Targets</span>: F(s) [N_bins], masked loss + optional d/ds regularizer</div>
                         </div>
                     </div>
                 </div>
@@ -2034,15 +2042,22 @@
                         <span class="card-title">Force Curve Prediction</span>
                         <span class="card-chevron">&#9654;</span>
                     </div>
-                    <div class="card-brief">Trained model applied to video-derived features &rarr; predicted per-stroke force curve + derived metrics</div>
+                    <div class="card-brief">Video-only CLI loads a self-describing model bundle &rarr; predicts per-stroke force curve + derived metrics</div>
                     <div class="card-detail">
-                        <p>At inference, <strong>no RP3 input is used</strong>. The trained model takes video-derived kinematic feature sequences and predicts the complete force curve for each stroke.</p>
+                        <p>At inference, <strong>no RP3 input is used</strong>. <code>inference/predict_force_cli.py --run-dir &lt;run&gt; --model-dir &lt;bundle&gt;</code> loads a portable <code>model_bundle/</code>, runs drive detection, extracts pose features via <code>segment_features.build_pose_drive_segments</code>, runs Stage A or Stage B prediction depending on what the bundle contains, and writes normalized curves, an RP3-style cm-indexed force table, and derived metrics.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">model_bundle/</span> <span class="dim">(written by export_model_bundle.py)</span></div>
+                            <div>&ensp;manifest.json &mdash; feature list, s_grid, active_side_default, include_head, target_representation, git_sha</div>
+                            <div>&ensp;s_grid.npy, feature_names.json</div>
+                            <div>&ensp;pca_model.joblib <span class="dim">or</span> fpca_model.joblib</div>
+                            <div>&ensp;stageA/ &mdash; sklearn estimator (.joblib)</div>
+                            <div>&ensp;stageB/ &mdash; state.pt, arch_config.json, feature_norm.npz, target_norm.npz</div>
+                        </div>
                         <div class="schema">
                             <div><span class="hl-shared">Outputs per stroke</span></div>
-                            <div>&ensp;force_at_&lt;distance&gt;cm table</div>
-                            <div>&ensp;predicted peak_force (N)</div>
-                            <div>&ensp;predicted peak_position (% drive)</div>
-                            <div>&ensp;predicted impulse (N&middot;s)</div>
+                            <div>&ensp;force_at_&lt;distance&gt;cm table (RP3-style, cm-indexed)</div>
+                            <div>&ensp;normalized F&#770;(s) on the bundle s-grid</div>
+                            <div>&ensp;predicted peak_force (N), peak_position (% drive), impulse (N&middot;s)</div>
                             <div>&ensp;<span class="hl-shared">stroke_quality_score</span> [0, 1]</div>
                         </div>
                     </div>
@@ -2196,6 +2211,24 @@
                             <div>&ensp;peak_position_error (% drive)</div>
                             <div>&ensp;impulse_error (N&middot;s)</div>
                             <div>&ensp;early / mid / late drive phase errors</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-row cols-1">
+                <div class="card open t-shared" data-role="training" onclick="toggle(this)">
+                    <div class="card-head">
+                        <span class="card-title">Cross-Representation / Cross-Architecture Report</span>
+                        <span class="card-chevron">&#9654;</span>
+                    </div>
+                    <div class="card-brief">evaluation_report.json + text report group by <code>target_representation</code> and <code>stage_b_arch</code></div>
+                    <div class="card-detail">
+                        <p>Every run annotates its overall metrics with <code>target_representation</code> (standard / fpca) and <code>stage_b_arch</code> (tcn / transformer). <code>write_evaluation_report</code> merges prior-run artifacts in the same output directory so PCA vs fPCA and TCN vs Transformer are compared head-to-head on the same held-out strokes, without clobbering either.</p>
+                        <div class="schema">
+                            <div><span class="hl-shared">Artifacts</span></div>
+                            <div>&ensp;stage_b_tcn.pt, stage_b_transformer.pt <span class="dim">(arch-suffixed copies)</span></div>
+                            <div>&ensp;evaluation_report.json &mdash; grouped by representation &amp; arch</div>
+                            <div>&ensp;evaluation_report.txt &mdash; human-readable comparison</div>
                         </div>
                     </div>
                 </div>
