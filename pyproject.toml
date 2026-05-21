@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rowing"
+version = "0.1.0"
+description = "Video-first rowing biomechanics research pipeline."
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "joblib",
+    "opencv-python",
+    "rich",
+    "jinja2",
+]
+
+[project.scripts]
+rowing = "rowing.cli.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rowing*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

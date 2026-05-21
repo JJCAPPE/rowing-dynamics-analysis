@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Training report — {{ training_name }}</title>
+  <style>
+    :root {
+      --fg: #1a1a1a; --muted: #555; --accent: #1f77b4;
+      --warn: #d62728; --bg: #fafafa; --card: #fff; --border: #e3e3e3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+      max-width: 1100px; margin: 0 auto; padding: 24px 32px 64px;
+      color: var(--fg); background: var(--bg); line-height: 1.45;
+    }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    h2 {
+      margin: 32px 0 12px; padding-bottom: 4px;
+      border-bottom: 1px solid var(--border); font-size: 1.15rem;
+    }
+    h3 { font-size: 1rem; margin: 20px 0 8px; color: var(--muted); }
+    .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 20px; }
+    .meta code { background: #eee; padding: 1px 4px; border-radius: 3px; }
+    .grid {
+      display: grid; gap: 12px; margin-bottom: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 6px; padding: 10px 14px;
+    }
+    .card .label {
+      color: var(--muted); font-size: 0.78rem;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .card .value { font-size: 1.05rem; font-weight: 600; margin-top: 2px; }
+    img.plot {
+      width: 100%; max-width: 100%; height: auto; padding: 4px;
+      background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    }
+    table.metrics {
+      width: 100%; border-collapse: collapse; font-size: 0.85rem;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 6px; overflow: hidden; margin-top: 10px;
+    }
+    table.metrics th, table.metrics td {
+      padding: 6px 10px; border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+    table.metrics th { background: #f3f3f3; }
+    table.metrics tr:last-child td { border-bottom: none; }
+    .empty { color: var(--muted); font-style: italic; }
+    .warn { color: var(--warn); font-weight: 600; }
+    nav {
+      position: sticky; top: 0; padding: 8px 0 4px; z-index: 1;
+      background: var(--bg); border-bottom: 1px solid var(--border);
+      margin-bottom: 18px; font-size: 0.85rem;
+    }
+    nav a { margin-right: 14px; color: var(--accent); text-decoration: none; }
+    nav a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>Training report — {{ training_name }}</h1>
+  <div class="meta">
+    Generated {{ generated_at }} · Modeling dir <code>{{ modeling_dir }}</code>
+    {% if dataset_dir %}<br>Dataset <code>{{ dataset_dir }}</code>{% endif %}
+  </div>
+
+  <nav>
+    <a href="#overview">Overview</a>
+    <a href="#regime">Regime</a>
+    <a href="#stages">Stages</a>
+    <a href="#cohorts">Cohorts</a>
+    <a href="#provenance">Provenance</a>
+  </nav>
+
+  <h2 id="overview">Overview</h2>
+  <div class="grid">
+    {% for card in overview %}
+    <div class="card">
+      <div class="label">{{ card.label }}</div>
+      <div class="value">{{ card.value }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if plots.metrics_bar %}
+  <h3>Stage metric comparison</h3>
+  <img class="plot" src="{{ plots.metrics_bar }}" alt="metrics">
+  {% endif %}
+
+  <h2 id="regime">Evaluation regime</h2>
+  {% if regime %}
+  <table class="metrics">
+    <tr><th>Regime</th><td>{{ regime.regime }}</td></tr>
+    <tr><th>CV method</th><td>{{ regime.cv_method }} (n_splits={{ regime.n_splits }})</td></tr>
+    <tr><th>Athletes</th><td>{{ regime.n_athletes }}</td></tr>
+    <tr><th>Target representation</th><td>{{ regime.target_representation }}</td></tr>
+    <tr><th>Disclaimer</th><td>{{ regime.disclaimer }}</td></tr>
+  </table>
+  {% if regime.alignment_metrics %}
+  <h3>Alignment integrity</h3>
+  <table class="metrics">
+    {% for k, v in regime.alignment_metrics.items() %}
+    <tr><th>{{ k }}</th>
+        <td>{% if v is number %}{{ "%.4f"|format(v) }}{% else %}{{ v }}{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% else %}
+  <p class="empty">No regime metadata available.</p>
+  {% endif %}
+
+  <h2 id="stages">Stages</h2>
+  {% for stage in stages %}
+  <h3>{{ stage.title }}</h3>
+  {% if stage.metrics %}
+  <table class="metrics">
+    <tr>
+      <th>Model</th>
+      <th>RMSE (median)</th>
+      <th>Peak err</th>
+      <th>Impulse err</th>
+      <th>Correlation</th>
+      <th>Gate</th>
+    </tr>
+    {% for m in stage.metrics %}
+    <tr>
+      <td><code>{{ m.model_name }}</code></td>
+      <td>{{ "%.4f"|format(m.rmse_median) if m.rmse_median is number else "—" }}</td>
+      <td>{{ "%.4f"|format(m.peak_force_err_median) if m.peak_force_err_median is number else "—" }}</td>
+      <td>{{ "%.4f"|format(m.impulse_err_median) if m.impulse_err_median is number else "—" }}</td>
+      <td>{{ "%.4f"|format(m.correlation_median) if m.correlation_median is number else "—" }}</td>
+      <td>
+        {% if m.gate_passed == "PASS" %}
+          <span class="ok" style="color:#2ca02c;">{{ m.gate_passed }}</span>
+        {% elif m.gate_passed == "FAIL" %}
+          <span class="warn">{{ m.gate_passed }}</span>
+        {% else %}
+          {{ m.gate_passed or "—" }}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">No metrics for this stage.</p>
+  {% endif %}
+  {% if stage.residual_plot %}<img class="plot" src="{{ stage.residual_plot }}" alt="residuals">{% endif %}
+  {% if stage.true_vs_pred_plot %}<img class="plot" src="{{ stage.true_vs_pred_plot }}" alt="true vs pred">{% endif %}
+  {% endfor %}
+
+  <h2 id="cohorts">Cohort breakdown</h2>
+  {% if plots.cohort_athletes %}
+  <h3>Per-athlete RMSE</h3>
+  <img class="plot" src="{{ plots.cohort_athletes }}" alt="per-athlete RMSE">
+  {% else %}
+  <p class="empty">No per-athlete RMSE data.</p>
+  {% endif %}
+  {% if cohort_warnings %}
+  <h3>Leakage warnings</h3>
+  <ul>
+    {% for w in cohort_warnings %}<li class="warn">{{ w }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  <h2 id="provenance">Provenance</h2>
+  {% if provenance %}
+  <table class="metrics">
+    <tr><th>Code SHA</th><td><code>{{ provenance.code_sha or "—" }}</code></td></tr>
+    {% if provenance.code_dirty %}
+    <tr><th>Working tree</th><td><span class="warn">dirty</span></td></tr>
+    {% endif %}
+    {% if provenance.dataset_summary %}
+    <tr><th>Dataset summary</th><td><code>{{ provenance.dataset_summary_path }}</code></td></tr>
+    <tr><th>Force column</th><td>{{ provenance.dataset_summary.force_col }}</td></tr>
+    <tr><th>QC mode</th><td>{{ provenance.dataset_summary.qc_mode }}</td></tr>
+    <tr><th>n_grid</th><td>{{ provenance.dataset_summary.n_grid }}</td></tr>
+    <tr><th>n_pca_components</th><td>{{ provenance.dataset_summary.n_pca_components }}</td></tr>
+    <tr><th>Strokes (after QC)</th><td>{{ provenance.dataset_summary.n_strokes_after_qc }}</td></tr>
+    <tr><th>Athletes / runs</th>
+        <td>{{ provenance.dataset_summary.n_athletes }} athlete(s) ·
+            {{ (provenance.dataset_summary.runs_included or [])|length }} run(s)</td></tr>
+    {% endif %}
+  </table>
+  {% if provenance.runs_included %}
+  <h3>Runs included</h3>
+  <ul>
+    {% for r in provenance.runs_included %}<li><code>{{ r }}</code></li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% else %}
+  <p class="empty">No provenance metadata.</p>
+  {% endif %}
+</body>
+</html>

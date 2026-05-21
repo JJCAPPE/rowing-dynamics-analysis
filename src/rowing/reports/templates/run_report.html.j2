@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Run report — {{ run_name }}</title>
+  <style>
+    :root {
+      --fg: #1a1a1a;
+      --muted: #555;
+      --accent: #1f77b4;
+      --warn: #d62728;
+      --bg: #fafafa;
+      --card: #fff;
+      --border: #e3e3e3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px 32px 64px;
+      color: var(--fg);
+      background: var(--bg);
+      line-height: 1.45;
+    }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    h2 {
+      margin: 32px 0 12px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+      font-size: 1.15rem;
+    }
+    h3 { font-size: 1rem; margin: 20px 0 8px; color: var(--muted); }
+    .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 28px; }
+    .meta code { background: #eee; padding: 1px 4px; border-radius: 3px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+    }
+    .card .label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .card .value {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+    img.plot {
+      width: 100%;
+      max-width: 100%;
+      height: auto;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px;
+    }
+    table.ovr {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    table.ovr th, table.ovr td {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+    table.ovr tr:last-child td { border-bottom: none; }
+    .warn { color: var(--warn); font-weight: 600; }
+    .ok { color: #2ca02c; }
+    .empty { color: var(--muted); font-style: italic; }
+    nav {
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      padding: 8px 0 4px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 18px;
+      font-size: 0.85rem;
+      z-index: 1;
+    }
+    nav a {
+      margin-right: 14px;
+      color: var(--accent);
+      text-decoration: none;
+    }
+    nav a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>Run report — {{ run_name }}</h1>
+  <div class="meta">
+    Generated {{ generated_at }} · Run dir <code>{{ run_dir }}</code>
+  </div>
+
+  <nav>
+    <a href="#overview">Overview</a>
+    <a href="#detection">Detection</a>
+    <a href="#match">Match</a>
+    <a href="#segments">Segments</a>
+    <a href="#dataset">Dataset</a>
+  </nav>
+
+  <h2 id="overview">Overview</h2>
+  <div class="grid">
+    {% for card in overview %}
+    <div class="card">
+      <div class="label">{{ card.label }}</div>
+      <div class="value">{{ card.value }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2 id="detection">Drive event detection</h2>
+  {% if detection %}
+  <table class="ovr">
+    <tr><th>Frames</th><td>{{ detection.frame_count }}</td></tr>
+    <tr><th>FPS estimate</th><td>{{ "%.2f"|format(detection.fps_estimate) }}</td></tr>
+    <tr><th>Catch candidates (raw → filtered)</th><td>{{ detection.catch_candidates_raw }} → {{ detection.catches_filtered }}</td></tr>
+    <tr><th>Complete drives</th><td>{{ detection.complete_drives }}</td></tr>
+    <tr><th>Drive method</th><td><code>{{ detection.finish_method }}</code></td></tr>
+    <tr><th>catch_velocity_frac · finish_velocity_frac</th><td>{{ "%.3f"|format(detection.catch_velocity_frac) }} · {{ "%.3f"|format(detection.finish_velocity_frac) }}</td></tr>
+    {% if detection.calibration %}
+    <tr><th>Calibration MAE / ME / std (ms)</th>
+        <td>{{ detection.calibration.mae_ms }} / {{ detection.calibration.me_ms }} / {{ detection.calibration.std_ms }}
+            (n={{ detection.calibration.n_strokes }})</td></tr>
+    {% endif %}
+  </table>
+  {% else %}
+  <p class="empty">No detection summary on disk.</p>
+  {% endif %}
+
+  {% if plots.drive_durations %}
+  <h3>Drive / recover durations</h3>
+  <img class="plot" src="{{ plots.drive_durations }}" alt="drive durations">
+  {% endif %}
+
+  <h2 id="match">RP3 match</h2>
+  {% if match %}
+  <table class="ovr">
+    <tr><th>Anchor</th><td>video v{{ match.anchor_video_stroke_idx }} ↔ RP3 r{{ match.anchor_rp3_stroke_number }} (row {{ match.anchor_rp3_row_idx }})</td></tr>
+    <tr><th>Active side</th><td>{{ match.active_side or "—" }}</td></tr>
+    <tr><th>Matched strokes</th><td>{{ match.matched_video_strokes }}</td></tr>
+    <tr><th>Total skipped RP3 rows</th><td>{{ match.total_skipped_rp3_rows }}</td></tr>
+    <tr><th>Total score</th><td>{{ "%.3f"|format(match.total_score) }}</td></tr>
+    <tr><th>Mean |cum catch err|</th>
+        <td><span {% if match.mean_abs_cum_catch_err_s > 0.25 %}class="warn"{% endif %}>{{ "%.3f"|format(match.mean_abs_cum_catch_err_s) }}s</span></td></tr>
+    <tr><th>Mean |interval err|</th><td>{{ "%.3f"|format(match.mean_abs_interval_err_s) }}s</td></tr>
+    <tr><th>Mean |drive err|</th><td>{{ "%.3f"|format(match.mean_abs_drive_err_s) }}s</td></tr>
+    <tr><th>Mean |recover err|</th><td>{{ "%.3f"|format(match.mean_abs_recover_err_s) }}s</td></tr>
+  </table>
+  {% else %}
+  <p class="empty">No match summary on disk.</p>
+  {% endif %}
+
+  {% if plots.match_drift %}
+  <h3>Cumulative drift</h3>
+  <img class="plot" src="{{ plots.match_drift }}" alt="match drift">
+  {% endif %}
+
+  {% if plots.match_pair_table %}
+  <h3>Pair table</h3>
+  <img class="plot" src="{{ plots.match_pair_table }}" alt="match pair table">
+  {% endif %}
+
+  <h2 id="segments">Segments</h2>
+  {% if segments %}
+  <table class="ovr">
+    <tr><th>Exported strokes</th><td>{{ segments.exported }} / {{ segments.total }}</td></tr>
+    <tr><th>Dropped strokes</th><td>{{ segments.dropped }}</td></tr>
+    <tr><th>Segment rows</th><td>{{ segments.segment_rows }}</td></tr>
+    {% if segments.drop_reason_counts %}
+    <tr><th>Drop reasons</th>
+        <td>
+          {% for reason, count in segments.drop_reason_counts.items() %}
+            <code>{{ reason or "(empty)" }}</code>: {{ count }}{% if not loop.last %} · {% endif %}
+          {% endfor %}
+        </td></tr>
+    {% endif %}
+  </table>
+  {% else %}
+  <p class="empty">No segment-status data.</p>
+  {% endif %}
+
+  {% if plots.qc_drop_reasons %}
+  <h3>Drop-reason histogram</h3>
+  <img class="plot" src="{{ plots.qc_drop_reasons }}" alt="qc drop reasons">
+  {% endif %}
+
+  {% if plots.force_grid %}
+  <h3>Force curves (first matched strokes)</h3>
+  <img class="plot" src="{{ plots.force_grid }}" alt="force grid">
+  {% endif %}
+
+  <h2 id="dataset">Training dataset</h2>
+  {% if dataset %}
+  <table class="ovr">
+    <tr><th>Dataset directory</th><td><code>{{ dataset.dir }}</code></td></tr>
+    <tr><th>Strokes (before → after QC)</th><td>{{ dataset.n_strokes_before_qc }} → {{ dataset.n_strokes_after_qc }}</td></tr>
+    <tr><th>QC mode</th><td>{{ dataset.qc_mode }}</td></tr>
+    <tr><th>PCA components / total explained</th>
+        <td>{{ dataset.n_pca_components }} / {{ "%.3f"|format(dataset.pca_total_explained_variance) }}</td></tr>
+    <tr><th>Athletes / runs</th>
+        <td>{{ dataset.n_athletes }} athlete(s) · {{ dataset.runs_included|length }} run(s)</td></tr>
+  </table>
+  {% else %}
+  <p class="empty">No training-dataset summary on disk.</p>
+  {% endif %}
+
+  {% if plots.pca_variance %}
+  <h3>PCA explained variance</h3>
+  <img class="plot" src="{{ plots.pca_variance }}" alt="pca variance">
+  {% endif %}
+</body>
+</html>

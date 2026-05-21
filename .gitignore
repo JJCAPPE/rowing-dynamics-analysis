@@ -9,15 +9,22 @@ __pycache__/
 .mypy_cache/
 
 .venv/
+build/
+dist/
+*.egg-info/
 
-# local editable install artifacts
-pose-extraction-test/rowing_pose.egg-info/
+# archived experiments / legacy
+archived/pose-extraction-test/rowing_pose.egg-info/
+archived/pose-extraction-test/out*/
+archived/pose-extraction-test/debug/
+archived/pose-extraction-test/.venv/
+archived/pose-extraction-test/source-videos/
+archived/pose-extraction-test/models/*
+archived/pose-extraction-test/yolov8n.pt
+archived/sports2d-legacy-runs/
 
-# large / generated artifacts
-pose-extraction-test/out*/
-pose-extraction-test/debug/
-pose-extraction-test/.venv/
-pose-extraction-test/source-videos/
+# vendored model weights (large)
+models/
 
 # videos / renders
 *.mp4
@@ -28,11 +35,9 @@ pose-extraction-test/source-videos/
 # GitHub Pages static site (docs/) — images must be tracked
 !docs/**/*.png
 !docs/**/*.jpg
-pose-extraction-test/models/*
+
 .cursor/debug.log
-pose-extraction-test/yolov8n.pt
 runs/
-sports2d_app/runs/
 *.csv
 !session_registry.csv
 
