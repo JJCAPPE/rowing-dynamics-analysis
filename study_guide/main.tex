@@ -16,8 +16,10 @@
 \usepackage{subcaption}
 \usepackage{float}
 \usepackage{listings}
+\usepackage{tikz}
 \usepackage[most]{tcolorbox}
 \usepackage{setspace}
+\usetikzlibrary{arrows.meta,positioning,calc}
 
 \hypersetup{
   colorlinks=true,
@@ -1069,34 +1071,321 @@ miss information contained in the full shape of the kinematic sequence.
 \clearpage
 \section{Stage B: Sequence Models}
 
-\subsection{Why Use the Full Sequence?}
+\subsection{Start Here: Why Stage B Exists}
 
-Stage A collapses each feature curve into a few numbers. This is interpretable,
-but it loses timing detail. Stage B keeps the full tensor:
+Stage A collapses each feature curve into a few summary numbers. For example,
+a knee-angle curve might become minimum knee angle, maximum knee angle, range,
+mean, and the progress point where the maximum occurs. That is useful and
+interpretable, but it discards the detailed order of events.
+
+Stage B keeps the full progress-indexed sequence:
 \[
-  X_i \in \R^{G \times K}.
+  X_i \in \R^{G \times K},
+  \qquad
+  Y_i \in \R^{G}.
 \]
-This lets the model learn patterns such as:
+With the default grid, \(G=64\). If there are \(K=14\) kinematic channels, one
+stroke is not one row of 14 numbers. It is a \(64 \times 14\) matrix: 64
+progress positions, with 14 measurements at each position. The target is a
+64-point force curve.
+
+\begin{conceptbox}{The Stage B Question}
+Stage B asks: ``Given the whole movement pattern through the drive, can a model
+predict the whole force curve?'' It is still supervised regression, but the
+input is a sequence and the output is a sequence.
+\end{conceptbox}
+
+\subsection{What the Data Looks Like to Stage B}
+
+For one stroke, the input matrix can be read as:
+\[
+  X_i =
+  \begin{bmatrix}
+  \text{knee}(s_1) & \text{hip}(s_1) & \cdots & \text{handle accel}(s_1)\\
+  \text{knee}(s_2) & \text{hip}(s_2) & \cdots & \text{handle accel}(s_2)\\
+  \vdots & \vdots & \ddots & \vdots\\
+  \text{knee}(s_G) & \text{hip}(s_G) & \cdots & \text{handle accel}(s_G)
+  \end{bmatrix}.
+\]
+The model output is:
+\[
+  \hat{Y}_i =
+  [\hat{F}(s_1),\hat{F}(s_2),\ldots,\hat{F}(s_G)].
+\]
+
+This representation preserves information that summary features cannot fully
+capture:
 \begin{itemize}[leftmargin=*]
-  \item how knee extension and trunk swing overlap;
-  \item whether arm draw begins early or late;
-  \item whether a force peak is associated with a particular sequence shape;
-  \item whether local slopes in the kinematic channels predict local slopes in
-  the force curve.
+  \item whether knee extension starts before, during, or after trunk swing;
+  \item how fast each joint changes during early, middle, and late drive;
+  \item whether arms begin drawing while leg drive is still active;
+  \item whether force rises gradually, sharply, or in multiple phases;
+  \item whether a local change in motion at \(s_g\) predicts a local change in
+  force near \(s_g\).
 \end{itemize}
 
-\subsection{Normalization}
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+    font=\small,
+    box/.style={draw=blue!55!black, fill=blue!4, rounded corners=2pt,
+      minimum height=1.0cm, align=center},
+    arrow/.style={-{Latex[length=2.5mm]}, thick}
+  ]
+    \node[box, minimum width=3.0cm] (x) {one stroke\\\(X_i: G \times K\)};
+    \node[box, minimum width=3.0cm, right=1.0cm of x] (model) {Stage B\\sequence model};
+    \node[box, minimum width=3.0cm, right=1.0cm of model] (yhat) {predicted curve\\\(\hat{Y}_i: G\)};
+    \node[box, minimum width=3.0cm, below=0.8cm of yhat, fill=orange!6,
+      draw=orange!75!black] (y) {true RP3 curve\\\(Y_i: G\)};
+    \node[box, minimum width=3.0cm, below=0.8cm of model, fill=green!5,
+      draw=green!55!black] (loss) {loss\\prediction error};
+    \draw[arrow] (x) -- (model);
+    \draw[arrow] (model) -- (yhat);
+    \draw[arrow] (yhat) -- (loss);
+    \draw[arrow] (y) -- (loss);
+    \draw[arrow, dashed] (loss.west) -- ++(-1.0,0) |- node[pos=0.22,left]
+      {update weights} (model.south);
+  \end{tikzpicture}
+  \caption{Training compares the predicted force curve with the true RP3 curve.
+  The error signal is used to update the model's weights.}
+  \label{fig:stageb-learning-loop}
+\end{figure}
 
-Stage B normalizes features channel-by-channel using training data:
+\subsection{How Stage B Differs From Stage 0 and Stage A}
+
+Stage 0 and Stage A predict PCA or fPCA coefficients. They do not directly
+predict every force value. Their flow is:
 \[
-  z_{igk} = \frac{x_{igk}-\mu_k}{\sigma_k}.
+  \text{features}
+  \rightarrow
+  \hat{\vect{c}}
+  \rightarrow
+  \text{PCA inverse transform}
+  \rightarrow
+  \hat{Y}.
 \]
-It also normalizes force targets:
+
+Stage B predicts the force curve directly:
 \[
-  y'_{ig} = \frac{y_{ig}-\mu_y}{\sigma_y}.
+  X_i
+  \rightarrow
+  \hat{Y}_i.
 \]
-Normalization improves optimization because neural network weights do not need
-to handle wildly different physical units at the same time.
+There is no PCA bottleneck in the Stage B prediction itself. This gives Stage B
+more flexibility, because it can represent force-shape details that PCA might
+discard. The tradeoff is that Stage B has many more learned parameters, so it
+needs stronger controls against overfitting.
+
+\subsection{A Minimal Neural Network Concept}
+
+A neural network is a parametric function. ``Parametric'' means it has numbers
+inside it that can be adjusted. Those numbers are called weights and biases.
+In the simplest layer:
+\[
+  \vect{h}
+  =
+  \sigma(W\vect{x}+\vect{b}),
+\]
+where \(\vect{x}\) is the input vector, \(W\) is a weight matrix,
+\(\vect{b}\) is a bias vector, and \(\sigma\) is a nonlinear activation such as
+ReLU:
+\[
+  \operatorname{ReLU}(u)=\max(0,u).
+\]
+
+Without nonlinear activations, stacking many layers would still be only a
+linear model. Nonlinearity is what lets a network approximate curved
+relationships such as ``force rises when knee extension and trunk swing happen
+together, but only during a specific part of the drive.''
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+    font=\small,
+    neuron/.style={circle, draw=blue!65!black, fill=blue!5, minimum size=7mm},
+    outputnode/.style={circle, draw=orange!80!black, fill=orange!8, minimum size=7mm},
+    arrow/.style={-{Latex[length=2mm]}, thick, draw=gray!70}
+  ]
+    \foreach \i/\y in {1/1.0,2/0.0,3/-1.0} {
+      \node[neuron] (x\i) at (0,\y) {\(x_\i\)};
+    }
+    \foreach \i/\y in {1/0.65,2/-0.65} {
+      \node[neuron] (h\i) at (2.2,\y) {\(h_\i\)};
+    }
+    \node[outputnode] (o) at (4.4,0) {\(\hat{y}\)};
+    \foreach \i in {1,2,3} {
+      \foreach \j in {1,2} {
+        \draw[arrow] (x\i) -- (h\j);
+      }
+    }
+    \foreach \j in {1,2} {
+      \draw[arrow] (h\j) -- (o);
+    }
+    \node[align=center] at (0,-1.75) {inputs};
+    \node[align=center] at (2.2,-1.75) {hidden layer};
+    \node[align=center] at (4.4,-1.75) {output};
+  \end{tikzpicture}
+  \caption{A small neural network transforms input numbers through learned
+  weighted combinations and nonlinear activations. Stage B applies this idea to
+  an entire sequence.}
+  \label{fig:small-neural-network}
+\end{figure}
+
+\subsection{What ``Learning'' Means}
+
+Learning is not the model gaining understanding in the human sense. Learning
+means choosing weights that reduce prediction error on training examples.
+At the beginning, the weights are not useful. The model makes predictions,
+compares them with the true force curves, computes a loss, and changes the
+weights in the direction that reduces that loss.
+
+For a simplified parameter vector \(\vect{\theta}\), the model is
+\(\hat{f}_{\vect{\theta}}\). Training solves:
+\[
+  \hat{\vect{\theta}}
+  =
+  \arg\min_{\vect{\theta}}
+  \frac{1}{N_{\text{train}}}
+  \sum_{i \in I_{\text{train}}}
+  L\left(\hat{f}_{\vect{\theta}}(X_i),Y_i\right).
+\]
+
+The optimizer does this approximately with gradient descent. A gradient tells
+the optimizer how the loss changes if each weight changes a little:
+\[
+  \vect{\theta}_{t+1}
+  =
+  \vect{\theta}_t
+  -
+  \eta
+  \nabla_{\vect{\theta}} L(\vect{\theta}_t).
+\]
+Here \(\eta\) is the learning rate. PyTorch computes the gradient with
+backpropagation when the code calls \code{loss.backward()}. Backpropagation is
+bookkeeping through the chain rule; it tells each weight how much it
+contributed to the final error.
+
+\begin{conceptbox}{Plain-English Training Loop}
+Predict a force curve, measure how wrong it is, compute which weights caused
+the error, nudge those weights, and repeat over many mini-batches.
+\end{conceptbox}
+
+\subsection{Mini-Batches and Epochs}
+
+The code does not update the model once per stroke or once for the whole
+dataset. It uses mini-batches. If \code{batch_size=32}, each update uses up to
+32 strokes at a time:
+\[
+  X_{\text{batch}} \in \R^{B \times G \times K},
+  \qquad
+  Y_{\text{batch}} \in \R^{B \times G}.
+\]
+One epoch means the optimizer has had a chance to see every training stroke
+once, split across mini-batches. Stage B may run up to \code{max_epochs}, but
+early stopping often ends training sooner.
+
+\subsection{Cross-Validation Still Controls the Claim}
+
+Stage B is trained inside the same cross-validation idea described earlier.
+For each fold:
+\[
+  I_{\text{train}} \cap I_{\text{test}} = \emptyset.
+\]
+The model may only fit weights using \(I_{\text{train}}\). It predicts
+\(I_{\text{test}}\) after training. The final reported CV predictions are
+therefore held-out predictions, not in-sample predictions.
+
+Inside the training fold, Stage B also creates a validation split. The code
+reserves the last 15 percent of the finite training rows:
+\[
+  I_{\text{train}}
+  =
+  I_{\text{fit}} \cup I_{\text{val}}.
+\]
+\(I_{\text{fit}}\) updates the weights. \(I_{\text{val}}\) decides when to stop
+training and which epoch's weights are best. \(I_{\text{test}}\) remains held
+out for evaluation.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \draw[fill=blue!10, draw=blue!60!black] (0,0) rectangle (6.4,0.7);
+    \draw[fill=green!15, draw=green!50!black] (6.4,0) rectangle (7.6,0.7);
+    \draw[fill=orange!18, draw=orange!70!black] (8.0,0) rectangle (10.6,0.7);
+    \node at (3.2,0.35) {\(I_{\text{fit}}\): update weights};
+    \node at (7.0,0.35) {\(I_{\text{val}}\)};
+    \node at (9.3,0.35) {\(I_{\text{test}}\): final fold metric};
+    \draw[thick] (0,-0.15) -- node[below=0.2cm]
+      {training fold} (7.6,-0.15);
+  \end{tikzpicture}
+  \caption{The validation rows are inside the training fold. The test fold is
+  still held out for the reported cross-validation metrics.}
+  \label{fig:stageb-fit-val-test}
+\end{figure}
+
+\subsection{What Normalization Does to the Data}
+
+Raw channels have incompatible units and scales. Knee angle is measured in
+degrees. Handle acceleration is measured in pixels per second squared. Stroke
+coordination channels are fractions of drive progress. If these are fed into a
+neural network unchanged, large-unit channels can dominate early training even
+when they are not more informative.
+
+Stage B therefore normalizes features channel by channel using only the
+training subset:
+\[
+  z_{igk}
+  =
+  \frac{x_{igk}-\mu_k}{\sigma_k},
+\]
+where \(\mu_k\) and \(\sigma_k\) are computed from all finite training values
+for channel \(k\). After normalization, each channel is roughly centered near
+zero and measured in standard-deviation units.
+
+The target force curve is also normalized:
+\[
+  y'_{ig}
+  =
+  \frac{y_{ig}-\mu_y}{\sigma_y}.
+\]
+The model learns to predict \(y'\), not Newtons directly. After prediction,
+the output is converted back to Newtons:
+\[
+  \hat{y}_{ig}
+  =
+  \hat{y}'_{ig}\sigma_y+\mu_y.
+\]
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+    font=\small,
+    box/.style={draw=blue!55!black, fill=blue!4, rounded corners=2pt,
+      minimum height=0.9cm, align=center, minimum width=2.8cm},
+    arrow/.style={-{Latex[length=2.2mm]}, thick}
+  ]
+    \node[box] (raw) {raw channel\\degrees, px/s, etc.};
+    \node[box, right=0.7cm of raw] (stats) {fit train stats\\\(\mu_k,\sigma_k\)};
+    \node[box, right=0.7cm of stats] (norm) {normalized\\standard units};
+    \node[box, right=0.7cm of norm, fill=green!5, draw=green!55!black] (net)
+      {network input\\near zero scale};
+    \draw[arrow] (raw) -- (stats);
+    \draw[arrow] (stats) -- (norm);
+    \draw[arrow] (norm) -- (net);
+    \node[below=0.25cm of stats, align=center, text width=7.0cm]
+      {The same train-fold statistics are later reused for validation, test,
+      saved models, and video-only inference.};
+  \end{tikzpicture}
+  \caption{Normalization changes units, not meaning. A value of \(z=1\) means
+  one training-standard-deviation above that channel's training mean.}
+  \label{fig:stageb-normalization}
+\end{figure}
+
+\begin{warningbox}{Fit Normalization on Training Data Only}
+If \(\mu_k\), \(\sigma_k\), \(\mu_y\), or \(\sigma_y\) are computed using test
+rows, information leaks from the held-out fold into training. The code avoids
+this by fitting normalization after the train/test split inside each fold.
+\end{warningbox}
 
 \subsection{Finite-Row Filtering and NaN Handling}
 
@@ -1112,49 +1401,236 @@ X_train = X_train[finite_train]
 y_train = y_train[finite_train]
 \end{lstlisting}
 
-After normalization, remaining NaNs in arrays sent to the neural network are
-converted to zero. This is safe only because normalization makes zero mean
-``typical'' for each channel. Still, many NaNs are a data-quality warning. A
-model cannot recover information that was never measured.
+This is a strict filter: a training stroke is removed if any channel at any
+grid point is non-finite. The reason is practical. A neural network cannot
+multiply by NaN and produce meaningful gradients. A single NaN can contaminate
+the loss for the whole mini-batch.
+
+After normalization, arrays sent to the neural network are passed through
+\code{np.nan_to_num(..., nan=0.0)}. This mostly protects validation and test
+prediction, where some entries can remain missing. Because normalized zero is
+the training mean, this replacement means: ``use a typical value for this
+missing measurement.'' That is better than crashing, but it is not real
+information. Many missing values should still be treated as a data-quality
+problem.
+
+\subsection{Optional Coordination Channels}
+
+Stage B can append scalar coordination features to the sequence tensor. A
+scalar such as \code{lag_knee_to_trunk_s} has one value per stroke, not one
+value per grid point. The code broadcasts it across progress:
+\[
+  c_i
+  \rightarrow
+  [c_i,c_i,\ldots,c_i] \in \R^G.
+\]
+If there are \(C\) coordination scalars, the input shape changes from
+\[
+  N \times G \times K
+  \quad\text{to}\quad
+  N \times G \times (K+C).
+\]
+
+Broadcasting does not create new time-varying information. It gives the
+sequence model stroke-level context at every progress point. For example, the
+model can learn different force-shape rules for strokes where arm draw starts
+early versus late.
+
+\subsection{The Stage B Shape Contract}
+
+\begin{longtable}{p{0.28\linewidth}p{0.20\linewidth}p{0.42\linewidth}}
+\toprule
+\textbf{Object} & \textbf{Shape} & \textbf{Meaning}\\
+\midrule
+\endhead
+\code{kinematic_sequences} & \(N \times G \times K\) & Full input tensor before
+optional coordination channels.\\
+\code{force_curves} & \(N \times G\) & True force targets in Newtons.\\
+\code{mask_array} & \(N \times G\) & Boolean valid-target mask; all true when
+no mask is supplied.\\
+\code{X_train_t} & \(B_{\text{train}} \times G \times K'\) & Normalized PyTorch
+training input, where \(K'=K+C\) if coordination channels are used.\\
+\code{y_train_t} & \(B_{\text{train}} \times G\) & Normalized force target.\\
+\code{model(xb)} & \(B \times G\) & Predicted normalized force curve for a
+mini-batch.\\
+\code{test_pred} & \(B_{\text{test}} \times G\) & Denormalized held-out
+prediction in Newtons.\\
+\bottomrule
+\end{longtable}
 
 \subsection{Temporal Convolutional Network}
 
-The TCN treats progress \(s\) like a sequence axis. A one-dimensional
-convolution computes local patterns:
+The default Stage B architecture is a temporal convolutional network, or TCN.
+``Temporal'' here means sequence-like. The sequence axis is not clock time; it
+is normalized drive progress \(s\). A one-dimensional convolution slides a
+small window along progress and applies the same learned pattern detector at
+each location.
+
+For a single channel, a simple convolution is:
 \[
-  h_g =
-  \sum_{r=-R}^{R} W_r x_{g+r}.
+  h_g
+  =
+  w_{-1}x_{g-1}+w_0x_g+w_{+1}x_{g+1}+b.
 \]
-Dilated convolutions skip positions so later blocks see wider context without
-requiring huge kernels. If dilation is \(d\), the convolution samples
-\(x_{g+rd}\). Residual connections add the input of a block back to its output,
-which makes deep networks easier to train.
+With multiple channels, the convolution combines nearby progress points across
+all channels. In rowing terms, it can learn local motifs such as:
+\[
+  \text{``knee angle increasing quickly while trunk angle begins changing.''}
+\]
+
+The code's TCN receives data as \(B \times G \times K\), then transposes it for
+PyTorch's \code{Conv1d} convention:
+\[
+  B \times G \times K
+  \rightarrow
+  B \times K \times G.
+\]
+The output is transposed conceptually back to a force value at each progress
+point.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small]
+    \foreach \i in {0,...,8} {
+      \draw[fill=blue!7, draw=blue!40] (\i*0.65,0) rectangle ++(0.55,0.55);
+      \node at (\i*0.65+0.275,0.275) {\(\scriptstyle s_{\i+1}\)};
+    }
+    \draw[thick, draw=orange!80!black, fill=orange!12] (2*0.65,-0.15)
+      rectangle ++(1.85,0.85);
+    \node[above=0.15cm] at (2*0.65+0.925,0.7) {kernel window};
+    \draw[-{Latex[length=2mm]}, thick] (2*0.65+0.925,-0.25) -- ++(0,-0.65);
+    \node[draw=orange!80!black, fill=orange!8, rounded corners=2pt,
+      minimum width=1.6cm, minimum height=0.6cm] at (2*0.65+0.925,-1.15)
+      {local feature};
+    \node[align=center, text width=8.6cm] at (2.7,-2.0)
+      {The same kernel slides along the drive. It learns a local progress
+      pattern and reuses that pattern at many \(s\)-positions.};
+  \end{tikzpicture}
+  \caption{A 1D convolution looks at a local neighborhood along the drive
+  progress axis.}
+  \label{fig:stageb-convolution-window}
+\end{figure}
+
+\subsection{Dilations and Receptive Field}
+
+If a convolution only sees immediate neighbors, it may miss wider coordination
+patterns. A dilated convolution skips positions:
+\[
+  h_g
+  =
+  \sum_r W_r x_{g+rd}.
+\]
+When the dilation \(d=1\), the kernel sees adjacent positions. When \(d=2\), it
+samples every second position. When \(d=4\), it samples every fourth position.
+The Stage B TCN stacks blocks with dilations:
+\[
+  1,\;2,\;4,\;8,\ldots
+\]
+so deeper layers can combine information from a larger portion of the stroke.
+
+This is important for rowing because force at mid-drive may depend on how the
+early drive unfolded. The model needs some way to connect local force
+prediction with earlier or later body-motion context.
+
+\subsection{Residual Connections, BatchNorm, and Dropout}
+
+The TCN block contains several practical neural-network tools.
+
+\textbf{Residual connections} add a block's input back to its output. In
+simplified form:
+\[
+  \text{output} = \operatorname{Block}(x) + x.
+\]
+This helps optimization because a block can learn a correction to an existing
+representation rather than having to rebuild the whole representation from
+scratch.
+
+\textbf{Batch normalization} rescales intermediate activations during training.
+It makes the distribution of hidden values more stable, which often makes
+training faster and less sensitive to initialization.
+
+\textbf{Dropout} randomly zeros some hidden activations during training. This
+prevents the network from relying too heavily on one fragile pathway through
+the model. At inference time, dropout is disabled.
 
 \subsection{Transformer Encoder}
 
-The Transformer first projects each grid point's feature vector into a hidden
-embedding. It adds positional encodings so the model knows where in the drive a
-point occurs. Self-attention then lets each progress point compare itself with
-other progress points:
+The Transformer is the alternative Stage B architecture. It uses self-attention
+instead of sliding convolution windows. The first step projects each
+progress-point feature vector into a hidden embedding:
+\[
+  \vect{e}_g = W_{\text{in}}\vect{x}_g+\vect{b}_{\text{in}}.
+\]
+The model then adds a positional encoding, because otherwise the same feature
+vector at catch and finish would look too similar to the Transformer:
+\[
+  \vect{e}'_g = \vect{e}_g + \vect{p}_g.
+\]
+
+Self-attention lets each progress point compare itself with every other
+progress point. In matrix form:
 \[
   \operatorname{Attention}(Q,K,V)
   =
   \operatorname{softmax}
   \left(\frac{QK^\top}{\sqrt{d}}\right)V.
 \]
-In this pipeline, the Transformer is an alternative Stage B architecture. It
-may capture long-range coordination patterns, but it can also overfit if the
-dataset is small.
+For study purposes, read this as:
+\begin{itemize}[leftmargin=*]
+  \item \(Q\), queries: what each progress point is looking for;
+  \item \(K\), keys: what each progress point offers for comparison;
+  \item \(V\), values: the information copied and mixed after attention scores
+  are computed.
+\end{itemize}
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+    font=\small,
+    point/.style={circle, draw=blue!60!black, fill=blue!6, minimum size=7mm},
+    arrow/.style={-{Latex[length=1.8mm]}, draw=gray!65, thick}
+  ]
+    \foreach \i/\x in {1/0,2/1.2,3/2.4,4/3.6,5/4.8} {
+      \node[point] (s\i) at (\x,0) {\(\scriptstyle s_\i\)};
+    }
+    \draw[arrow] (s3) to[bend left=25] (s1);
+    \draw[arrow] (s3) to[bend left=18] (s2);
+    \draw[arrow] (s3) to[bend left=18] (s4);
+    \draw[arrow] (s3) to[bend left=25] (s5);
+    \node[align=center, text width=8.6cm] at (2.4,-1.2)
+      {Self-attention lets one progress point use information from distant
+      progress points in the same stroke.};
+  \end{tikzpicture}
+  \caption{A Transformer can connect early, middle, and late drive positions
+  directly.}
+  \label{fig:stageb-attention}
+\end{figure}
+
+The Transformer can capture long-range coordination patterns. It also has more
+ways to overfit when the dataset is small. In this project, it should be judged
+against the TCN and the simpler Stage 0/A baselines with held-out metrics, not
+by architectural sophistication.
 
 \subsection{Masked MSE and Derivative Loss}
 
-Stage B's core loss is pointwise MSE, optionally masked:
+Stage B's core loss is pointwise mean squared error. If all target force values
+are valid, it is:
+\[
+  L_{\text{MSE}}
+  =
+  \frac{1}{NG}
+  \sum_{i,g}(\hat{y}_{ig}-y_{ig})^2.
+\]
+When a mask is supplied, invalid target positions are ignored:
 \[
   L_{\text{MSE}}
   =
   \frac{\sum_{i,g}m_{ig}(\hat{y}_{ig}-y_{ig})^2}
   {\sum_{i,g}m_{ig}}.
 \]
+Here \(m_{ig}=1\) means the target is valid and \(m_{ig}=0\) means it should
+not contribute to the loss.
+
 An optional derivative penalty compares first differences:
 \[
   L_{\Delta}
@@ -1167,10 +1643,79 @@ An optional derivative penalty compares first differences:
   (y_{i,g+1}-y_{ig})
   \right]^2.
 \]
+This does not merely ask ``is the force value right?'' It also asks ``is the
+local change in force right?'' That can discourage predictions with the right
+average level but the wrong rise and fall shape.
+
 The full loss is:
 \[
   L = L_{\text{MSE}} + \lambda L_{\Delta}.
 \]
+If \(\lambda=0\), the derivative term is disabled. If \(\lambda\) is too high,
+the model may over-prioritize curve slope at the expense of force magnitude.
+
+\subsection{What AdamW, Weight Decay, and Scheduling Do}
+
+The code trains with AdamW:
+\begin{lstlisting}
+optimizer = torch.optim.AdamW(model.parameters(), lr=lr,
+                              weight_decay=weight_decay)
+\end{lstlisting}
+AdamW is a gradient-based optimizer. Compared with plain gradient descent, it
+keeps adaptive running scales for parameters, so weights with noisy or small
+gradients can still be updated effectively.
+
+Weight decay discourages large weights. It is a regularizer:
+\[
+  \text{large weights} \quad \Rightarrow \quad \text{slightly higher objective}.
+\]
+This can reduce overfitting because extremely large weights often indicate that
+the model is fitting narrow details of the training set.
+
+The cosine scheduler changes the learning rate over epochs:
+\begin{lstlisting}
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer, T_max=max_epochs
+)
+\end{lstlisting}
+Early training can use larger steps. Later training uses smaller steps, which
+helps the optimizer settle rather than bounce around.
+
+\subsection{Gradient Clipping}
+
+Neural-network gradients can occasionally become very large. A huge gradient
+can cause one update to damage the model. The code clips gradient norm:
+\begin{lstlisting}
+loss.backward()
+torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+optimizer.step()
+\end{lstlisting}
+This keeps an update from becoming too large even if one mini-batch produces an
+unstable gradient.
+
+\subsection{Training Loop in Code Terms}
+
+For each cross-validation fold, Stage B:
+\begin{enumerate}[leftmargin=*]
+  \item selects train and test strokes;
+  \item optionally appends coordination scalars as broadcast sequence channels;
+  \item filters training rows with finite features and targets;
+  \item reserves the last 15 percent of the finite training fold as validation
+  data;
+  \item computes feature and target normalization from the fit subset;
+  \item normalizes train, validation, and test inputs with the same statistics;
+  \item replaces remaining normalized NaNs with zero;
+  \item builds either the TCN or Transformer;
+  \item trains with mini-batches, masked MSE, optional derivative loss, AdamW,
+  cosine scheduling, and gradient clipping;
+  \item monitors validation loss and restores the best epoch;
+  \item predicts the held-out test fold;
+  \item denormalizes predictions back to Newtons;
+  \item stores those predictions in \code{y_pred_all[test_idx]}.
+\end{enumerate}
+
+The important scientific detail is the final one. Each row in
+\code{y_pred_all} is filled by a model that did not train on that row.
 
 \begin{figure}[H]
   \centering
@@ -1180,46 +1725,6 @@ The full loss is:
   \label{fig:stageb}
 \end{figure}
 
-\subsection{Training Loop}
-
-For each cross-validation fold, Stage B:
-\begin{enumerate}[leftmargin=*]
-  \item selects train and test strokes;
-  \item filters training rows with finite features and targets;
-  \item reserves the last 15 percent of the training fold as validation data;
-  \item computes feature and target normalization from the training subset;
-  \item trains a TCN or Transformer with AdamW;
-  \item applies cosine learning-rate scheduling;
-  \item clips gradients to reduce unstable updates;
-  \item stops early when validation loss stops improving;
-  \item predicts the held-out test fold and stores CV predictions.
-\end{enumerate}
-
-\begin{lstlisting}
-optimizer = torch.optim.AdamW(model.parameters(), lr=lr,
-                              weight_decay=weight_decay)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, T_max=max_epochs
-)
-loss.backward()
-torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-optimizer.step()
-\end{lstlisting}
-
-\subsection{What Gets Saved}
-
-The best Stage B fold state is saved as a PyTorch state dictionary, not as a
-complete Python object:
-\begin{itemize}[leftmargin=*]
-  \item \code{stageB_tcn_state.pt}: learned weights.
-  \item \code{stageB_tcn_arch.json}: architecture parameters needed to rebuild
-  the model class.
-  \item \code{stageB_tcn_norm.npz}: feature and target normalization constants.
-\end{itemize}
-This design is more portable than pickling a whole neural network object. The
-model bundle later combines these files with the feature contract and PCA
-artifacts so video-only prediction can reproduce the training-time transforms.
-
 \subsection{Early Stopping}
 
 Early stopping is a practical guard against overfitting. During training,
@@ -1227,8 +1732,100 @@ validation loss is monitored. If it does not improve for \code{patience}
 epochs, training stops and the best validation state is restored.
 
 This matters because neural networks can keep improving on the training set
-while getting worse on held-out data. The validation subset is not the final
-test fold; it is a tuning signal inside the training fold.
+while getting worse on held-out data:
+\[
+  L_{\text{train}} \downarrow
+  \qquad
+  \text{but}
+  \qquad
+  L_{\text{val}} \uparrow.
+\]
+That pattern means the network is learning details that do not generalize.
+The validation subset is not the final test fold; it is a tuning signal inside
+the training fold.
+
+\subsection{Overfitting: The Main Risk in Stage B}
+
+Stage B is powerful because it can learn from the whole \(G \times K\) tensor.
+That same power is the risk. If there are few athletes or few sessions, a
+large sequence model may memorize camera angle, athlete-specific rhythm,
+session-specific rig setup, or label noise.
+
+Signs of overfitting include:
+\begin{itemize}[leftmargin=*]
+  \item training loss improves but validation loss worsens;
+  \item time-block CV looks good but athlete-held-out CV looks poor;
+  \item predicted curves look too similar to the average curve;
+  \item predicted curves have plausible RMSE but wrong peak timing or impulse;
+  \item Stage B does not beat Stage 0/A despite being much more flexible.
+\end{itemize}
+
+The correct response is not automatically to make Stage B larger. Often the
+right response is better alignment, stricter QC, more sessions, stronger
+held-out splits, or simpler architecture.
+
+\subsection{What Gets Saved}
+
+The best Stage B fold state is saved as a PyTorch state dictionary, not as a
+complete Python object:
+\begin{itemize}[leftmargin=*]
+  \item \code{stageB_tcn_state.pt} or \code{stageB_transformer_state.pt}: learned
+  weights.
+  \item \code{stageB_tcn_arch.json} or \code{stageB_transformer_arch.json}:
+  architecture parameters needed to rebuild the model class.
+  \item \code{stageB_tcn_norm.npz} or \code{stageB_transformer_norm.npz}:
+  feature and target normalization constants.
+\end{itemize}
+For downstream compatibility, the code also writes the canonical
+\code{stageB_tcn_*} filenames even when the selected architecture is the
+Transformer. The architecture JSON records what kind of model should actually
+be rebuilt.
+
+This design is more portable than pickling a whole neural network object. The
+model bundle later combines these files with the feature contract and PCA
+artifacts so video-only prediction can reproduce the training-time transforms.
+
+\subsection{Inference After Training}
+
+During video-only inference, the trained Stage B model no longer has RP3 force
+curves. The inference path must reproduce the same feature construction and
+normalization:
+\[
+  \text{video}
+  \rightarrow
+  X_{\text{new}}
+  \rightarrow
+  \frac{X_{\text{new}}-\mu_X}{\sigma_X}
+  \rightarrow
+  \hat{Y}'
+  \rightarrow
+  \hat{Y}'\sigma_y+\mu_y.
+\]
+The saved normalization constants are therefore part of the model. A neural
+network's weights are not enough; the input coordinate system must match the
+one used during training.
+
+\subsection{How to Read Stage B Results}
+
+When Stage B results are written, read them in this order:
+\begin{enumerate}[leftmargin=*]
+  \item Check the evaluation regime: time-block, session-held-out, or
+  athlete-held-out.
+  \item Check whether Stage B beats the metadata-only Stage 0 baseline.
+  \item Check whether it beats Stage A, not only whether it trains.
+  \item Inspect RMSE and MAE for pointwise force error.
+  \item Inspect peak force error, peak position error, and impulse error for
+  rowing relevance.
+  \item Inspect true-vs-predicted curves to see whether the model predicts
+  realistic curve shapes.
+\end{enumerate}
+
+\begin{conceptbox}{The Practical Interpretation}
+A useful Stage B model is not simply one with low training loss. It is one that
+turns video-derived movement sequences into held-out force curves that improve
+on simple metadata and summary-feature baselines under the strongest split the
+dataset can support.
+\end{conceptbox}
 
 \clearpage
 \section{Reading Results}
